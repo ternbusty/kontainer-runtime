@@ -27,6 +27,7 @@ kotlin {
         binaries {
             executable {
                 entryPoint = "main"
+                baseName = "kontainer-runtime"
             }
         }
     }
@@ -35,5 +36,13 @@ kotlin {
         nativeMain.dependencies {
             implementation(libs.kotlinxSerializationJson)
         }
+    }
+
+    tasks.register<Exec>("runWithSudo") {
+        group = "application"
+        description = "Builds and runs the native binary with sudo"
+        dependsOn("linkDebugExecutableLinuxX64")
+        commandLine("sudo", "-S", "${layout.buildDirectory.get()}/bin/linuxX64/debugExecutable/${project.name}.kexe")
+        standardInput = System.`in`
     }
 }
