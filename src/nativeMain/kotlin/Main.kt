@@ -21,46 +21,45 @@ fun main(): kotlin.Unit = memScoped {
     }
 
     val pid = fork()
-    if (pid == -1) {
-        perror("fork")
-        exit(1)
-    }
-
-    if (pid == 0) {
-        close(sv[0])
-        fprintf(stderr, "child getpid=%d getppid=%d\n", getpid(), getppid())
-
-        val msg = "namespace:ready\n"
-        val sent = send(sv[1], msg.cstr.ptr, msg.length.toULong(), 0)
-        if (sent == -1L) {
-            perror("send")
-        }
-        close(sv[1])
-        _exit(0)
-    } else {
-        close(sv[1])
-
-        val buf = allocArray<ByteVar>(256)
-        val n = recv(sv[0], buf, 255.toULong(), 0)
-        if (n == -1L) {
-            perror("recv")
-            close(sv[0])
-        } else {
-            buf.set(n, 0.toByte())
-            val s = buf.toKString()
-            fprintf(stderr, "parent received: %s", s)
-        }
-        close(sv[0])
-
-        val status = alloc<IntVar>()
-        if (waitpid(pid, status.ptr, 0) == -1) {
-            perror("waitpid")
+    when (pid) {
+        -1 -> {
+            perror("fork")
             exit(1)
         }
-//        if (WIFEXITED(status.value)) {
-//            fprintf(stderr, "parent: child exited status=%d\n", WEXITSTATUS(status.value))
-//        } else if (WIFSIGNALED(status.value)) {
-//            fprintf(stderr, "parent: child killed by signal=%d\n", WTERMSIG(status.value))
-//        }
+
+        0 -> {
+            close(sv[0])
+            fprintf(stderr, "child getpid=%d getppid=%d\n", getpid(), getppid())
+
+            val msg = "namespace:ready\n"
+            val sent = send(sv[1], msg.cstr.ptr, msg.length.toULong(), 0)
+            if (sent == -1L) {
+                perror("send")
+            }
+            close(sv[1])
+            _exit(0)
+        }
+
+        else -> {
+            close(sv[1])
+
+            val buf = allocArray<ByteVar>(256)
+            val n = recv(sv[0], buf, 255.toULong(), 0)
+            if (n == -1L) {
+                perror("recv")
+                close(sv[0])
+            } else {
+                buf.set(n, 0.toByte())
+                val s = buf.toKString()
+                fprintf(stderr, "parent received: %s", s)
+            }
+            close(sv[0])
+
+            val status = alloc<IntVar>()
+            if (waitpid(pid, status.ptr, 0) == -1) {
+                perror("waitpid")
+                exit(1)
+            }
+        }
     }
 }
