@@ -1,11 +1,13 @@
 package process
 
-import channel.*
+import channel.MainSender
+import channel.NotifyListener
 import kotlinx.cinterop.*
 import namespace.hasNamespace
 import platform.posix.*
 import rootfs.pivotRoot
 import rootfs.prepareRootfs
+import seccomp.initializeSeccomp
 import spec.Spec
 import syscall.closeRange
 import syscall.setNoNewPrivileges
@@ -44,6 +46,21 @@ fun runInitProcess(
     // (e.g., via setuid/setgid binaries or file capabilities)
     if (spec.process?.noNewPrivileges == true) {
         setNoNewPrivileges()
+    }
+
+    // Initialize seccomp filter early if no_new_privileges is NOT set
+    // Without no_new_privileges, seccomp is a privileged operation (requires CAP_SYS_ADMIN).
+    // We must do this before dropping capabilities/UID/GID.
+    if (spec.process?.noNewPrivileges != true) {
+        spec.linux?.seccomp?.let { seccomp ->
+            fprintf(stderr, "init: initializing seccomp filter (privileged path)\n")
+            if (initializeSeccomp(seccomp) < 0) {
+                fprintf(stderr, "Error: failed to initialize seccomp\n")
+                mainSender.sendError("Failed to initialize seccomp")
+                _exit(1)
+            }
+            fprintf(stderr, "init: seccomp filter initialized successfully\n")
+        }
     }
 
     try {
@@ -149,6 +166,21 @@ fun runInitProcess(
 
         // Close notify listener
         notifyListener.close()
+
+        // Initialize seccomp filter late if no_new_privileges IS set
+        // With no_new_privileges, seccomp becomes unprivileged operation.
+        // We do this as late as possible (right before exec) to minimize
+        // the number of syscalls that happen after the filter is applied.
+        if (spec.process.noNewPrivileges == true) {
+            spec.linux?.seccomp?.let { seccomp ->
+                fprintf(stderr, "init: initializing seccomp filter (unprivileged path, close to exec)\n")
+                if (initializeSeccomp(seccomp) < 0) {
+                    fprintf(stderr, "Error: failed to initialize seccomp\n")
+                    _exit(1)
+                }
+                fprintf(stderr, "init: seccomp filter initialized successfully\n")
+            }
+        }
 
         fprintf(stderr, "Executing: %s\n", processArgs.joinToString(" "))
 

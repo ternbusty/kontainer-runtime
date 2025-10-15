@@ -85,13 +85,72 @@ data class LinuxResources(
     val cpu: LinuxCpu? = null
 )
 
+/**
+ * Seccomp argument comparison
+ */
+@Serializable
+data class SeccompArg(
+    val index: UInt,
+    val value: ULong,
+    val op: String
+)
+
+/**
+ * Filter for conditional seccomp rules
+ */
+@Serializable
+data class Filter(
+    val caps: List<String>? = null,
+    val arches: List<String>? = null,
+    val minKernel: String? = null
+)
+
+/**
+ * Seccomp syscall rule
+ */
+@Serializable
+data class LinuxSyscall(
+    val names: List<String>,
+    val action: String,
+    val args: List<SeccompArg>? = null,
+    val errnoRet: UInt? = null,
+    val includes: Filter? = null,
+    val excludes: Filter? = null,
+    val comment: String? = null
+)
+
+/**
+ * Architecture mapping for seccomp
+ */
+@Serializable
+data class ArchMap(
+    val architecture: String,
+    val subArchitectures: List<String>? = null
+)
+
+/**
+ * Linux seccomp configuration
+ */
+@Serializable
+data class LinuxSeccomp(
+    val defaultAction: String,
+    val defaultErrnoRet: UInt? = null,
+    val architectures: List<String>? = null,
+    val archMap: List<ArchMap>? = null,
+    val syscalls: List<LinuxSyscall>? = null,
+    val flags: List<String>? = null,
+    val listenerPath: String? = null,
+    val listenerMetadata: String? = null
+)
+
 @Serializable
 data class Linux(
     val namespaces: List<Namespace>? = null,
     val uidMappings: List<LinuxIdMapping>? = null,
     val gidMappings: List<LinuxIdMapping>? = null,
     val resources: LinuxResources? = null,
-    val cgroupsPath: String? = null
+    val cgroupsPath: String? = null,
+    val seccomp: LinuxSeccomp? = null
 )
 
 /**

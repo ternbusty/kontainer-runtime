@@ -1,0 +1,11 @@
+headers = seccomp.h
+headerFilter = seccomp.h
+package = libseccomp
+compilerOpts = -I/usr/include -I/usr/include/x86_64-linux-gnu
+linkerOpts = -L/usr/lib/x86_64-linux-gnu -lseccomp
+
+---
+
+// Additional manual bindings if needed
+// Kotlin/Native will automatically generate bindings for functions and constants
+// defined in seccomp.h

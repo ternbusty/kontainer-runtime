@@ -30,6 +30,13 @@ kotlin {
                 baseName = "kontainer-runtime"
             }
         }
+
+        // Configure C interop for libseccomp
+        compilations.getByName("main").cinterops {
+            val libseccomp by creating {
+                // .def file is automatically found at src/nativeInterop/cinterop/libseccomp.def
+            }
+        }
     }
 
     sourceSets {
