@@ -31,6 +31,7 @@ data class Process(
     val args: List<String>? = null,
     val env: List<String>? = null,
     val cwd: String = "/",
+    val noNewPrivileges: Boolean? = null,
     val user: User = User()
 )
 

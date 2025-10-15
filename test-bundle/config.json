@@ -5,7 +5,12 @@
     "readonly": false
   },
   "process": {
-    "args": ["/bin/busybox", "sh", "-c", "echo 'Hello from container!' && echo \"PID: $$\" && ls -la / && sleep 3"],
+    "args": [
+      "/bin/busybox",
+      "sh",
+      "-c",
+      "echo 'Hello from container!' && echo \"PID: $$\" && ls -la / && sleep 3"
+    ],
     "env": [
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       "HOSTNAME=kontainer-test"
@@ -14,17 +19,30 @@
     "user": {
       "uid": 1000,
       "gid": 1000
-    }
+    },
+    "noNewPrivileges": true
   },
   "hostname": "kontainer-test",
   "linux": {
     "namespaces": [
-      {"type": "pid"},
-      {"type": "mount"},
-      {"type": "network"},
-      {"type": "uts"},
-      {"type": "ipc"},
-      {"type": "user"}
+      {
+        "type": "pid"
+      },
+      {
+        "type": "mount"
+      },
+      {
+        "type": "network"
+      },
+      {
+        "type": "uts"
+      },
+      {
+        "type": "ipc"
+      },
+      {
+        "type": "user"
+      }
     ],
     "uidMappings": [
       {

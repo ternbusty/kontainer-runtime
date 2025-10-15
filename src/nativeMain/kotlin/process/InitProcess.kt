@@ -8,6 +8,7 @@ import rootfs.pivotRoot
 import rootfs.prepareRootfs
 import spec.Spec
 import syscall.closeRange
+import syscall.setNoNewPrivileges
 
 /**
  * Init process - Init process inside container (PID 1)
@@ -37,6 +38,13 @@ fun runInitProcess(
         _exit(1)
     }
     fprintf(stderr, "init: created new session (sid=%d)\n", getsid(0))
+
+    // Set no_new_privileges if specified in the spec
+    // This prevents the process from gaining new privileges through execve
+    // (e.g., via setuid/setgid binaries or file capabilities)
+    if (spec.process?.noNewPrivileges == true) {
+        setNoNewPrivileges()
+    }
 
     try {
         // Set hostname (within UTS namespace)
