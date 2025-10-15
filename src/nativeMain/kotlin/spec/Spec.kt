@@ -104,12 +104,14 @@ fun loadSpec(configPath: String): Spec {
         // Read entire file into memory
         val json = memScoped {
             val buffer = StringBuilder()
-            val chunk = allocArray<ByteVar>(1024)
+            // Allocate 1025 bytes: 1024 for data + 1 for null terminator
+            val chunk = allocArray<ByteVar>(1025)
 
             while (true) {
                 val bytesRead = fread(chunk, 1.convert(), 1024.convert(), fp).toInt()
                 if (bytesRead <= 0) break
 
+                // Null terminate the chunk
                 chunk[bytesRead] = 0
                 buffer.append(chunk.toKString())
             }
