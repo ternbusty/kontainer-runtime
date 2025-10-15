@@ -42,7 +42,7 @@ kotlin {
         group = "application"
         description = "Builds and runs the native binary with sudo"
         dependsOn("linkDebugExecutableLinuxX64")
-        commandLine("sudo", "-S", "${layout.buildDirectory.get()}/bin/linuxX64/debugExecutable/${project.name}.kexe")
+        commandLine("sudo", "-S", "${layout.buildDirectory.get()}/bin/linuxX64/debugExecutable/${project.name}.kexe", "test-bundle")
         standardInput = System.`in`
     }
 }

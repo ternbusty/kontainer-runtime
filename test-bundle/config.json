@@ -1,0 +1,29 @@
+{
+  "ociVersion": "1.0.0",
+  "root": {
+    "path": "rootfs",
+    "readonly": false
+  },
+  "process": {
+    "args": ["sleep", "30"],
+    "env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ],
+    "cwd": "/",
+    "user": {
+      "uid": 0,
+      "gid": 0
+    }
+  },
+  "hostname": "kontainer-test",
+  "linux": {
+    "namespaces": [
+      {"type": "pid"},
+      {"type": "mount"},
+      {"type": "network"},
+      {"type": "uts"},
+      {"type": "ipc"},
+      {"type": "user"}
+    ]
+  }
+}
