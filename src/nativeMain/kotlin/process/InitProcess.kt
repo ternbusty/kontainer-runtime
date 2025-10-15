@@ -30,6 +30,7 @@ fun runInitProcess(
     spec: Spec,
     rootfsPath: String,
     mainSender: MainSender,
+    initReceiver: channel.InitReceiver,
     notifyListener: NotifyListener
 ) {
     Logger.setContext("init")
@@ -57,12 +58,22 @@ fun runInitProcess(
     if (spec.process?.noNewPrivileges != true) {
         spec.linux?.seccomp?.let { seccomp ->
             Logger.debug("initializing seccomp filter (privileged path)")
-            if (initializeSeccomp(seccomp) < 0) {
-                Logger.error("Failed to initialize seccomp")
-                mainSender.sendError("Failed to initialize seccomp")
+            try {
+                val notifyFd = initializeSeccomp(seccomp)
+                Logger.info("seccomp filter initialized successfully")
+
+                // If seccomp returns a notify FD, send it to main process
+                if (notifyFd != null) {
+                    Logger.debug("sending seccomp notify FD to main process")
+                    mainSender.seccompNotifyRequest(notifyFd)
+                    initReceiver.waitForSeccompRequestDone()
+                    Logger.debug("seccomp notify FD handled by main process")
+                }
+            } catch (e: Exception) {
+                Logger.error("Failed to initialize seccomp: ${e.message}")
+                mainSender.sendError("Failed to initialize seccomp: ${e.message}")
                 _exit(1)
             }
-            Logger.info("seccomp filter initialized successfully")
         }
     }
 
@@ -139,6 +150,31 @@ fun runInitProcess(
         }
         Logger.debug("set UID=$targetUid GID=$targetGid for container process")
 
+        // Initialize seccomp filter if no_new_privileges IS set
+        // With no_new_privileges, seccomp becomes unprivileged operation.
+        // We do this after dropping privileges but before closing channels
+        // so we can send the notify FD to main process if needed.
+        if (spec.process.noNewPrivileges == true) {
+            spec.linux?.seccomp?.let { seccomp ->
+                Logger.debug("initializing seccomp filter (unprivileged path)")
+                try {
+                    val notifyFd = initializeSeccomp(seccomp)
+                    Logger.info("seccomp filter initialized successfully")
+
+                    // If seccomp returns a notify FD, send it to main process
+                    if (notifyFd != null) {
+                        Logger.debug("sending seccomp notify FD to main process")
+                        mainSender.seccompNotifyRequest(notifyFd)
+                        initReceiver.waitForSeccompRequestDone()
+                        Logger.debug("seccomp notify FD handled by main process")
+                    }
+                } catch (e: Exception) {
+                    Logger.error("Failed to initialize seccomp: ${e.message}")
+                    _exit(1)
+                }
+            }
+        }
+
         // Send init ready signal to main process
         try {
             mainSender.initReady()
@@ -148,8 +184,9 @@ fun runInitProcess(
             _exit(1)
         }
 
-        // Close main sender (no more messages to send)
+        // Close channels (no more messages to send/receive)
         mainSender.close()
+        initReceiver.close()
 
         // Cleanup extra file descriptors to prevent FD leaks (CVE-2024-21626)
         // This sets FD_CLOEXEC on all FDs >= 3 + preserveFds, so they will be
@@ -169,21 +206,6 @@ fun runInitProcess(
 
         // Close notify listener
         notifyListener.close()
-
-        // Initialize seccomp filter late if no_new_privileges IS set
-        // With no_new_privileges, seccomp becomes unprivileged operation.
-        // We do this as late as possible (right before exec) to minimize
-        // the number of syscalls that happen after the filter is applied.
-        if (spec.process.noNewPrivileges == true) {
-            spec.linux?.seccomp?.let { seccomp ->
-                Logger.debug("initializing seccomp filter (unprivileged path, close to exec)")
-                if (initializeSeccomp(seccomp) < 0) {
-                    Logger.error("Failed to initialize seccomp")
-                    _exit(1)
-                }
-                Logger.info("seccomp filter initialized successfully")
-            }
-        }
 
         Logger.info("Executing: ${processArgs.joinToString(" ")}")
 

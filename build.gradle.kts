@@ -31,10 +31,13 @@ kotlin {
             }
         }
 
-        // Configure C interop for libseccomp
+        // Configure C interop for libseccomp and socket utilities
         compilations.getByName("main").cinterops {
             val libseccomp by creating {
                 // .def file is automatically found at src/nativeInterop/cinterop/libseccomp.def
+            }
+            val socket by creating {
+                // .def file is automatically found at src/nativeInterop/cinterop/socket.def
             }
         }
     }

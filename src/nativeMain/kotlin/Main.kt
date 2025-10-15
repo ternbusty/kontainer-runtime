@@ -105,23 +105,23 @@ fun createContainer(args: Array<String>) {
             mainReceiver.close()
             interSender.close()
             initSender.close()
-            initReceiver.close()
+            // Keep initReceiver - will be passed to init process
 
-            runIntermediateProcess(spec, rootfsPath, mainSender, interReceiver, notifyListener)
+            runIntermediateProcess(spec, rootfsPath, mainSender, interReceiver, initReceiver, notifyListener)
         }
 
         else -> {
             // Main process (parent process)
-            // Close senders that this process doesn't need
+            // Close senders and receivers that this process doesn't need
             mainSender.close()
             interReceiver.close()
-            initSender.close()
             initReceiver.close()
+            // Keep initSender - will be used to send messages to init process
 
             // Close notify listener in main process (only used by init process)
             notifyListener.close()
 
-            val initPid = runMainProcess(spec, intermediatePid, mainReceiver, interSender)
+            val initPid = runMainProcess(spec, containerId, bundlePath, intermediatePid, mainReceiver, interSender, initSender)
 
             // Save container state for start command
             Logger.info("container $containerId created with init PID $initPid")

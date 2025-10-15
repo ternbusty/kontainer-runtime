@@ -4,6 +4,8 @@ import channel.*
 import kotlinx.cinterop.*
 import logger.Logger
 import platform.posix.*
+import seccomp.sendToSeccompListener
+import spec.ContainerState
 import spec.Spec
 import utils.writeText
 
@@ -20,9 +22,12 @@ import utils.writeText
 @OptIn(ExperimentalForeignApi::class)
 fun runMainProcess(
     spec: Spec,
+    containerId: String,
+    bundlePath: String,
     intermediatePid: Int,
     mainReceiver: MainReceiver,
-    interSender: IntermediateSender
+    interSender: IntermediateSender,
+    initSender: InitSender
 ): Int = memScoped {
     Logger.setContext("main")
     Logger.debug("started, intermediate pid=$intermediatePid")
@@ -103,6 +108,45 @@ fun runMainProcess(
     }
     Logger.debug("received init pid=$initPid")
 
+    // Check if seccomp notify is used in the spec
+    val hasSeccompNotify = spec.linux?.seccomp?.syscalls?.any { it.action == "SCMP_ACT_NOTIFY" } ?: false
+    if (hasSeccompNotify) {
+        Logger.debug("seccomp notify is enabled, waiting for notify FD")
+        try {
+            val notifyFd = mainReceiver.waitForSeccompRequest()
+            Logger.debug("received seccomp notify FD: $notifyFd")
+
+            // If listenerPath is specified, forward the FD to the listener
+            spec.linux.seccomp?.listenerPath?.let { listenerPath ->
+                Logger.debug("forwarding seccomp notify FD to listener: $listenerPath")
+                try {
+                    val containerState = ContainerState(
+                        ociVersion = spec.ociVersion,
+                        id = containerId,
+                        status = "creating",
+                        pid = initPid,
+                        bundle = bundlePath,
+                        annotations = null
+                    )
+                    sendToSeccompListener(listenerPath, containerState, notifyFd)
+                    Logger.debug("forwarded seccomp notify FD to listener")
+                } catch (e: Exception) {
+                    Logger.error("failed to forward seccomp notify FD: ${e.message}")
+                    _exit(1)
+                }
+            } ?: run {
+                Logger.warn("seccomp notify FD received but no listenerPath specified")
+            }
+
+            // Send completion signal to init process
+            initSender.seccompNotifyDone()
+            Logger.debug("sent seccomp notify done signal")
+        } catch (e: Exception) {
+            Logger.error("error handling seccomp notify: ${e.message ?: "unknown"}")
+            _exit(1)
+        }
+    }
+
     // Wait for init process to be ready
     try {
         mainReceiver.waitForInitReady()
@@ -112,8 +156,9 @@ fun runMainProcess(
         _exit(1)
     }
 
-    // Close main receiver
+    // Close channels
     mainReceiver.close()
+    initSender.close()
 
     // Wait for intermediate process to exit
     val st = alloc<IntVar>()

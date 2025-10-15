@@ -1,0 +1,20 @@
+headers = sys/socket.h sys/un.h
+headerFilter = sys/socket.h sys/un.h
+package = platform.linux
+---
+
+static inline size_t _CMSG_SPACE(size_t len) {
+    return CMSG_SPACE(len);
+}
+
+static inline size_t _CMSG_LEN(size_t len) {
+    return CMSG_LEN(len);
+}
+
+static inline struct cmsghdr *_CMSG_FIRSTHDR(struct msghdr *msg) {
+    return CMSG_FIRSTHDR(msg);
+}
+
+static inline unsigned char *_CMSG_DATA(struct cmsghdr *cmsg) {
+    return CMSG_DATA(cmsg);
+}

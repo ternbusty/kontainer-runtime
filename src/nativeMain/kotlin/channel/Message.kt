@@ -21,6 +21,12 @@ sealed class Message {
     object MappingWritten : Message()
 
     @Serializable
+    object SeccompNotify : Message()
+
+    @Serializable
+    object SeccompNotifyDone : Message()
+
+    @Serializable
     data class ExecFailed(val error: String) : Message()
 
     @Serializable

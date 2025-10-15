@@ -82,16 +82,25 @@ private fun translateOp(op: String): UInt {
 }
 
 /**
+ * Check if seccomp config uses SCMP_ACT_NOTIFY action
+ */
+private fun hasNotifyAction(seccomp: LinuxSeccomp): Boolean {
+    return seccomp.syscalls?.any { it.action == "SCMP_ACT_NOTIFY" } ?: false
+}
+
+/**
  * Initialize and load seccomp filter based on OCI spec
+ *
+ * @return notify FD if SCMP_ACT_NOTIFY is used, null otherwise, or throws on error
  */
 @OptIn(ExperimentalForeignApi::class)
-fun initializeSeccomp(seccomp: LinuxSeccomp): Int {
+fun initializeSeccomp(seccomp: LinuxSeccomp): Int? {
     Logger.debug("initializing seccomp filter")
 
     // Validation: SCMP_ACT_NOTIFY cannot be used as default action
     if (seccomp.defaultAction == "SCMP_ACT_NOTIFY") {
         Logger.error("SCMP_ACT_NOTIFY cannot be used as default action")
-        return -1
+        throw Exception("SCMP_ACT_NOTIFY cannot be used as default action")
     }
 
     // Create filter context with default action
@@ -99,7 +108,7 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int {
     val ctx = seccomp_init(defaultAction) ?: run {
         perror("seccomp_init")
         Logger.error("Failed to initialize seccomp context")
-        return -1
+        throw Exception("Failed to initialize seccomp context")
     }
 
     try {
@@ -131,12 +140,30 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int {
         if (seccomp_load(ctx) < 0) {
             perror("seccomp_load")
             Logger.error("Failed to load seccomp filter")
-            return -1
+            throw Exception("Failed to load seccomp filter")
         }
 
         Logger.debug("seccomp filter loaded successfully")
-        return 0
+
+        // If SCMP_ACT_NOTIFY is used, get the notify FD
+        val notifyFd = if (hasNotifyAction(seccomp)) {
+            val fd = seccomp_notify_fd(ctx)
+            if (fd < 0) {
+                perror("seccomp_notify_fd")
+                Logger.error("Failed to get seccomp notify FD")
+                throw Exception("Failed to get seccomp notify FD")
+            }
+            Logger.debug("obtained seccomp notify FD: $fd")
+            fd
+        } else {
+            null
+        }
+
+        return notifyFd
     } finally {
+        // Note: Don't release ctx yet if we're returning a notify FD,
+        // as the FD is associated with the context. However, seccomp_load
+        // already committed the filter to the kernel, so it's safe to release.
         seccomp_release(ctx)
     }
 }

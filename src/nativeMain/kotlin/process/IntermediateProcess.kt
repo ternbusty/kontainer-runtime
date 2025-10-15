@@ -27,6 +27,7 @@ fun runIntermediateProcess(
     rootfsPath: String,
     mainSender: MainSender,
     interReceiver: IntermediateReceiver,
+    initReceiver: InitReceiver,
     notifyListener: NotifyListener
 ): Unit = memScoped {
     Logger.setContext("intermediate")
@@ -150,7 +151,10 @@ fun runIntermediateProcess(
 
     if (initPid == 0) {
         // Init process
-        runInitProcess(spec, rootfsPath, mainSender, notifyListener)
+        // Close interReceiver in init process (not needed)
+        interReceiver.close()
+
+        runInitProcess(spec, rootfsPath, mainSender, initReceiver, notifyListener)
         _exit(0)
     } else {
         // Intermediate process: send init PID to main process
@@ -165,6 +169,7 @@ fun runIntermediateProcess(
         // Close channels (no more communication needed)
         mainSender.close()
         interReceiver.close()
+        initReceiver.close()
 
         // Wait for init process to exit
         val st = alloc<IntVar>()

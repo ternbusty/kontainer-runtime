@@ -1,6 +1,7 @@
 package channel
 
 import kotlinx.cinterop.*
+import platform.linux.*
 import platform.posix.*
 
 /*
@@ -64,6 +65,116 @@ private fun receiveMessage(socket: Int): Message {
 }
 
 /**
+ * Send a message with a file descriptor using SCM_RIGHTS
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun sendMessageWithFd(socket: Int, message: Message, fd: Int) {
+    val json = MessageCodec.encode(message)
+    val bytes = json.encodeToByteArray()
+
+    memScoped {
+        // Prepare iovec for message data
+        val iov = alloc<iovec>()
+        iov.iov_base = bytes.refTo(0).getPointer(this)
+        iov.iov_len = bytes.size.toULong()
+
+        // Prepare control message (cmsg) for file descriptor
+        val cmsgSpace = _CMSG_SPACE(sizeOf<IntVar>().toULong())
+        val cmsgBuf = allocArray<ByteVar>(cmsgSpace.toInt())
+
+        // Prepare msghdr
+        val msg = alloc<msghdr>()
+        msg.msg_name = null
+        msg.msg_namelen = 0u
+        msg.msg_iov = iov.ptr
+        msg.msg_iovlen = 1u
+        msg.msg_control = cmsgBuf
+        msg.msg_controllen = cmsgSpace
+        msg.msg_flags = 0
+
+        // Set up control message header
+        val cmsg = _CMSG_FIRSTHDR(msg.ptr)
+        if (cmsg != null) {
+            cmsg.pointed.cmsg_level = SOL_SOCKET
+            cmsg.pointed.cmsg_type = SCM_RIGHTS
+            cmsg.pointed.cmsg_len = _CMSG_LEN(sizeOf<IntVar>().toULong())
+
+            // Copy file descriptor into control message data
+            val dataPtr = _CMSG_DATA(cmsg)
+            if (dataPtr != null) {
+                dataPtr.reinterpret<IntVar>().pointed.value = fd
+            }
+        }
+
+        val sent = sendmsg(socket, msg.ptr, 0)
+        if (sent == -1L) {
+            perror("sendmsg")
+            throw Exception("Failed to send message with FD")
+        }
+    }
+}
+
+/**
+ * Receive a message with a file descriptor using SCM_RIGHTS
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun receiveMessageWithFd(socket: Int): Pair<Message, Int> {
+    memScoped {
+        // Prepare buffer for message data
+        val buffer = allocArray<ByteVar>(4096)
+        val iov = alloc<iovec>()
+        iov.iov_base = buffer
+        iov.iov_len = 4095u
+
+        // Prepare buffer for control message
+        val cmsgSpace = _CMSG_SPACE(sizeOf<IntVar>().toULong())
+        val cmsgBuf = allocArray<ByteVar>(cmsgSpace.toInt())
+
+        // Prepare msghdr
+        val msg = alloc<msghdr>()
+        msg.msg_name = null
+        msg.msg_namelen = 0u
+        msg.msg_iov = iov.ptr
+        msg.msg_iovlen = 1u
+        msg.msg_control = cmsgBuf
+        msg.msg_controllen = cmsgSpace
+        msg.msg_flags = 0
+
+        val received = recvmsg(socket, msg.ptr, 0)
+        if (received == -1L) {
+            perror("recvmsg")
+            throw Exception("Failed to receive message with FD")
+        }
+        if (received == 0L) {
+            throw Exception("Connection closed")
+        }
+
+        // Extract message data
+        buffer[received.toInt()] = 0
+        val json = buffer.toKString()
+        val message = MessageCodec.decode(json)
+
+        // Extract file descriptor from control message
+        var receivedFd = -1
+        val cmsg = _CMSG_FIRSTHDR(msg.ptr)
+        if (cmsg != null) {
+            if (cmsg.pointed.cmsg_level == SOL_SOCKET && cmsg.pointed.cmsg_type == SCM_RIGHTS) {
+                val dataPtr = _CMSG_DATA(cmsg)
+                if (dataPtr != null) {
+                    receivedFd = dataPtr.reinterpret<IntVar>().pointed.value
+                }
+            }
+        }
+
+        if (receivedFd == -1) {
+            throw Exception("Failed to extract FD from control message")
+        }
+
+        return Pair(message, receivedFd)
+    }
+}
+
+/**
  * Main Channel - for communication from intermediate/init to main process
  */
 class MainSender(private val socket: Int) {
@@ -77,6 +188,10 @@ class MainSender(private val socket: Int) {
 
     fun initReady() {
         sendMessage(socket, Message.InitReady)
+    }
+
+    fun seccompNotifyRequest(fd: Int) {
+        sendMessageWithFd(socket, Message.SeccompNotify, fd)
     }
 
     fun execFailed(error: String) {
@@ -117,6 +232,16 @@ class MainReceiver(private val socket: Int) {
             is Message.ExecFailed -> throw Exception("Exec failed: ${msg.error}")
             is Message.OtherError -> throw Exception("Error: ${msg.error}")
             else -> throw Exception("Unexpected message: $msg, expected InitReady")
+        }
+    }
+
+    fun waitForSeccompRequest(): Int {
+        val (msg, fd) = receiveMessageWithFd(socket)
+        return when (msg) {
+            is Message.SeccompNotify -> fd
+            is Message.ExecFailed -> throw Exception("Exec failed: ${msg.error}")
+            is Message.OtherError -> throw Exception("Error: ${msg.error}")
+            else -> throw Exception("Unexpected message: $msg, expected SeccompNotify")
         }
     }
 
@@ -165,12 +290,23 @@ fun intermediateChannel(): Pair<IntermediateSender, IntermediateReceiver> {
  * Init Channel - for communication from main to init process (reserved for future use like seccomp)
  */
 class InitSender(private val socket: Int) {
+    fun seccompNotifyDone() {
+        sendMessage(socket, Message.SeccompNotifyDone)
+    }
+
     fun close() {
         close(socket)
     }
 }
 
 class InitReceiver(private val socket: Int) {
+    fun waitForSeccompRequestDone() {
+        when (val msg = receiveMessage(socket)) {
+            is Message.SeccompNotifyDone -> return
+            else -> throw Exception("Unexpected message: $msg, expected SeccompNotifyDone")
+        }
+    }
+
     fun close() {
         close(socket)
     }
