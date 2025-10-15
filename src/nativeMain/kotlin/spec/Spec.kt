@@ -69,15 +69,6 @@ data class LinuxCpu(
 
 /**
  * Linux resource limits
- *
- * KNOWN ISSUE (Kotlin/Native 2.1.0 + kotlinx.serialization 1.8.0):
- * Deserializing a JSON object with BOTH memory and cpu fields simultaneously
- * causes "double free or corruption" error. Each field works correctly when
- * deserialized alone.
- *
- * Workaround: Use either memory OR cpu, not both at the same time.
- * This appears to be a bug in Kotlin/Native's serialization implementation
- * for nested nullable data classes.
  */
 @Serializable
 data class LinuxResources(

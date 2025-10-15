@@ -62,6 +62,11 @@
     "resources": {
       "memory": {
         "limit": 536870912
+      },
+      "cpu": {
+        "shares": 1024,
+        "quota": 50000,
+        "period": 100000
       }
     },
     "seccomp": {
