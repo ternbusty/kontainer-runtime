@@ -7,6 +7,7 @@ import platform.posix.*
 import rootfs.pivotRoot
 import rootfs.prepareRootfs
 import spec.Spec
+import syscall.closeRange
 
 /**
  * Init process - Init process inside container (PID 1)
@@ -28,6 +29,14 @@ fun runInitProcess(
     notifyListener: NotifyListener
 ) {
     fprintf(stderr, "init: started, pid=%d ppid=%d\n", getpid(), getppid())
+
+    // Create new session and become session leader (detach from controlling terminal)
+    if (setsid() == -1) {
+        perror("setsid")
+        mainSender.sendError("Failed to create new session")
+        _exit(1)
+    }
+    fprintf(stderr, "init: created new session (sid=%d)\n", getsid(0))
 
     try {
         // Set hostname (within UTS namespace)
@@ -69,7 +78,21 @@ fun runInitProcess(
         }
         // After null check, we can safely use !! since we exited above if null/empty
         val processArgs = spec.process!!.args!!
-        val processEnv = spec.process.env ?: emptyList()
+        val processEnv = spec.process.env?.toMutableList() ?: mutableListOf()
+
+        // Handle LISTEN_FDS for systemd socket activation
+        // See https://www.freedesktop.org/software/systemd/man/sd_listen_fds.html
+        val listenFds = getenv("LISTEN_FDS")?.toKString()?.toIntOrNull() ?: 0
+        val preserveFds = if (listenFds > 0) {
+            // LISTEN_FDS will be passed to container init process
+            // LISTEN_PID will be set to PID 1 (init process in container)
+            processEnv.add("LISTEN_FDS=$listenFds")
+            processEnv.add("LISTEN_PID=1")
+            fprintf(stderr, "init: preserving %d FDs for systemd socket activation\n", listenFds)
+            listenFds
+        } else {
+            0
+        }
 
         // Set UID/GID to spec.process.user values before executing container process
         // Note: setgid must be called before setuid (once we drop to non-root, we can't setgid)
@@ -99,6 +122,12 @@ fun runInitProcess(
 
         // Close main sender (no more messages to send)
         mainSender.close()
+
+        // Cleanup extra file descriptors to prevent FD leaks (CVE-2024-21626)
+        // This sets FD_CLOEXEC on all FDs >= 3 + preserveFds, so they will be
+        // automatically closed when execve is called. We do this late (after
+        // sending init_ready) to avoid closing the channel pipes prematurely.
+        closeRange(preserveFds)
 
         // Wait for start signal from notify socket
         fprintf(stderr, "init: waiting for start signal...\n")
