@@ -1,6 +1,8 @@
 package rootfs
 
-import kotlinx.cinterop.*
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.cstr
+import kotlinx.cinterop.memScoped
 import platform.linux.__NR_pivot_root
 import platform.posix.*
 
@@ -152,7 +154,6 @@ fun createDeviceNodes(devPath: String) {
 
 /**
  * Perform pivot_root to change root filesystem
- * Uses youki's approach: pivot_root(newroot, newroot) with MS_SLAVE to avoid .old_root issues
  */
 @OptIn(ExperimentalForeignApi::class)
 fun pivotRoot(newRoot: String) {

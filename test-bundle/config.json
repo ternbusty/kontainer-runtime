@@ -39,6 +39,12 @@
         "hostID": 100000,
         "size": 65536
       }
-    ]
+    ],
+    "cgroupsPath": "kontainer-test",
+    "resources": {
+      "memory": {
+        "limit": 536870912
+      }
+    }
   }
 }

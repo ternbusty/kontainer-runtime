@@ -41,13 +41,6 @@ data class User(
 )
 
 @Serializable
-data class Linux(
-    val namespaces: List<Namespace>? = null,
-    val uidMappings: List<LinuxIdMapping>? = null,
-    val gidMappings: List<LinuxIdMapping>? = null
-)
-
-@Serializable
 data class Namespace(
     val type: String
 )
@@ -59,6 +52,47 @@ data class LinuxIdMapping(
     val size: UInt
 )
 
+@Serializable
+data class LinuxMemory(
+    val limit: Long? = null,
+    val reservation: Long? = null,
+    val swap: Long? = null
+)
+
+@Serializable
+data class LinuxCpu(
+    val shares: Long? = null,
+    val quota: Long? = null,
+    val period: Long? = null
+)
+
+/**
+ * Linux resource limits
+ *
+ * KNOWN ISSUE (Kotlin/Native 2.1.0 + kotlinx.serialization 1.8.0):
+ * Deserializing a JSON object with BOTH memory and cpu fields simultaneously
+ * causes "double free or corruption" error. Each field works correctly when
+ * deserialized alone.
+ *
+ * Workaround: Use either memory OR cpu, not both at the same time.
+ * This appears to be a bug in Kotlin/Native's serialization implementation
+ * for nested nullable data classes.
+ */
+@Serializable
+data class LinuxResources(
+    val memory: LinuxMemory? = null,
+    val cpu: LinuxCpu? = null
+)
+
+@Serializable
+data class Linux(
+    val namespaces: List<Namespace>? = null,
+    val uidMappings: List<LinuxIdMapping>? = null,
+    val gidMappings: List<LinuxIdMapping>? = null,
+    val resources: LinuxResources? = null,
+    val cgroupsPath: String? = null
+)
+
 /**
  * Load OCI spec from config.json file
  */
@@ -68,7 +102,7 @@ fun loadSpec(configPath: String): Spec {
 
     try {
         // Read entire file into memory
-        memScoped {
+        val json = memScoped {
             val buffer = StringBuilder()
             val chunk = allocArray<ByteVar>(1024)
 
@@ -80,9 +114,15 @@ fun loadSpec(configPath: String): Spec {
                 buffer.append(chunk.toKString())
             }
 
-            val json = buffer.toString()
-            return Json { ignoreUnknownKeys = true }.decodeFromString(json)
+            buffer.toString()
         }
+
+        val jsonParser = Json {
+            ignoreUnknownKeys = true
+            isLenient = true
+            coerceInputValues = true
+        }
+        return jsonParser.decodeFromString<Spec>(json)
     } finally {
         fclose(fp)
     }

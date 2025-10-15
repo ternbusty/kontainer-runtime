@@ -1,5 +1,6 @@
 package process
 
+import cgroup.setupCgroup
 import kotlinx.cinterop.*
 import platform.linux.__NR_unshare
 import platform.posix.*
@@ -23,6 +24,11 @@ fun runIntermediateProcess(
     socket: Int
 ): Unit = memScoped {
     close(socket)  // Close socket used by parent
+
+    // Setup cgroup BEFORE entering user namespace
+    // At this point, intermediate process still has host root privileges (inherited from parent)
+    // This allows creation of cgroup directories in /sys/fs/cgroup/
+    setupCgroup(getpid(), spec.linux?.cgroupsPath, spec.linux?.resources)
 
     // First, unshare user namespace
     if (hasNamespace(spec.linux?.namespaces, "user")) {
