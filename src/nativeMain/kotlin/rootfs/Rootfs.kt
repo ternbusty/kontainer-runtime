@@ -55,13 +55,6 @@ fun umount2(target: String, flags: Int): Int {
 }
 
 /**
- * Create device number (major, minor)
- */
-fun makedev(major: UInt, minor: UInt): ULong {
-    return ((major.toULong() shl 8) or minor.toULong())
-}
-
-/**
  * Prepare rootfs with basic mounts
  */
 @OptIn(ExperimentalForeignApi::class)
@@ -130,27 +123,73 @@ fun prepareRootfs(rootfsPath: String) {
 }
 
 /**
+ * Create a single device node using bind mount approach
+ *
+ * This approach works in user namespaces where mknod() would fail with EPERM.
+ * Instead of using mknod(), we:
+ * 1. Create an empty file
+ * 2. Bind mount the host device onto that file
+ *
+ * @param path Full path to the device node in container
+ * @param name Device name for logging and locating host device
+ * @throws Exception if device creation fails
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun createDeviceNode(path: String, name: String) {
+    // Create empty file first
+    // Mode 0666 for device files
+    val fd = open(path, O_RDWR or O_CREAT, 0x1B6u)
+    if (fd == -1) {
+        val errNum = errno
+        if (errNum == EEXIST) {
+            // File already exists - this is OK, we'll try to mount over it
+            Logger.debug("file for device $name already exists at $path")
+        } else {
+            // Other errors are failures
+            perror("open $name")
+            Logger.error("failed to create file for device $name at $path (errno=$errNum)")
+            throw Exception("Failed to create file for device node: $name")
+        }
+    } else {
+        // Successfully created file, close it
+        close(fd)
+        Logger.debug("created file for device $name at $path")
+    }
+
+    // Bind mount host device onto the file
+    val hostDevPath = "/dev/$name"
+    if (mountFs(
+            source = hostDevPath,
+            target = path,
+            fstype = null,
+            flags = MS_BIND.toULong()
+        ) != 0
+    ) {
+        val errNum = errno
+        // EBUSY means device is already mounted - this is OK
+        if (errNum == EBUSY) {
+            Logger.debug("device $name already mounted at $path")
+        } else {
+            // Other errors are failures
+            perror("bind mount $name")
+            Logger.error("failed to bind mount $hostDevPath to $path (errno=$errNum)")
+            throw Exception("Failed to bind mount device: $name")
+        }
+    } else {
+        Logger.debug("bind mounted $hostDevPath to $path")
+    }
+}
+
+/**
  * Create essential device nodes in /dev
  */
 @OptIn(ExperimentalForeignApi::class)
 fun createDeviceNodes(devPath: String) {
-    // Create /dev/null (character device 1,3 with mode 0666)
-    val nullPath = "$devPath/null"
-    mknod(nullPath, (S_IFCHR.toInt() or 0x1B6).toUInt(), makedev(1u, 3u))
-
-    // Create /dev/zero (character device 1,5 with mode 0666)
-    val zeroPath = "$devPath/zero"
-    mknod(zeroPath, (S_IFCHR.toInt() or 0x1B6).toUInt(), makedev(1u, 5u))
-
-    // Create /dev/random (character device 1,8 with mode 0666)
-    val randomPath = "$devPath/random"
-    mknod(randomPath, (S_IFCHR.toInt() or 0x1B6).toUInt(), makedev(1u, 8u))
-
-    // Create /dev/urandom (character device 1,9 with mode 0666)
-    val urandomPath = "$devPath/urandom"
-    mknod(urandomPath, (S_IFCHR.toInt() or 0x1B6).toUInt(), makedev(1u, 9u))
-
-    Logger.debug("created device nodes in $devPath")
+    createDeviceNode("$devPath/null", "null")
+    createDeviceNode("$devPath/zero", "zero")
+    createDeviceNode("$devPath/random", "random")
+    createDeviceNode("$devPath/urandom", "urandom")
+    Logger.debug("finished creating device nodes in $devPath")
 }
 
 /**
