@@ -36,7 +36,17 @@ fun runIntermediateProcess(
     // Setup cgroup BEFORE entering user namespace
     // At this point, intermediate process still has host root privileges (inherited from parent)
     // This allows creation of cgroup directories in /sys/fs/cgroup/
-    setupCgroup(getpid(), spec.linux?.cgroupsPath, spec.linux?.resources)
+    try {
+        setupCgroup(getpid(), spec.linux?.cgroupsPath, spec.linux?.resources)
+    } catch (e: Exception) {
+        Logger.error("Failed to setup cgroup: ${e.message ?: "unknown"}")
+        try {
+            mainSender.sendError("Failed to setup cgroup: ${e.message}")
+        } catch (sendErr: Exception) {
+            Logger.warn("Failed to send error message to main process: ${sendErr.message ?: "unknown"}")
+        }
+        _exit(1)
+    }
 
     // First, unshare user namespace
     if (hasNamespace(spec.linux?.namespaces, "user")) {
@@ -46,7 +56,7 @@ fun runIntermediateProcess(
             try {
                 mainSender.sendError("Failed to unshare user namespace")
             } catch (e: Exception) {
-                // Ignore error sending
+                Logger.warn("Failed to send error message to main process: ${e.message ?: "unknown"}")
             }
             _exit(1)
         }
@@ -77,7 +87,7 @@ fun runIntermediateProcess(
         try {
             mainSender.sendError("Failed to setuid/setgid")
         } catch (e: Exception) {
-            // Ignore
+            Logger.warn("Failed to send error message to main process: ${e.message ?: "unknown"}")
         }
         _exit(1)
     }
@@ -102,7 +112,7 @@ fun runIntermediateProcess(
                             try {
                                 mainSender.sendError("Failed to unshare ${ns.type} namespace")
                             } catch (e: Exception) {
-                                // Ignore
+                                Logger.warn("Failed to send error message to main process: ${e.message ?: "unknown"}")
                             }
                             _exit(1)
                         }
@@ -115,7 +125,7 @@ fun runIntermediateProcess(
             try {
                 mainSender.sendError("Failed to unshare namespaces: ${e.message}")
             } catch (sendErr: Exception) {
-                // Ignore
+                Logger.warn("Failed to send error message to main process: ${sendErr.message ?: "unknown"}")
             }
             _exit(1)
         }
@@ -129,7 +139,7 @@ fun runIntermediateProcess(
             try {
                 mainSender.sendError("Failed to unshare PID namespace")
             } catch (e: Exception) {
-                // Ignore
+                Logger.warn("Failed to send error message to main process: ${e.message ?: "unknown"}")
             }
             _exit(1)
         }
@@ -144,7 +154,7 @@ fun runIntermediateProcess(
         try {
             mainSender.sendError("Failed to fork init process")
         } catch (e: Exception) {
-            // Ignore
+            Logger.warn("Failed to send error message to main process: ${e.message ?: "unknown"}")
         }
         _exit(1)
     }

@@ -55,21 +55,34 @@ fun setupCgroup(pid: Int, cgroupPath: String?, resources: LinuxResources?) {
         }
 
         // Enable controllers in subtree_control
-        // We enable both memory and cpu controllers
-        val controllers = listOf("memory", "cpu")
-        val subtreeControlPath = "$CGROUP_ROOT/$CGROUP_SUBTREE_CONTROL"
+        // Only enable controllers that are actually needed based on resources
+        val requiredControllers = getRequiredControllers(resources)
+        if (requiredControllers.isNotEmpty()) {
+            val subtreeControlPath = "$CGROUP_ROOT/$CGROUP_SUBTREE_CONTROL"
 
-        for (controller in controllers) {
-            val cmd = "+$controller"
-            val file = fopen(subtreeControlPath, "w")
-            if (file != null) {
-                if (fprintf(file, "%s", cmd.cstr.ptr) < 0) {
-                    perror("write subtree_control")
-                    Logger.warn("failed to enable $controller controller")
+            for (controller in requiredControllers) {
+                val cmd = "+$controller"
+                val file = fopen(subtreeControlPath, "w")
+                if (file != null) {
+                    if (fprintf(file, "%s", cmd.cstr.ptr) < 0) {
+                        val errNum = errno
+                        fclose(file)
+                        // EEXIST means controller is already enabled, which is OK
+                        if (errNum != EEXIST) {
+                            perror("write subtree_control")
+                            Logger.error("failed to enable $controller controller")
+                            throw Exception("Failed to enable required cgroup controller: $controller")
+                        }
+                        Logger.debug("$controller controller already enabled")
+                    } else {
+                        Logger.debug("enabled $controller controller")
+                    }
+                    fclose(file)
                 } else {
-                    Logger.debug("enabled $controller controller")
+                    perror("open subtree_control")
+                    Logger.error("failed to open subtree_control")
+                    throw Exception("Failed to open cgroup subtree_control")
                 }
-                fclose(file)
             }
         }
 
@@ -218,4 +231,27 @@ private fun writeCgroupFile(path: String, value: String, name: String) {
             Logger.warn("failed to open $name")
         }
     }
+}
+
+/**
+ * Determine which controllers are required based on resource configuration
+ */
+private fun getRequiredControllers(resources: LinuxResources?): List<String> {
+    if (resources == null) {
+        return emptyList()
+    }
+
+    val controllers = mutableListOf<String>()
+
+    // Memory controller needed if any memory limit is specified
+    if (resources.memory != null) {
+        controllers.add("memory")
+    }
+
+    // CPU controller needed if any CPU limit is specified
+    if (resources.cpu != null) {
+        controllers.add("cpu")
+    }
+
+    return controllers
 }
