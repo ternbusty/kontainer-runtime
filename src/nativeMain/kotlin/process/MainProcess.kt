@@ -1,5 +1,6 @@
 package process
 
+import channel.*
 import kotlinx.cinterop.*
 import platform.posix.*
 import spec.Spec
@@ -9,38 +10,31 @@ import utils.writeText
  * Main process - Parent process
  *
  * Responsibilities:
- * - Receive UID/GID mapping request from intermediate process
+ * - Wait for UID/GID mapping request from intermediate process
  * - Write mappings to /proc/<pid>/uid_map and /proc/<pid>/gid_map
+ * - Wait for intermediate process to send init PID
+ * - Wait for init process to be ready
  * - Wait for intermediate process to exit
  */
 @OptIn(ExperimentalForeignApi::class)
 fun runMainProcess(
     spec: Spec,
-    pid: Int,
-    socket: Int
-): Unit = memScoped {
-    // Receive MAP request from intermediate process
-    val buf = allocArray<ByteVar>(128)
-    val n = recv(socket, buf, 127.toULong(), 0)
-    if (n == -1L) {
-        perror("recv(map request)")
-        close(socket)
-        exit(1)
-    }
-    buf[n.toInt()] = 0
-    val s = buf.toKString().trim()
+    intermediatePid: Int,
+    mainReceiver: MainReceiver,
+    interSender: IntermediateSender
+): Int = memScoped {
+    fprintf(stderr, "main: started, intermediate pid=%d\n", intermediatePid)
 
-    // Format: MAP <pid>
-    val parts = s.split(" ")
-    if (parts.size != 2 || parts[0] != "MAP") {
-        fprintf(stderr, "parent: bad request: %s\n", s)
-        close(socket)
-        exit(1)
+    // Wait for UID/GID mapping request from intermediate process
+    try {
+        mainReceiver.waitForMappingRequest()
+        fprintf(stderr, "main: received mapping request\n")
+    } catch (e: Exception) {
+        fprintf(stderr, "main: error waiting for mapping request: %s\n", e.message ?: "unknown")
+        _exit(1)
     }
-    val targetPid = parts[1].toInt()
-    fprintf(stderr, "parent: mapping for pid=%d\n", targetPid)
 
-    // Get UID/GID mappings from spec, or use current euid/egid as fallback
+    // Get UID/GID mappings from spec
     val uidMappings = spec.linux?.uidMappings
     val gidMappings = spec.linux?.gidMappings
 
@@ -66,43 +60,67 @@ fun runMainProcess(
         "0 $hostGid 1\n"
     }
 
-    // Kernel requires disabling setgroups before writing gid_map
-    if (!writeText("/proc/$targetPid/setgroups", "deny\n")) {
+    // Kernel requires disabling setgroups before writing gid_map (CVE-2014-8989)
+    if (!writeText("/proc/$intermediatePid/setgroups", "deny\n")) {
         perror("write setgroups")
-        close(socket)
-        exit(1)
+        _exit(1)
     }
 
-    fprintf(stderr, "parent: writing uid_map: %s", uidMap.replace("\n", " "))
-    if (!writeText("/proc/$targetPid/uid_map", uidMap)) {
-        fprintf(stderr, "parent: failed to write uid_map\n")
-        close(socket)
-        exit(1)
+    fprintf(stderr, "main: writing uid_map for pid %d\n", intermediatePid)
+    if (!writeText("/proc/$intermediatePid/uid_map", uidMap)) {
+        fprintf(stderr, "main: failed to write uid_map\n")
+        _exit(1)
     }
 
-    fprintf(stderr, "parent: writing gid_map: %s", gidMap.replace("\n", " "))
-    if (!writeText("/proc/$targetPid/gid_map", gidMap)) {
-        fprintf(stderr, "parent: failed to write gid_map\n")
-        close(socket)
-        exit(1)
+    fprintf(stderr, "main: writing gid_map for pid %d\n", intermediatePid)
+    if (!writeText("/proc/$intermediatePid/gid_map", gidMap)) {
+        fprintf(stderr, "main: failed to write gid_map\n")
+        _exit(1)
     }
 
-    // Respond with mapping completion
-    val ack = "MAPPED\n"
-    if (send(socket, ack.cstr.ptr, ack.length.toULong(), 0) == -1L) {
-        perror("send(ack)")
-        close(socket)
-        exit(1)
+    // Notify intermediate process that mapping is written
+    try {
+        interSender.mappingWritten()
+        fprintf(stderr, "main: sent mapping written ack\n")
+    } catch (e: Exception) {
+        fprintf(stderr, "main: error sending mapping ack: %s\n", e.message ?: "unknown")
+        _exit(1)
     }
+
+    // Close intermediate sender (no more messages to send)
+    interSender.close()
+
+    // Wait for intermediate process to send init PID
+    val initPid: Int = try {
+        mainReceiver.waitForIntermediateReady()
+    } catch (e: Exception) {
+        fprintf(stderr, "main: error waiting for init pid: %s\n", e.message ?: "unknown")
+        _exit(1)
+        -1  // Never reached, but satisfies type checker
+    }
+    fprintf(stderr, "main: received init pid=%d\n", initPid)
+
+    // Wait for init process to be ready
+    try {
+        mainReceiver.waitForInitReady()
+        fprintf(stderr, "main: init process is ready\n")
+    } catch (e: Exception) {
+        fprintf(stderr, "main: error waiting for init ready: %s\n", e.message ?: "unknown")
+        _exit(1)
+    }
+
+    // Close main receiver
+    mainReceiver.close()
 
     // Wait for intermediate process to exit
     val st = alloc<IntVar>()
-    if (waitpid(pid, st.ptr, 0) == -1) {
+    if (waitpid(intermediatePid, st.ptr, 0) == -1) {
         perror("waitpid(intermediate)")
-        close(socket)
-        exit(1)
+        _exit(1)
     }
 
-    close(socket)
-    fprintf(stderr, "parent: done\n")
+    fprintf(stderr, "main: intermediate process exited\n")
+    fprintf(stderr, "main: container created with init pid=%d\n", initPid)
+
+    initPid  // Return value
 }

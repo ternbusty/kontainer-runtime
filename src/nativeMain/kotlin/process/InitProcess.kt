@@ -1,5 +1,6 @@
 package process
 
+import channel.*
 import kotlinx.cinterop.*
 import namespace.hasNamespace
 import platform.posix.*
@@ -15,11 +16,18 @@ import spec.Spec
  * - Prepare rootfs (mount /proc, /dev, /sys)
  * - Switch root with pivot_root
  * - Change to working directory
- * - Execute container process (currently sleep)
+ * - Send init ready signal to main process
+ * - Wait for start signal from notify socket
+ * - Execute container process
  */
 @OptIn(ExperimentalForeignApi::class)
-fun runInitProcess(spec: Spec, rootfsPath: String) {
-    fprintf(stderr, "init getpid=%d getppid=%d\n", getpid(), getppid())
+fun runInitProcess(
+    spec: Spec,
+    rootfsPath: String,
+    mainSender: MainSender,
+    notifyListener: NotifyListener
+) {
+    fprintf(stderr, "init: started, pid=%d ppid=%d\n", getpid(), getppid())
 
     try {
         // Set hostname (within UTS namespace)
@@ -79,6 +87,31 @@ fun runInitProcess(spec: Spec, rootfsPath: String) {
             _exit(1)
         }
         fprintf(stderr, "Set UID=%u GID=%u for container process\n", targetUid, targetGid)
+
+        // Send init ready signal to main process
+        try {
+            mainSender.initReady()
+            fprintf(stderr, "init: sent init ready signal\n")
+        } catch (e: Exception) {
+            fprintf(stderr, "init: failed to send init ready: %s\n", e.message ?: "unknown")
+            _exit(1)
+        }
+
+        // Close main sender (no more messages to send)
+        mainSender.close()
+
+        // Wait for start signal from notify socket
+        fprintf(stderr, "init: waiting for start signal...\n")
+        try {
+            notifyListener.waitForContainerStart()
+            fprintf(stderr, "init: received start signal, executing container process\n")
+        } catch (e: Exception) {
+            fprintf(stderr, "init: failed to wait for start signal: %s\n", e.message ?: "unknown")
+            _exit(1)
+        }
+
+        // Close notify listener
+        notifyListener.close()
 
         fprintf(stderr, "Executing: %s\n", processArgs.joinToString(" "))
 
