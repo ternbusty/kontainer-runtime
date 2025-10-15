@@ -3,6 +3,7 @@ package rootfs
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.cstr
 import kotlinx.cinterop.memScoped
+import logger.Logger
 import platform.linux.__NR_pivot_root
 import platform.posix.*
 
@@ -65,7 +66,7 @@ fun makedev(major: UInt, minor: UInt): ULong {
  */
 @OptIn(ExperimentalForeignApi::class)
 fun prepareRootfs(rootfsPath: String) {
-    fprintf(stderr, "Preparing rootfs at %s\n", rootfsPath)
+    Logger.debug("preparing rootfs at $rootfsPath")
 
     // Ensure rootfs directory exists
     if (access(rootfsPath, F_OK) != 0) {
@@ -83,9 +84,9 @@ fun prepareRootfs(rootfsPath: String) {
             ) != 0
         ) {
             perror("mount /proc")
-            fprintf(stderr, "Warning: failed to mount /proc\n")
+            Logger.warn("failed to mount /proc")
         } else {
-            fprintf(stderr, "Mounted /proc\n")
+            Logger.debug("mounted /proc")
         }
     }
 
@@ -101,9 +102,9 @@ fun prepareRootfs(rootfsPath: String) {
             ) != 0
         ) {
             perror("mount /dev")
-            fprintf(stderr, "Warning: failed to mount /dev\n")
+            Logger.warn("failed to mount /dev")
         } else {
-            fprintf(stderr, "Mounted /dev\n")
+            Logger.debug("mounted /dev")
 
             // Create essential device nodes
             createDeviceNodes(devPath)
@@ -121,9 +122,9 @@ fun prepareRootfs(rootfsPath: String) {
             ) != 0
         ) {
             perror("mount /sys")
-            fprintf(stderr, "Warning: failed to mount /sys\n")
+            Logger.warn("failed to mount /sys")
         } else {
-            fprintf(stderr, "Mounted /sys\n")
+            Logger.debug("mounted /sys")
         }
     }
 }
@@ -149,7 +150,7 @@ fun createDeviceNodes(devPath: String) {
     val urandomPath = "$devPath/urandom"
     mknod(urandomPath, (S_IFCHR.toInt() or 0x1B6).toUInt(), makedev(1u, 9u))
 
-    fprintf(stderr, "Created device nodes in %s\n", devPath)
+    Logger.debug("created device nodes in $devPath")
 }
 
 /**
@@ -157,7 +158,7 @@ fun createDeviceNodes(devPath: String) {
  */
 @OptIn(ExperimentalForeignApi::class)
 fun pivotRoot(newRoot: String) {
-    fprintf(stderr, "Pivoting root to %s\n", newRoot)
+    Logger.debug("pivoting root to $newRoot")
 
     // First, bind mount the rootfs to itself to make it a mount point
     // This is required for pivot_root to work
@@ -169,7 +170,7 @@ fun pivotRoot(newRoot: String) {
         ) != 0
     ) {
         perror("bind mount rootfs")
-        fprintf(stderr, "Warning: failed to bind mount rootfs, trying chroot instead\n")
+        Logger.warn("failed to bind mount rootfs, trying chroot instead")
         chrootInto(newRoot)
         return
     }
@@ -210,16 +211,16 @@ fun pivotRoot(newRoot: String) {
         ) != 0
     ) {
         perror("make old root slave")
-        fprintf(stderr, "Warning: failed to make old root slave\n")
+        Logger.warn("failed to make old root slave")
     }
 
     // Unmount the old root with lazy unmount
     // Since we used pivot_root(newroot, newroot), old root is at /
     if (umount2("/", MNT_DETACH) != 0) {
         perror("umount2 old root")
-        fprintf(stderr, "Warning: failed to unmount old root\n")
+        Logger.warn("failed to unmount old root")
     } else {
-        fprintf(stderr, "Unmounted old root\n")
+        Logger.debug("unmounted old root")
     }
 
     // Change to root directory of new rootfs
@@ -228,7 +229,7 @@ fun pivotRoot(newRoot: String) {
         throw Exception("Failed to chdir to /")
     }
 
-    fprintf(stderr, "Successfully pivoted root\n")
+    Logger.debug("successfully pivoted root")
 }
 
 /**
@@ -236,7 +237,7 @@ fun pivotRoot(newRoot: String) {
  */
 @OptIn(ExperimentalForeignApi::class)
 fun chrootInto(newRoot: String) {
-    fprintf(stderr, "Chrooting to %s\n", newRoot)
+    Logger.debug("chrooting to $newRoot")
 
     if (chroot(newRoot) != 0) {
         perror("chroot")
@@ -248,5 +249,5 @@ fun chrootInto(newRoot: String) {
         throw Exception("Failed to chdir to / after chroot")
     }
 
-    fprintf(stderr, "Successfully chrooted\n")
+    Logger.debug("successfully chrooted")
 }

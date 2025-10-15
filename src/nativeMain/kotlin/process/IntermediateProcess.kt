@@ -3,6 +3,7 @@ package process
 import cgroup.setupCgroup
 import channel.*
 import kotlinx.cinterop.*
+import logger.Logger
 import platform.linux.__NR_unshare
 import platform.posix.*
 import spec.Spec
@@ -28,7 +29,8 @@ fun runIntermediateProcess(
     interReceiver: IntermediateReceiver,
     notifyListener: NotifyListener
 ): Unit = memScoped {
-    fprintf(stderr, "intermediate: started, pid=%d\n", getpid())
+    Logger.setContext("intermediate")
+    Logger.debug("started, pid=${getpid()}")
 
     // Setup cgroup BEFORE entering user namespace
     // At this point, intermediate process still has host root privileges (inherited from parent)
@@ -39,6 +41,7 @@ fun runIntermediateProcess(
     if (hasNamespace(spec.linux?.namespaces, "user")) {
         if (syscall(__NR_unshare.toLong(), CLONE_NEWUSER) == -1L) {
             perror("unshare(CLONE_NEWUSER)")
+            Logger.error("Failed to unshare user namespace")
             try {
                 mainSender.sendError("Failed to unshare user namespace")
             } catch (e: Exception) {
@@ -46,24 +49,24 @@ fun runIntermediateProcess(
             }
             _exit(1)
         }
-        fprintf(stderr, "intermediate: unshared user namespace\n")
+        Logger.debug("unshared user namespace")
     }
 
     // Send mapping request to main process
     try {
         mainSender.identifierMappingRequest()
-        fprintf(stderr, "intermediate: sent mapping request\n")
+        Logger.debug("sent mapping request")
     } catch (e: Exception) {
-        fprintf(stderr, "intermediate: failed to send mapping request: %s\n", e.message ?: "unknown")
+        Logger.error("failed to send mapping request: ${e.message ?: "unknown"}")
         _exit(1)
     }
 
     // Wait for mapping completion from main process
     try {
         interReceiver.waitForMappingAck()
-        fprintf(stderr, "intermediate: received mapping ack\n")
+        Logger.debug("received mapping ack")
     } catch (e: Exception) {
-        fprintf(stderr, "intermediate: failed to receive mapping ack: %s\n", e.message ?: "unknown")
+        Logger.error("failed to receive mapping ack: ${e.message ?: "unknown"}")
         _exit(1)
     }
 
@@ -94,6 +97,7 @@ fun runIntermediateProcess(
                         }
                         if (syscall(__NR_unshare.toLong(), flag) == -1L) {
                             perror("unshare(${ns.type})")
+                            Logger.error("Failed to unshare ${ns.type} namespace")
                             try {
                                 mainSender.sendError("Failed to unshare ${ns.type} namespace")
                             } catch (e: Exception) {
@@ -101,12 +105,12 @@ fun runIntermediateProcess(
                             }
                             _exit(1)
                         }
-                        fprintf(stderr, "intermediate: unshared %s namespace\n", ns.type)
+                        Logger.debug("unshared ${ns.type} namespace")
                     }
                 }
             }
         } catch (e: Exception) {
-            fprintf(stderr, "intermediate: failed to unshare namespaces: %s\n", e.message ?: "unknown")
+            Logger.error("failed to unshare namespaces: ${e.message ?: "unknown"}")
             try {
                 mainSender.sendError("Failed to unshare namespaces: ${e.message}")
             } catch (sendErr: Exception) {
@@ -120,6 +124,7 @@ fun runIntermediateProcess(
     if (hasNamespace(spec.linux?.namespaces, "pid")) {
         if (syscall(__NR_unshare.toLong(), CLONE_NEWPID) == -1L) {
             perror("unshare(CLONE_NEWPID)")
+            Logger.error("Failed to unshare PID namespace")
             try {
                 mainSender.sendError("Failed to unshare PID namespace")
             } catch (e: Exception) {
@@ -127,13 +132,14 @@ fun runIntermediateProcess(
             }
             _exit(1)
         }
-        fprintf(stderr, "intermediate: unshared pid namespace\n")
+        Logger.debug("unshared pid namespace")
     }
 
     // Fork init process
     val initPid = fork()
     if (initPid == -1) {
         perror("fork(init)")
+        Logger.error("Failed to fork init process")
         try {
             mainSender.sendError("Failed to fork init process")
         } catch (e: Exception) {
@@ -150,9 +156,9 @@ fun runIntermediateProcess(
         // Intermediate process: send init PID to main process
         try {
             mainSender.intermediateReady(initPid)
-            fprintf(stderr, "intermediate: sent init pid=%d to main\n", initPid)
+            Logger.debug("sent init pid=$initPid to main")
         } catch (e: Exception) {
-            fprintf(stderr, "intermediate: failed to send init pid: %s\n", e.message ?: "unknown")
+            Logger.error("failed to send init pid: ${e.message ?: "unknown"}")
             _exit(1)
         }
 
@@ -164,9 +170,10 @@ fun runIntermediateProcess(
         val st = alloc<IntVar>()
         if (waitpid(initPid, st.ptr, 0) == -1) {
             perror("waitpid(init)")
+            Logger.error("Failed to wait for init process")
             _exit(1)
         }
-        fprintf(stderr, "intermediate: init process exited\n")
+        Logger.debug("init process exited")
         _exit(0)
     }
 }

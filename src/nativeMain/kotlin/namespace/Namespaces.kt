@@ -1,6 +1,7 @@
 package namespace
 
 import kotlinx.cinterop.*
+import logger.Logger
 import platform.linux.__NR_unshare
 import platform.posix.*
 import spec.Namespace
@@ -27,7 +28,7 @@ fun unshareNamespaces(namespaces: List<Namespace>) {
             "pid" -> CLONE_NEWPID
             "user" -> CLONE_NEWUSER
             else -> {
-                fprintf(stderr, "Unknown namespace type: %s\n", ns.type)
+                Logger.warn("unknown namespace type: ${ns.type}")
                 continue
             }
         }
@@ -37,7 +38,7 @@ fun unshareNamespaces(namespaces: List<Namespace>) {
             throw Exception("Failed to unshare ${ns.type} namespace")
         }
 
-        fprintf(stderr, "Unshared %s namespace\n", ns.type)
+        Logger.debug("unshared ${ns.type} namespace")
     }
 }
 

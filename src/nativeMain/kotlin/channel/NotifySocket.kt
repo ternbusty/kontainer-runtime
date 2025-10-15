@@ -1,6 +1,7 @@
 package channel
 
 import kotlinx.cinterop.*
+import logger.Logger
 import platform.linux.sockaddr_un
 import platform.posix.*
 
@@ -19,7 +20,7 @@ class NotifyListener(socketPath: String) {
     private val socket: Int
 
     init {
-        fprintf(stderr, "NotifyListener: creating socket at %s\n", socketPath)
+        Logger.debug("NotifyListener: creating socket at $socketPath")
 
         memScoped {
             // Create Unix domain socket
@@ -64,7 +65,7 @@ class NotifyListener(socketPath: String) {
                 throw Exception("Failed to listen on socket")
             }
 
-            fprintf(stderr, "NotifyListener: listening on %s (fd=%d)\n", socketPath, socket)
+            Logger.debug("NotifyListener: listening on $socketPath (fd=$socket)")
         }
     }
 
@@ -74,7 +75,7 @@ class NotifyListener(socketPath: String) {
      */
     fun waitForContainerStart() {
         memScoped {
-            fprintf(stderr, "NotifyListener: waiting for container start signal...\n")
+            Logger.debug("NotifyListener: waiting for container start signal...")
 
             // Accept connection
             val clientSocket = accept(socket, null, null)
@@ -95,7 +96,7 @@ class NotifyListener(socketPath: String) {
             buffer[n.toInt()] = 0
             val message = buffer.toKString()
 
-            fprintf(stderr, "NotifyListener: received: %s\n", message)
+            Logger.debug("NotifyListener: received: $message")
 
             close(clientSocket)
         }
@@ -113,7 +114,7 @@ class NotifyListener(socketPath: String) {
 @OptIn(ExperimentalForeignApi::class)
 class NotifySocket(private val socketPath: String) {
     fun notifyContainerStart() {
-        fprintf(stderr, "NotifySocket: connecting to %s\n", socketPath)
+        Logger.debug("NotifySocket: connecting to $socketPath")
 
         memScoped {
             // Create Unix domain socket
@@ -157,7 +158,7 @@ class NotifySocket(private val socketPath: String) {
                 throw Exception("Failed to send start message")
             }
 
-            fprintf(stderr, "NotifySocket: sent start signal\n")
+            Logger.debug("NotifySocket: sent start signal")
             close(sock)
         }
     }

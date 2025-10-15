@@ -1,6 +1,7 @@
 package syscall
 
 import kotlinx.cinterop.ExperimentalForeignApi
+import logger.Logger
 import platform.posix.*
 
 /**
@@ -30,7 +31,7 @@ private const val PR_SET_NO_NEW_PRIVS = 38
  */
 @OptIn(ExperimentalForeignApi::class)
 fun setNoNewPrivileges() {
-    fprintf(stderr, "Setting no_new_privileges...\n")
+    Logger.debug("setting no_new_privileges")
 
     val result = syscall(
         SYS_prctl,
@@ -43,9 +44,9 @@ fun setNoNewPrivileges() {
 
     if (result == -1L) {
         perror("prctl(PR_SET_NO_NEW_PRIVS)")
-        fprintf(stderr, "Warning: failed to set no_new_privileges\n")
+        Logger.warn("failed to set no_new_privileges")
         // Don't throw exception - this is a security enhancement
     } else {
-        fprintf(stderr, "Successfully set no_new_privileges\n")
+        Logger.debug("successfully set no_new_privileges")
     }
 }

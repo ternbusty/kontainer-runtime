@@ -1,9 +1,8 @@
 package syscall
 
 import kotlinx.cinterop.ExperimentalForeignApi
-import platform.posix.fprintf
+import logger.Logger
 import platform.posix.perror
-import platform.posix.stderr
 import platform.posix.syscall
 
 /**
@@ -32,7 +31,7 @@ fun closeRange(preserveFds: Int = 0) {
     val minFd = 3 + preserveFds  // stdin=0, stdout=1, stderr=2, then preserve_fds
     val maxFd = Int.MAX_VALUE
 
-    fprintf(stderr, "closeRange: setting CLOEXEC on FDs >= %d\n", minFd)
+    Logger.debug("setting CLOEXEC on FDs >= $minFd")
 
     val result = syscall(
         SYS_close_range,
@@ -43,10 +42,10 @@ fun closeRange(preserveFds: Int = 0) {
 
     if (result == -1L) {
         perror("close_range")
-        fprintf(stderr, "Warning: close_range syscall failed, FDs may leak\n")
+        Logger.warn("close_range syscall failed, FDs may leak")
         // Don't throw exception - this is a security enhancement, not critical for basic operation
         // Older kernels (< 5.11) don't support CLOSE_RANGE_CLOEXEC flag
     } else {
-        fprintf(stderr, "closeRange: successfully set CLOEXEC on FDs >= %d\n", minFd)
+        Logger.debug("successfully set CLOEXEC on FDs >= $minFd")
     }
 }

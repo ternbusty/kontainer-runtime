@@ -3,6 +3,7 @@ package process
 import channel.MainSender
 import channel.NotifyListener
 import kotlinx.cinterop.*
+import logger.Logger
 import namespace.hasNamespace
 import platform.posix.*
 import rootfs.pivotRoot
@@ -31,15 +32,17 @@ fun runInitProcess(
     mainSender: MainSender,
     notifyListener: NotifyListener
 ) {
-    fprintf(stderr, "init: started, pid=%d ppid=%d\n", getpid(), getppid())
+    Logger.setContext("init")
+    Logger.debug("started, pid=${getpid()} ppid=${getppid()}")
 
     // Create new session and become session leader (detach from controlling terminal)
     if (setsid() == -1) {
         perror("setsid")
+        Logger.error("Failed to create new session")
         mainSender.sendError("Failed to create new session")
         _exit(1)
     }
-    fprintf(stderr, "init: created new session (sid=%d)\n", getsid(0))
+    Logger.debug("created new session (sid=${getsid(0)})")
 
     // Set no_new_privileges if specified in the spec
     // This prevents the process from gaining new privileges through execve
@@ -53,13 +56,13 @@ fun runInitProcess(
     // We must do this before dropping capabilities/UID/GID.
     if (spec.process?.noNewPrivileges != true) {
         spec.linux?.seccomp?.let { seccomp ->
-            fprintf(stderr, "init: initializing seccomp filter (privileged path)\n")
+            Logger.debug("initializing seccomp filter (privileged path)")
             if (initializeSeccomp(seccomp) < 0) {
-                fprintf(stderr, "Error: failed to initialize seccomp\n")
+                Logger.error("Failed to initialize seccomp")
                 mainSender.sendError("Failed to initialize seccomp")
                 _exit(1)
             }
-            fprintf(stderr, "init: seccomp filter initialized successfully\n")
+            Logger.info("seccomp filter initialized successfully")
         }
     }
 
@@ -68,9 +71,9 @@ fun runInitProcess(
         spec.hostname?.let { hostname ->
             if (sethostname(hostname, hostname.length.toULong()) != 0) {
                 perror("sethostname")
-                fprintf(stderr, "Warning: failed to set hostname\n")
+                Logger.warn("failed to set hostname")
             } else {
-                fprintf(stderr, "Set hostname to %s\n", hostname)
+                Logger.debug("set hostname to $hostname")
             }
         }
 
@@ -79,26 +82,26 @@ fun runInitProcess(
             prepareRootfs(rootfsPath)
             pivotRoot(rootfsPath)
         } else {
-            fprintf(stderr, "No mount namespace, skipping rootfs preparation\n")
+            Logger.debug("no mount namespace, skipping rootfs preparation")
         }
 
         // Change to working directory
         val cwd = spec.process?.cwd ?: "/"
         if (chdir(cwd) != 0) {
             perror("chdir")
-            fprintf(stderr, "Warning: failed to chdir to %s\n", cwd)
+            Logger.warn("failed to chdir to $cwd")
         } else {
-            fprintf(stderr, "Changed directory to %s\n", cwd)
+            Logger.debug("changed directory to $cwd")
         }
 
         // Verify container operation
-        fprintf(stderr, "=== Container is ready ===\n")
-        fprintf(stderr, "PID: %d\n", getpid())
-        fprintf(stderr, "CWD: %s\n", cwd)
+        Logger.info("=== Container is ready ===")
+        Logger.debug("PID: ${getpid()}")
+        Logger.debug("CWD: $cwd")
 
         // Execute container process
         if (spec.process?.args.isNullOrEmpty()) {
-            fprintf(stderr, "Error: no process args specified\n")
+            Logger.error("no process args specified")
             _exit(1)
         }
         // After null check, we can safely use !! since we exited above if null/empty
@@ -113,7 +116,7 @@ fun runInitProcess(
             // LISTEN_PID will be set to PID 1 (init process in container)
             processEnv.add("LISTEN_FDS=$listenFds")
             processEnv.add("LISTEN_PID=1")
-            fprintf(stderr, "init: preserving %d FDs for systemd socket activation\n", listenFds)
+            Logger.debug("preserving $listenFds FDs for systemd socket activation")
             listenFds
         } else {
             0
@@ -126,22 +129,22 @@ fun runInitProcess(
 
         if (setgid(targetGid) != 0) {
             perror("setgid")
-            fprintf(stderr, "Failed to set GID to %u\n", targetGid)
+            Logger.error("Failed to set GID to $targetGid")
             _exit(1)
         }
         if (setuid(targetUid) != 0) {
             perror("setuid")
-            fprintf(stderr, "Failed to set UID to %u\n", targetUid)
+            Logger.error("Failed to set UID to $targetUid")
             _exit(1)
         }
-        fprintf(stderr, "Set UID=%u GID=%u for container process\n", targetUid, targetGid)
+        Logger.debug("set UID=$targetUid GID=$targetGid for container process")
 
         // Send init ready signal to main process
         try {
             mainSender.initReady()
-            fprintf(stderr, "init: sent init ready signal\n")
+            Logger.debug("sent init ready signal")
         } catch (e: Exception) {
-            fprintf(stderr, "init: failed to send init ready: %s\n", e.message ?: "unknown")
+            Logger.error("failed to send init ready: ${e.message ?: "unknown"}")
             _exit(1)
         }
 
@@ -155,12 +158,12 @@ fun runInitProcess(
         closeRange(preserveFds)
 
         // Wait for start signal from notify socket
-        fprintf(stderr, "init: waiting for start signal...\n")
+        Logger.debug("waiting for start signal...")
         try {
             notifyListener.waitForContainerStart()
-            fprintf(stderr, "init: received start signal, executing container process\n")
+            Logger.debug("received start signal, executing container process")
         } catch (e: Exception) {
-            fprintf(stderr, "init: failed to wait for start signal: %s\n", e.message ?: "unknown")
+            Logger.error("failed to wait for start signal: ${e.message ?: "unknown"}")
             _exit(1)
         }
 
@@ -173,16 +176,16 @@ fun runInitProcess(
         // the number of syscalls that happen after the filter is applied.
         if (spec.process.noNewPrivileges == true) {
             spec.linux?.seccomp?.let { seccomp ->
-                fprintf(stderr, "init: initializing seccomp filter (unprivileged path, close to exec)\n")
+                Logger.debug("initializing seccomp filter (unprivileged path, close to exec)")
                 if (initializeSeccomp(seccomp) < 0) {
-                    fprintf(stderr, "Error: failed to initialize seccomp\n")
+                    Logger.error("Failed to initialize seccomp")
                     _exit(1)
                 }
-                fprintf(stderr, "init: seccomp filter initialized successfully\n")
+                Logger.info("seccomp filter initialized successfully")
             }
         }
 
-        fprintf(stderr, "Executing: %s\n", processArgs.joinToString(" "))
+        Logger.info("Executing: ${processArgs.joinToString(" ")}")
 
         memScoped {
             // Convert args to C array (null-terminated)
@@ -204,11 +207,11 @@ fun runInitProcess(
 
             // If we reach here, execve failed
             perror("execve")
-            fprintf(stderr, "Failed to execute %s\n", processArgs[0])
+            Logger.error("Failed to execute ${processArgs[0]}")
             _exit(127)
         }
     } catch (e: Exception) {
-        fprintf(stderr, "init: error: %s\n", e.message ?: "unknown")
+        Logger.error("error: ${e.message ?: "unknown"}")
         _exit(1)
     }
 }

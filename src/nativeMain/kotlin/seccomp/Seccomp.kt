@@ -2,9 +2,8 @@ package seccomp
 
 import kotlinx.cinterop.*
 import libseccomp.*
-import platform.posix.fprintf
+import logger.Logger
 import platform.posix.perror
-import platform.posix.stderr
 import spec.LinuxSeccomp
 import spec.LinuxSyscall
 import spec.SeccompArg
@@ -47,7 +46,7 @@ private fun translateAction(action: String, errno: UInt?): UInt {
         "SCMP_ACT_LOG" -> 0x7ffc0000u
         "SCMP_ACT_NOTIFY" -> 0x7fc00000u
         else -> {
-            fprintf(stderr, "Unknown seccomp action: %s, defaulting to SCMP_ACT_KILL\n", action)
+            Logger.warn("Unknown seccomp action: $action, defaulting to SCMP_ACT_KILL")
             0x00000000u  // SCMP_ACT_KILL_THREAD
         }
     }
@@ -76,7 +75,7 @@ private fun translateOp(op: String): UInt {
         "SCMP_CMP_GT" -> 6u
         "SCMP_CMP_MASKED_EQ" -> 7u
         else -> {
-            fprintf(stderr, "Unknown seccomp operator: %s, defaulting to SCMP_CMP_EQ\n", op)
+            Logger.warn("Unknown seccomp operator: $op, defaulting to SCMP_CMP_EQ")
             4u  // SCMP_CMP_EQ
         }
     }
@@ -87,11 +86,11 @@ private fun translateOp(op: String): UInt {
  */
 @OptIn(ExperimentalForeignApi::class)
 fun initializeSeccomp(seccomp: LinuxSeccomp): Int {
-    fprintf(stderr, "Initializing seccomp...\n")
+    Logger.debug("initializing seccomp filter")
 
     // Validation: SCMP_ACT_NOTIFY cannot be used as default action
     if (seccomp.defaultAction == "SCMP_ACT_NOTIFY") {
-        fprintf(stderr, "Error: SCMP_ACT_NOTIFY cannot be used as default action\n")
+        Logger.error("SCMP_ACT_NOTIFY cannot be used as default action")
         return -1
     }
 
@@ -99,6 +98,7 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int {
     val defaultAction = translateAction(seccomp.defaultAction, seccomp.defaultErrnoRet)
     val ctx = seccomp_init(defaultAction) ?: run {
         perror("seccomp_init")
+        Logger.error("Failed to initialize seccomp context")
         return -1
     }
 
@@ -108,7 +108,7 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int {
         // SCMP_FLTATR_CTL_NNP = 3
         if (seccomp_attr_set(ctx, 3u, 0u) < 0) {
             perror("seccomp_attr_set(SCMP_FLTATR_CTL_NNP)")
-            fprintf(stderr, "Warning: failed to set SCMP_FLTATR_CTL_NNP\n")
+            Logger.warn("failed to set SCMP_FLTATR_CTL_NNP")
         }
 
         // Architecture constants are defined in linux/audit.h and referenced by seccomp.h
@@ -118,7 +118,7 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int {
         // Note: Architecture support is complex and requires audit.h constants
         // For now, we skip explicit architecture handling and rely on native arch
         if (seccomp.architectures != null && seccomp.architectures.isNotEmpty()) {
-            fprintf(stderr, "Note: Explicit architecture handling not fully implemented, using native arch\n")
+            Logger.debug("explicit architecture handling not fully implemented, using native arch")
         }
 
         // Add syscall rules
@@ -127,13 +127,14 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int {
         }
 
         // Load the filter into the kernel
-        fprintf(stderr, "Loading seccomp filter...\n")
+        Logger.debug("loading seccomp filter into kernel")
         if (seccomp_load(ctx) < 0) {
             perror("seccomp_load")
+            Logger.error("Failed to load seccomp filter")
             return -1
         }
 
-        fprintf(stderr, "Seccomp filter loaded successfully\n")
+        Logger.debug("seccomp filter loaded successfully")
         return 0
     } finally {
         seccomp_release(ctx)
@@ -149,13 +150,13 @@ private fun addSyscallRule(ctx: COpaquePointer?, syscall: LinuxSyscall, defaultA
 
     // Skip if action is the same as default (redundant rule)
     if (action == defaultAction) {
-        fprintf(stderr, "Skipping redundant seccomp rule with default action\n")
+        Logger.debug("skipping redundant seccomp rule with default action")
         return
     }
 
     // Validation: SCMP_ACT_NOTIFY cannot be used for write syscall
     if (syscall.action == "SCMP_ACT_NOTIFY" && syscall.names.contains("write")) {
-        fprintf(stderr, "Warning: SCMP_ACT_NOTIFY cannot be used for write syscall, skipping\n")
+        Logger.warn("SCMP_ACT_NOTIFY cannot be used for write syscall, skipping")
         return
     }
 
@@ -164,7 +165,7 @@ private fun addSyscallRule(ctx: COpaquePointer?, syscall: LinuxSyscall, defaultA
         val syscallNum = seccomp_syscall_resolve_name(name)
         if (syscallNum == __NR_SCMP_ERROR) {
             // Syscall not supported by this kernel/arch, skip it
-            fprintf(stderr, "Note: Syscall %s not supported, skipping\n", name)
+            Logger.debug("syscall $name not supported, skipping")
             return@forEach
         }
 
@@ -172,14 +173,14 @@ private fun addSyscallRule(ctx: COpaquePointer?, syscall: LinuxSyscall, defaultA
             // No argument filters, add simple rule
             if (seccomp_rule_add(ctx, action, syscallNum, 0u) < 0) {
                 perror("seccomp_rule_add")
-                fprintf(stderr, "Warning: Failed to add rule for syscall %s\n", name)
+                Logger.warn("failed to add rule for syscall $name")
             }
         } else {
             // Add conditional rules
             // Note: libseccomp requires one rule per argument comparison
             syscall.args.forEach { arg ->
                 if (addSyscallArgRule(ctx, action, syscallNum, name, arg) < 0) {
-                    fprintf(stderr, "Warning: Failed to add conditional rule for syscall %s\n", name)
+                    Logger.warn("failed to add conditional rule for syscall $name")
                 }
             }
         }

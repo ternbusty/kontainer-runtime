@@ -1,6 +1,7 @@
 import channel.*
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.memScoped
+import logger.Logger
 import platform.posix.*
 import process.runIntermediateProcess
 import process.runMainProcess
@@ -18,8 +19,10 @@ import spec.loadSpec
  */
 @OptIn(ExperimentalForeignApi::class)
 fun main(args: Array<String>): Unit = memScoped {
+    Logger.setContext("main")
+
     if (args.isEmpty()) {
-        fprintf(stderr, "Usage: kontainer-runtime <create|start> <container-id> [bundle-path]\n")
+        Logger.error("Usage: kontainer-runtime <create|start> <container-id> [bundle-path]")
         exit(1)
     }
 
@@ -28,8 +31,8 @@ fun main(args: Array<String>): Unit = memScoped {
         "create" -> createContainer(args.drop(1).toTypedArray())
         "start" -> startContainer(args.drop(1).toTypedArray())
         else -> {
-            fprintf(stderr, "Unknown command: %s\n", command)
-            fprintf(stderr, "Available commands: create, start\n")
+            Logger.error("unknown command: $command")
+            Logger.error("available commands: create, start")
             exit(1)
         }
     }
@@ -38,7 +41,7 @@ fun main(args: Array<String>): Unit = memScoped {
 @OptIn(ExperimentalForeignApi::class)
 fun createContainer(args: Array<String>) {
     if (args.size < 2) {
-        fprintf(stderr, "Usage: kontainer-runtime create <container-id> <bundle-path>\n")
+        Logger.error("Usage: kontainer-runtime create <container-id> <bundle-path>")
         exit(1)
     }
 
@@ -46,18 +49,18 @@ fun createContainer(args: Array<String>) {
     val bundlePath = args[1]
     val configPath = "$bundlePath/config.json"
 
-    fprintf(stderr, "Creating container: %s\n", containerId)
-    fprintf(stderr, "Loading spec from %s\n", configPath)
+    Logger.info("creating container: $containerId")
+    Logger.debug("loading spec from $configPath")
 
     val spec = try {
         loadSpec(configPath)
     } catch (e: Exception) {
-        fprintf(stderr, "Failed to load spec: %s\n", e.message ?: "unknown error")
+        Logger.error("failed to load spec: ${e.message ?: "unknown error"}")
         exit(1)
         return
     }
 
-    fprintf(stderr, "Loaded spec version %s\n", spec.ociVersion)
+    Logger.debug("loaded spec version ${spec.ociVersion}")
 
     // Get absolute path of rootfs
     val rootfsPath = if (spec.root?.path?.startsWith("/") == true) {
@@ -66,8 +69,8 @@ fun createContainer(args: Array<String>) {
         "$bundlePath/${spec.root?.path ?: "rootfs"}"
     }
 
-    fprintf(stderr, "Rootfs path: %s\n", rootfsPath)
-    fprintf(stderr, "main: pid=%d\n", getpid())
+    Logger.debug("rootfs path: $rootfsPath")
+    Logger.debug("main: pid=${getpid()}")
 
     // Create 3 channels for inter-process communication
     val (mainSender, mainReceiver) = mainChannel()
@@ -81,7 +84,7 @@ fun createContainer(args: Array<String>) {
     val notifyListener = try {
         NotifyListener(notifySocketPath)
     } catch (e: Exception) {
-        fprintf(stderr, "Failed to create notify listener: %s\n", e.message ?: "unknown")
+        Logger.error("failed to create notify listener: ${e.message ?: "unknown"}")
         exit(1)
         return
     }
@@ -91,6 +94,7 @@ fun createContainer(args: Array<String>) {
     when (intermediatePid) {
         -1 -> {
             perror("fork")
+            Logger.error("Failed to fork intermediate process")
             notifyListener.close()
             exit(1)
         }
@@ -120,8 +124,8 @@ fun createContainer(args: Array<String>) {
             val initPid = runMainProcess(spec, intermediatePid, mainReceiver, interSender)
 
             // Save container state for start command
-            fprintf(stderr, "Container %s created with init PID %d\n", containerId, initPid)
-            fprintf(stderr, "Run 'kontainer-runtime start %s' to start the container\n", containerId)
+            Logger.info("container $containerId created with init PID $initPid")
+            Logger.info("run 'kontainer-runtime start $containerId' to start the container")
 
             exit(0)
         }
@@ -131,22 +135,22 @@ fun createContainer(args: Array<String>) {
 @OptIn(ExperimentalForeignApi::class)
 fun startContainer(args: Array<String>) {
     if (args.isEmpty()) {
-        fprintf(stderr, "Usage: kontainer-runtime start <container-id>\n")
+        Logger.error("Usage: kontainer-runtime start <container-id>")
         exit(1)
     }
 
     val containerId = args[0]
     val notifySocketPath = "/tmp/kontainer-$containerId.sock"
 
-    fprintf(stderr, "Starting container: %s\n", containerId)
+    Logger.info("starting container: $containerId")
 
     // Send start signal to notify socket
     val notifySocket = NotifySocket(notifySocketPath)
     try {
         notifySocket.notifyContainerStart()
-        fprintf(stderr, "Container %s started successfully\n", containerId)
+        Logger.info("container $containerId started successfully")
     } catch (e: Exception) {
-        fprintf(stderr, "Failed to start container: %s\n", e.message ?: "unknown")
+        Logger.error("failed to start container: ${e.message ?: "unknown"}")
         exit(1)
     }
 }

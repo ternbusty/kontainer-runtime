@@ -3,6 +3,7 @@ package cgroup
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.cstr
 import kotlinx.cinterop.memScoped
+import logger.Logger
 import platform.posix.*
 import spec.LinuxResources
 
@@ -41,16 +42,16 @@ fun setupCgroup(pid: Int, cgroupPath: String?, resources: LinuxResources?) {
         val path = cgroupPath ?: "kontainer-${pid}"
         val fullPath = "$CGROUP_ROOT/$path"
 
-        fprintf(stderr, "Setting up cgroup at %s\n", fullPath.cstr.ptr)
+        Logger.debug("setting up cgroup at $fullPath")
 
         // Create cgroup directory
         if (access(fullPath, F_OK) != 0) {
             if (mkdir(fullPath, 0x1EDu) != 0) {  // 0x1ED = 0755 octal
                 perror("mkdir cgroup")
-                fprintf(stderr, "Warning: failed to create cgroup directory\n")
+                Logger.warn("failed to create cgroup directory")
                 return@memScoped
             }
-            fprintf(stderr, "Created cgroup directory: %s\n", fullPath.cstr.ptr)
+            Logger.debug("created cgroup directory: $fullPath")
         }
 
         // Enable controllers in subtree_control
@@ -64,9 +65,9 @@ fun setupCgroup(pid: Int, cgroupPath: String?, resources: LinuxResources?) {
             if (file != null) {
                 if (fprintf(file, "%s", cmd.cstr.ptr) < 0) {
                     perror("write subtree_control")
-                    fprintf(stderr, "Warning: failed to enable %s controller\n", controller.cstr.ptr)
+                    Logger.warn("failed to enable $controller controller")
                 } else {
-                    fprintf(stderr, "Enabled %s controller\n", controller.cstr.ptr)
+                    Logger.debug("enabled $controller controller")
                 }
                 fclose(file)
             }
@@ -78,10 +79,10 @@ fun setupCgroup(pid: Int, cgroupPath: String?, resources: LinuxResources?) {
         if (procsFile != null) {
             fprintf(procsFile, "%d", pid)
             fclose(procsFile)
-            fprintf(stderr, "Added PID %d to cgroup\n", pid)
+            Logger.debug("added PID $pid to cgroup")
         } else {
             perror("open cgroup.procs")
-            fprintf(stderr, "Warning: failed to add process to cgroup\n")
+            Logger.warn("failed to add process to cgroup")
             return@memScoped
         }
 
@@ -206,15 +207,15 @@ private fun writeCgroupFile(path: String, value: String, name: String) {
         val file = fopen(path, "w")
         if (file != null) {
             if (fprintf(file, "%s", value.cstr.ptr) >= 0) {
-                fprintf(stderr, "Set %s = %s\n", name.cstr.ptr, value.cstr.ptr)
+                Logger.debug("set $name = $value")
             } else {
                 perror("write $name")
-                fprintf(stderr, "Warning: failed to write %s\n", name.cstr.ptr)
+                Logger.warn("failed to write $name")
             }
             fclose(file)
         } else {
             perror("open $name")
-            fprintf(stderr, "Warning: failed to open %s\n", name.cstr.ptr)
+            Logger.warn("failed to open $name")
         }
     }
 }
