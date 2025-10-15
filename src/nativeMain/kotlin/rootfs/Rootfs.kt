@@ -15,6 +15,7 @@ const val MS_NODEV = 4
 const val MS_NOEXEC = 8
 const val MS_BIND = 4096
 const val MS_REC = 16384
+const val MS_SLAVE = 524288  // 1 << 19
 
 // Umount flags
 const val MNT_DETACH = 2
@@ -151,6 +152,7 @@ fun createDeviceNodes(devPath: String) {
 
 /**
  * Perform pivot_root to change root filesystem
+ * Uses youki's approach: pivot_root(newroot, newroot) with MS_SLAVE to avoid .old_root issues
  */
 @OptIn(ExperimentalForeignApi::class)
 fun pivotRoot(newRoot: String) {
@@ -171,43 +173,59 @@ fun pivotRoot(newRoot: String) {
         return
     }
 
-    // Change to new root directory
-    if (chdir(newRoot) != 0) {
-        perror("chdir to newRoot")
-        throw Exception("Failed to chdir to $newRoot")
+    // Open newroot directory to get a file descriptor before pivot_root
+    // This allows us to fchdir back to it after pivot_root
+    val newrootFd = open(newRoot, O_DIRECTORY or O_RDONLY, 0u)
+    if (newrootFd < 0) {
+        perror("open newroot")
+        throw Exception("Failed to open $newRoot")
     }
 
-    // Create a directory for old root (must be within new root)
-    val oldRoot = ".old_root"
-    if (access(oldRoot, F_OK) != 0) {
-        if (mkdir(oldRoot, 0x1C0u) != 0) {  // 0x1C0 = 0700 octal
-            perror("mkdir old_root")
-            throw Exception("Failed to create old_root directory")
-        }
-    }
-
-    // Perform pivot_root syscall
+    // Perform pivot_root syscall using newroot for both arguments
+    // This puts the old root at the same location as new root
     memScoped {
-        if (syscall(__NR_pivot_root.toLong(), ".".cstr.ptr, oldRoot.cstr.ptr) == -1L) {
+        if (syscall(__NR_pivot_root.toLong(), newRoot.cstr.ptr, newRoot.cstr.ptr) == -1L) {
             perror("pivot_root")
+            close(newrootFd)
             throw Exception("Failed to pivot_root")
         }
     }
 
-    // Change to new root
+    // Change to the new root using file descriptor
+    if (fchdir(newrootFd) != 0) {
+        perror("fchdir")
+        close(newrootFd)
+        throw Exception("Failed to fchdir to newroot")
+    }
+    close(newrootFd)
+
+    // Make the old root (which is now at /) a slave mount
+    // This prevents umount events from propagating to the host
+    if (mountFs(
+            source = null,
+            target = "/",
+            fstype = null,
+            flags = (MS_SLAVE or MS_REC).toULong()
+        ) != 0
+    ) {
+        perror("make old root slave")
+        fprintf(stderr, "Warning: failed to make old root slave\n")
+    }
+
+    // Unmount the old root with lazy unmount
+    // Since we used pivot_root(newroot, newroot), old root is at /
+    if (umount2("/", MNT_DETACH) != 0) {
+        perror("umount2 old root")
+        fprintf(stderr, "Warning: failed to unmount old root\n")
+    } else {
+        fprintf(stderr, "Unmounted old root\n")
+    }
+
+    // Change to root directory of new rootfs
     if (chdir("/") != 0) {
         perror("chdir /")
         throw Exception("Failed to chdir to /")
     }
-
-    // Unmount old root
-    if (umount2(oldRoot, MNT_DETACH) != 0) {
-        perror("umount2 old_root")
-        fprintf(stderr, "Warning: failed to unmount old root\n")
-    }
-
-    // Remove old root directory
-    rmdir(oldRoot)
 
     fprintf(stderr, "Successfully pivoted root\n")
 }

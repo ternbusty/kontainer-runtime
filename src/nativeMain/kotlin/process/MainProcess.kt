@@ -40,9 +40,31 @@ fun runMainProcess(
     val targetPid = parts[1].toInt()
     fprintf(stderr, "parent: mapping for pid=%d\n", targetPid)
 
-    // Map effective UID/GID to 0..0
-    val hostUid = geteuid().toUInt()
-    val hostGid = getegid().toUInt()
+    // Get UID/GID mappings from spec, or use current euid/egid as fallback
+    val uidMappings = spec.linux?.uidMappings
+    val gidMappings = spec.linux?.gidMappings
+
+    // Build uid_map content
+    val uidMap = if (!uidMappings.isNullOrEmpty()) {
+        uidMappings.joinToString("\n") { mapping ->
+            "${mapping.containerID} ${mapping.hostID} ${mapping.size}"
+        } + "\n"
+    } else {
+        // Fallback: map container root to current effective UID
+        val hostUid = geteuid().toUInt()
+        "0 $hostUid 1\n"
+    }
+
+    // Build gid_map content
+    val gidMap = if (!gidMappings.isNullOrEmpty()) {
+        gidMappings.joinToString("\n") { mapping ->
+            "${mapping.containerID} ${mapping.hostID} ${mapping.size}"
+        } + "\n"
+    } else {
+        // Fallback: map container root to current effective GID
+        val hostGid = getegid().toUInt()
+        "0 $hostGid 1\n"
+    }
 
     // Kernel requires disabling setgroups before writing gid_map
     if (!writeText("/proc/$targetPid/setgroups", "deny\n")) {
@@ -51,17 +73,16 @@ fun runMainProcess(
         exit(1)
     }
 
-    // Map a single ID range
-    val uidMap = "${0} ${hostUid} ${1}\n"
-    val gidMap = "${0} ${hostGid} ${1}\n"
-
+    fprintf(stderr, "parent: writing uid_map: %s", uidMap.replace("\n", " "))
     if (!writeText("/proc/$targetPid/uid_map", uidMap)) {
-        fprintf(stderr, "parent: failed uid_map host=%u\n", hostUid)
+        fprintf(stderr, "parent: failed to write uid_map\n")
         close(socket)
         exit(1)
     }
+
+    fprintf(stderr, "parent: writing gid_map: %s", gidMap.replace("\n", " "))
     if (!writeText("/proc/$targetPid/gid_map", gidMap)) {
-        fprintf(stderr, "parent: failed gid_map host=%u\n", hostGid)
+        fprintf(stderr, "parent: failed to write gid_map\n")
         close(socket)
         exit(1)
     }

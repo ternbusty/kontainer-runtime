@@ -1,10 +1,11 @@
 package process
 
 import kotlinx.cinterop.*
-import platform.posix.*
-import spec.Spec
 import namespace.hasNamespace
-import rootfs.*
+import platform.posix.*
+import rootfs.pivotRoot
+import rootfs.prepareRootfs
+import spec.Spec
 
 /**
  * Init process - Init process inside container (PID 1)
@@ -53,12 +54,57 @@ fun runInitProcess(spec: Spec, rootfsPath: String) {
         fprintf(stderr, "PID: %d\n", getpid())
         fprintf(stderr, "CWD: %s\n", cwd)
 
-        // For now, use sleep for verification instead of executing actual process
-        // TODO: Execute execve() using spec.process?.args
-        fprintf(stderr, "Sleeping for 30 seconds...\n")
-        sleep(30u)
+        // Execute container process
+        if (spec.process?.args.isNullOrEmpty()) {
+            fprintf(stderr, "Error: no process args specified\n")
+            _exit(1)
+        }
+        // After null check, we can safely use !! since we exited above if null/empty
+        val processArgs = spec.process!!.args!!
+        val processEnv = spec.process.env ?: emptyList()
 
-        fprintf(stderr, "Container exiting\n")
+        // Set UID/GID to spec.process.user values before executing container process
+        // Note: setgid must be called before setuid (once we drop to non-root, we can't setgid)
+        val targetUid = spec.process.user.uid
+        val targetGid = spec.process.user.gid
+
+        if (setgid(targetGid) != 0) {
+            perror("setgid")
+            fprintf(stderr, "Failed to set GID to %u\n", targetGid)
+            _exit(1)
+        }
+        if (setuid(targetUid) != 0) {
+            perror("setuid")
+            fprintf(stderr, "Failed to set UID to %u\n", targetUid)
+            _exit(1)
+        }
+        fprintf(stderr, "Set UID=%u GID=%u for container process\n", targetUid, targetGid)
+
+        fprintf(stderr, "Executing: %s\n", processArgs.joinToString(" "))
+
+        memScoped {
+            // Convert args to C array (null-terminated)
+            val argv = allocArray<CPointerVar<ByteVar>>(processArgs.size + 1)
+            processArgs.forEachIndexed { i, arg ->
+                argv[i] = arg.cstr.ptr
+            }
+            argv[processArgs.size] = null
+
+            // Convert env to C array (null-terminated)
+            val envp = allocArray<CPointerVar<ByteVar>>(processEnv.size + 1)
+            processEnv.forEachIndexed { i, e ->
+                envp[i] = e.cstr.ptr
+            }
+            envp[processEnv.size] = null
+
+            // Execute the process (replaces current process, doesn't return on success)
+            execve(processArgs[0], argv, envp)
+
+            // If we reach here, execve failed
+            perror("execve")
+            fprintf(stderr, "Failed to execute %s\n", processArgs[0])
+            _exit(127)
+        }
     } catch (e: Exception) {
         fprintf(stderr, "init: error: %s\n", e.message ?: "unknown")
         _exit(1)

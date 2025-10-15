@@ -42,12 +42,21 @@ data class User(
 
 @Serializable
 data class Linux(
-    val namespaces: List<Namespace>? = null
+    val namespaces: List<Namespace>? = null,
+    val uidMappings: List<LinuxIdMapping>? = null,
+    val gidMappings: List<LinuxIdMapping>? = null
 )
 
 @Serializable
 data class Namespace(
     val type: String
+)
+
+@Serializable
+data class LinuxIdMapping(
+    val containerID: UInt,
+    val hostID: UInt,
+    val size: UInt
 )
 
 /**
