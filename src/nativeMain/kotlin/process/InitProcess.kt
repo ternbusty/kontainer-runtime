@@ -188,7 +188,6 @@ fun runInitProcess(
  * - Send it to main process via seccompNotifyRequest()
  * - Wait for main process to handle it
  *
- * This follows the same pattern as youki's sync_seccomp()
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun syncSeccompNotifyFd(
