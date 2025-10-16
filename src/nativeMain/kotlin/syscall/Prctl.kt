@@ -2,7 +2,9 @@ package syscall
 
 import kotlinx.cinterop.ExperimentalForeignApi
 import logger.Logger
-import platform.posix.*
+import platform.posix.errno
+import platform.posix.perror
+import platform.posix.syscall
 
 /**
  * prctl(2) system call wrappers
@@ -28,6 +30,9 @@ private const val PR_SET_NO_NEW_PRIVS = 38
  * capabilities non-functional).
  *
  * This is required for unprivileged processes to use seccomp filters.
+ *
+ * Note: This function does not throw an exception on failure. If the operation fails, a
+ * warning is logged but execution continues.
  */
 @OptIn(ExperimentalForeignApi::class)
 fun setNoNewPrivileges() {
@@ -43,9 +48,11 @@ fun setNoNewPrivileges() {
     )
 
     if (result == -1L) {
+        val errNum = errno
         perror("prctl(PR_SET_NO_NEW_PRIVS)")
-        Logger.warn("failed to set no_new_privileges")
-        // Don't throw exception - this is a security enhancement
+        Logger.warn("failed to set no_new_privileges (errno=$errNum)")
+        // Do not throw exception
+        // Seccomp can still work via the privileged path if needed
     } else {
         Logger.debug("successfully set no_new_privileges")
     }

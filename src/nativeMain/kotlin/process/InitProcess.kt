@@ -48,6 +48,7 @@ fun runInitProcess(
     // Set no_new_privileges if specified in the spec
     // This prevents the process from gaining new privileges through execve
     // (e.g., via setuid/setgid binaries or file capabilities)
+    // Note: Failure is not fatal
     if (spec.process?.noNewPrivileges == true) {
         setNoNewPrivileges()
     }
