@@ -12,6 +12,15 @@ import spec.Spec
 import utils.writeText
 
 /**
+ * Wait status check macros (from sys/wait.h)
+ * These are C macros, so we need to implement them manually in Kotlin
+ */
+private fun WIFEXITED(status: Int): Boolean = ((status and 0x7f) == 0)
+private fun WEXITSTATUS(status: Int): Int = ((status and 0xff00) shr 8)
+private fun WIFSIGNALED(status: Int): Boolean = ((((status and 0x7f) + 1) shr 1) > 0)
+private fun WTERMSIG(status: Int): Int = (status and 0x7f)
+
+/**
  * Main process - Parent process
  *
  * Responsibilities:
@@ -161,15 +170,40 @@ fun runMainProcess(
     initSender.close()
 
     // Wait for intermediate process to exit
+    // By this point, the intermediate process should already have exited successfully.
+    // If intermediate process errors out, the `init_ready` will not be sent.
+    // We check the exit status but only log warnings,
+    // because the process status has already been validated through piping.
     val st = alloc<IntVar>()
     if (waitpid(intermediatePid, st.ptr, 0) == -1) {
-        perror("waitpid(intermediate)")
-        Logger.error("Failed to wait for intermediate process")
-        _exit(1)
+        val errNum = errno
+        if (errNum == ECHILD) {
+            // This is safe because intermediate_process and main_process check if the process is
+            // finished by piping instead of exit code.
+            Logger.warn("intermediate process already reaped")
+        } else {
+            perror("waitpid(intermediate)")
+            Logger.error("Failed to wait for intermediate process (errno=$errNum)")
+            _exit(1)
+        }
+    } else {
+        // Check exit status
+        val status = st.value
+        if (WIFEXITED(status)) {
+            val exitCode = WEXITSTATUS(status)
+            if (exitCode != 0) {
+                Logger.warn("intermediate process failed with exit status: $exitCode")
+            } else {
+                Logger.debug("intermediate process exited successfully")
+            }
+        } else if (WIFSIGNALED(status)) {
+            val signal = WTERMSIG(status)
+            Logger.warn("intermediate process killed by signal: $signal")
+        } else {
+            Logger.warn("intermediate process exited abnormally (status=$status)")
+        }
     }
-
-    Logger.debug("intermediate process exited")
     Logger.info("container created with init pid=$initPid")
 
-    initPid  // Return value
+    initPid
 }
