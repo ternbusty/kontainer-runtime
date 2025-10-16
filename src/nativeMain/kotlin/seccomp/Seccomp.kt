@@ -46,8 +46,8 @@ private fun translateAction(action: String, errno: UInt?): UInt {
         "SCMP_ACT_LOG" -> 0x7ffc0000u
         "SCMP_ACT_NOTIFY" -> 0x7fc00000u
         else -> {
-            Logger.warn("Unknown seccomp action: $action, defaulting to SCMP_ACT_KILL")
-            0x00000000u  // SCMP_ACT_KILL_THREAD
+            Logger.error("Unknown seccomp action: $action")
+            throw Exception("Unknown seccomp action: $action")
         }
     }
 }
@@ -75,8 +75,8 @@ private fun translateOp(op: String): UInt {
         "SCMP_CMP_GT" -> 6u
         "SCMP_CMP_MASKED_EQ" -> 7u
         else -> {
-            Logger.warn("Unknown seccomp operator: $op, defaulting to SCMP_CMP_EQ")
-            4u  // SCMP_CMP_EQ
+            Logger.error("Unknown seccomp operator: $op")
+            throw Exception("Unknown seccomp operator: $op")
         }
     }
 }
@@ -121,13 +121,11 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int? {
         }
 
         // Architecture constants are defined in linux/audit.h and referenced by seccomp.h
-        // For simplicity, we'll use the raw values or rely on native arch
-        // Most containers will use SCMP_ARCH_NATIVE (0) which matches the host arch
-
-        // Note: Architecture support is complex and requires audit.h constants
-        // For now, we skip explicit architecture handling and rely on native arch
+        // Architecture support is complex and requires audit.h constants
+        // For now, only native arch is supported
         if (seccomp.architectures != null && seccomp.architectures.isNotEmpty()) {
-            Logger.debug("explicit architecture handling not fully implemented, using native arch")
+            Logger.error("explicit architecture specification is not yet supported")
+            throw Exception("Explicit architecture specification in seccomp is not yet supported. Only native architecture is supported.")
         }
 
         // Add syscall rules
@@ -183,8 +181,8 @@ private fun addSyscallRule(ctx: COpaquePointer?, syscall: LinuxSyscall, defaultA
 
     // Validation: SCMP_ACT_NOTIFY cannot be used for write syscall
     if (syscall.action == "SCMP_ACT_NOTIFY" && syscall.names.contains("write")) {
-        Logger.warn("SCMP_ACT_NOTIFY cannot be used for write syscall, skipping")
-        return
+        Logger.error("SCMP_ACT_NOTIFY cannot be used for write syscall")
+        throw Exception("SCMP_ACT_NOTIFY cannot be used for write syscall")
     }
 
     syscall.names.forEach { name ->
@@ -200,14 +198,16 @@ private fun addSyscallRule(ctx: COpaquePointer?, syscall: LinuxSyscall, defaultA
             // No argument filters, add simple rule
             if (seccomp_rule_add(ctx, action, syscallNum, 0u) < 0) {
                 perror("seccomp_rule_add")
-                Logger.warn("failed to add rule for syscall $name")
+                Logger.error("failed to add rule for syscall $name")
+                throw Exception("Failed to add seccomp rule for syscall: $name")
             }
         } else {
             // Add conditional rules
             // Note: libseccomp requires one rule per argument comparison
             syscall.args.forEach { arg ->
                 if (addSyscallArgRule(ctx, action, syscallNum, name, arg) < 0) {
-                    Logger.warn("failed to add conditional rule for syscall $name")
+                    Logger.error("failed to add conditional rule for syscall $name")
+                    throw Exception("Failed to add conditional seccomp rule for syscall: $name")
                 }
             }
         }
