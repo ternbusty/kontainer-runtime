@@ -76,11 +76,12 @@ fun prepareRootfs(rootfsPath: String) {
                 flags = (MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong()
             ) != 0
         ) {
+            val errNum = errno
             perror("mount /proc")
-            Logger.warn("failed to mount /proc")
-        } else {
-            Logger.debug("mounted /proc")
+            Logger.error("failed to mount /proc (errno=$errNum)")
+            throw Exception("Failed to mount /proc (errno=$errNum)")
         }
+        Logger.debug("mounted /proc")
     }
 
     // Mount /dev if it exists in rootfs
@@ -94,14 +95,15 @@ fun prepareRootfs(rootfsPath: String) {
                 data = "mode=755"
             ) != 0
         ) {
+            val errNum = errno
             perror("mount /dev")
-            Logger.warn("failed to mount /dev")
-        } else {
-            Logger.debug("mounted /dev")
-
-            // Create essential device nodes
-            createDeviceNodes(devPath)
+            Logger.error("failed to mount /dev (errno=$errNum)")
+            throw Exception("Failed to mount /dev (errno=$errNum)")
         }
+        Logger.debug("mounted /dev")
+
+        // Create essential device nodes
+        createDeviceNodes(devPath)
     }
 
     // Mount /sys if it exists in rootfs
@@ -114,11 +116,12 @@ fun prepareRootfs(rootfsPath: String) {
                 flags = (MS_NOSUID or MS_NODEV or MS_NOEXEC or MS_RDONLY).toULong()
             ) != 0
         ) {
+            val errNum = errno
             perror("mount /sys")
-            Logger.warn("failed to mount /sys")
-        } else {
-            Logger.debug("mounted /sys")
+            Logger.error("failed to mount /sys (errno=$errNum)")
+            throw Exception("Failed to mount /sys (errno=$errNum)")
         }
+        Logger.debug("mounted /sys")
     }
 }
 
