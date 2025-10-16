@@ -1,12 +1,16 @@
 package process
 
 import cgroup.setupCgroup
-import channel.*
+import channel.InitReceiver
+import channel.IntermediateReceiver
+import channel.MainSender
+import channel.NotifyListener
 import kotlinx.cinterop.*
 import logger.Logger
+import namespace.hasNamespace
+import namespace.unshareNamespace
 import platform.posix.*
 import spec.Spec
-import namespace.*
 
 /**
  * Intermediate process
@@ -60,6 +64,7 @@ private fun intermediateProcessInternal(
         perror("setuid/setgid")
         throw Exception("Failed to setuid/setgid")
     }
+    Logger.debug("set UID/GID to 0 in user namespace")
 
     // Unshare additional namespaces (excluding user and pid)
     spec.linux?.namespaces?.let { namespaces ->
