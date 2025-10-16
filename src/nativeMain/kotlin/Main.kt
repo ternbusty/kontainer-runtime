@@ -63,10 +63,10 @@ fun createContainer(args: Array<String>) {
     Logger.debug("loaded spec version ${spec.ociVersion}")
 
     // Get absolute path of rootfs
-    val rootfsPath = if (spec.root?.path?.startsWith("/") == true) {
+    val rootfsPath = if (spec.root.path.startsWith("/")) {
         spec.root.path
     } else {
-        "$bundlePath/${spec.root?.path ?: "rootfs"}"
+        "$bundlePath/${spec.root.path}"
     }
 
     Logger.debug("rootfs path: $rootfsPath")

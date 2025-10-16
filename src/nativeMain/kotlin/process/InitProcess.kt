@@ -36,14 +36,14 @@ fun runInitProcess(
     // This prevents the process from gaining new privileges through execve
     // (e.g., via setuid/setgid binaries or file capabilities)
     // Note: Failure is not fatal
-    if (spec.process?.noNewPrivileges == true) {
+    if (spec.process.noNewPrivileges == true) {
         setNoNewPrivileges()
     }
 
     // Initialize seccomp filter early if no_new_privileges is NOT set
     // Without no_new_privileges, seccomp is a privileged operation (requires CAP_SYS_ADMIN).
     // We must do this before dropping capabilities/UID/GID.
-    if (spec.process?.noNewPrivileges != true) {
+    if (spec.process.noNewPrivileges != true) {
         spec.linux?.seccomp?.let { seccomp ->
             Logger.debug("initializing seccomp filter (privileged path)")
             val notifyFd = initializeSeccomp(seccomp)
@@ -71,7 +71,7 @@ fun runInitProcess(
     }
 
     // Change to working directory
-    val cwd = spec.process?.cwd ?: "/"
+    val cwd = spec.process.cwd
     if (chdir(cwd) != 0) {
         perror("chdir")
         Logger.warn("failed to chdir to $cwd")
@@ -85,12 +85,7 @@ fun runInitProcess(
     Logger.debug("CWD: $cwd")
 
     // Execute container process
-    if (spec.process?.args.isNullOrEmpty()) {
-        Logger.error("no process args specified")
-        throw Exception("No process args specified")
-    }
-    // After null check, we can safely use !! since we exited above if null/empty
-    val processArgs = spec.process!!.args!!
+    val processArgs = spec.process.args
     val processEnv = spec.process.env?.toMutableList() ?: mutableListOf()
 
     // Handle LISTEN_FDS for systemd socket activation
@@ -188,11 +183,11 @@ fun runInitProcess(
 
 /**
  * Synchronize seccomp notify FD with main process
- * 
+ *
  * If a notify FD is provided:
  * - Send it to main process via seccompNotifyRequest()
  * - Wait for main process to handle it
- * 
+ *
  * This follows the same pattern as youki's sync_seccomp()
  */
 @OptIn(ExperimentalForeignApi::class)

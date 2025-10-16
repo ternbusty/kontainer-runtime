@@ -14,8 +14,8 @@ import platform.posix.fread
 @Serializable
 data class Spec(
     val ociVersion: String = "1.0.0",
-    val root: Root? = null,
-    val process: Process? = null,
+    val root: Root,
+    val process: Process,
     val hostname: String? = null,
     val linux: Linux? = null
 )
@@ -28,7 +28,7 @@ data class Root(
 
 @Serializable
 data class Process(
-    val args: List<String>? = null,
+    val args: List<String>,
     val env: List<String>? = null,
     val cwd: String = "/",
     val noNewPrivileges: Boolean? = null,
@@ -175,7 +175,14 @@ fun loadSpec(configPath: String): Spec {
             isLenient = true
             coerceInputValues = true
         }
-        return jsonParser.decodeFromString<Spec>(json)
+        val spec = jsonParser.decodeFromString<Spec>(json)
+
+        // Validate process.args is not empty (kotlinx.serialization doesn't check this)
+        if (spec.process.args.isEmpty()) {
+            throw Exception("Spec validation failed: process.args must not be empty")
+        }
+
+        return spec
     } finally {
         fclose(fp)
     }
