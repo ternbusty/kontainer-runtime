@@ -90,8 +90,21 @@ private fun intermediateProcessInternal(
         // Close interReceiver in init process (not needed)
         interReceiver.close()
 
-        runInitProcess(spec, rootfsPath, mainSender, initReceiver, notifyListener)
-        _exit(0)
+        try {
+            runInitProcess(spec, rootfsPath, mainSender, initReceiver, notifyListener)
+            _exit(0)
+        } catch (e: Exception) {
+            Logger.error("init process failed: ${e.message ?: "unknown"}")
+
+            // Try to send error to main process (best effort)
+            try {
+                mainSender.sendError("Init process failed: ${e.message}")
+            } catch (sendErr: Exception) {
+                Logger.warn("failed to send error to main process: ${sendErr.message ?: "unknown"}")
+            }
+
+            _exit(1)
+        }
     } else {
         // Intermediate process: send init PID to main process
         mainSender.intermediateReady(initPid)
