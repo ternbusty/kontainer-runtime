@@ -4,7 +4,6 @@ import cgroup.setupCgroup
 import channel.*
 import kotlinx.cinterop.*
 import logger.Logger
-import platform.linux.__NR_unshare
 import platform.posix.*
 import spec.Spec
 import namespace.*
@@ -21,8 +20,13 @@ import namespace.*
  * - Fork and start init process
  * - Send init PID to main process
  */
+
+/**
+ * Internal implementation of intermediate process
+ * Throws exceptions on errors - caller handles error reporting
+ */
 @OptIn(ExperimentalForeignApi::class)
-fun runIntermediateProcess(
+private fun intermediateProcessInternal(
     spec: Spec,
     rootfsPath: String,
     mainSender: MainSender,
@@ -36,127 +40,49 @@ fun runIntermediateProcess(
     // Setup cgroup BEFORE entering user namespace
     // At this point, intermediate process still has host root privileges (inherited from parent)
     // This allows creation of cgroup directories in /sys/fs/cgroup/
-    try {
-        setupCgroup(getpid(), spec.linux?.cgroupsPath, spec.linux?.resources)
-    } catch (e: Exception) {
-        Logger.error("Failed to setup cgroup: ${e.message ?: "unknown"}")
-        try {
-            mainSender.sendError("Failed to setup cgroup: ${e.message}")
-        } catch (sendErr: Exception) {
-            Logger.warn("Failed to send error message to main process: ${sendErr.message ?: "unknown"}")
-        }
-        _exit(1)
-    }
+    setupCgroup(getpid(), spec.linux?.cgroupsPath, spec.linux?.resources)
 
     // First, unshare user namespace
     if (hasNamespace(spec.linux?.namespaces, "user")) {
-        if (syscall(__NR_unshare.toLong(), CLONE_NEWUSER) == -1L) {
-            perror("unshare(CLONE_NEWUSER)")
-            Logger.error("Failed to unshare user namespace")
-            try {
-                mainSender.sendError("Failed to unshare user namespace")
-            } catch (e: Exception) {
-                Logger.warn("Failed to send error message to main process: ${e.message ?: "unknown"}")
-            }
-            _exit(1)
-        }
-        Logger.debug("unshared user namespace")
+        unshareNamespace("user")
     }
 
     // Send mapping request to main process
-    try {
-        mainSender.identifierMappingRequest()
-        Logger.debug("sent mapping request")
-    } catch (e: Exception) {
-        Logger.error("failed to send mapping request: ${e.message ?: "unknown"}")
-        _exit(1)
-    }
+    mainSender.identifierMappingRequest()
+    Logger.debug("sent mapping request")
 
     // Wait for mapping completion from main process
-    try {
-        interReceiver.waitForMappingAck()
-        Logger.debug("received mapping ack")
-    } catch (e: Exception) {
-        Logger.error("failed to receive mapping ack: ${e.message ?: "unknown"}")
-        _exit(1)
-    }
+    interReceiver.waitForMappingAck()
+    Logger.debug("received mapping ack")
 
     // Set UID/GID to 0 (root within user namespace)
     if (setuid(0u) != 0 || setgid(0u) != 0) {
         perror("setuid/setgid")
-        try {
-            mainSender.sendError("Failed to setuid/setgid")
-        } catch (e: Exception) {
-            Logger.warn("Failed to send error message to main process: ${e.message ?: "unknown"}")
-        }
-        _exit(1)
+        throw Exception("Failed to setuid/setgid")
     }
 
     // Unshare additional namespaces (excluding user and pid)
     spec.linux?.namespaces?.let { namespaces ->
-        try {
-            // Unshare mount, network, UTS, IPC namespaces
-            for (ns in namespaces) {
-                when (ns.type) {
-                    "mount", "network", "uts", "ipc" -> {
-                        val flag = when (ns.type) {
-                            "mount" -> CLONE_NEWNS
-                            "network" -> CLONE_NEWNET
-                            "uts" -> CLONE_NEWUTS
-                            "ipc" -> CLONE_NEWIPC
-                            else -> continue
-                        }
-                        if (syscall(__NR_unshare.toLong(), flag) == -1L) {
-                            perror("unshare(${ns.type})")
-                            Logger.error("Failed to unshare ${ns.type} namespace")
-                            try {
-                                mainSender.sendError("Failed to unshare ${ns.type} namespace")
-                            } catch (e: Exception) {
-                                Logger.warn("Failed to send error message to main process: ${e.message ?: "unknown"}")
-                            }
-                            _exit(1)
-                        }
-                        Logger.debug("unshared ${ns.type} namespace")
-                    }
+        // Unshare mount, network, UTS, IPC namespaces
+        for (ns in namespaces) {
+            when (ns.type) {
+                "mount", "network", "uts", "ipc" -> {
+                    unshareNamespace(ns.type)
                 }
             }
-        } catch (e: Exception) {
-            Logger.error("failed to unshare namespaces: ${e.message ?: "unknown"}")
-            try {
-                mainSender.sendError("Failed to unshare namespaces: ${e.message}")
-            } catch (sendErr: Exception) {
-                Logger.warn("Failed to send error message to main process: ${sendErr.message ?: "unknown"}")
-            }
-            _exit(1)
         }
     }
 
     // Unshare PID namespace
     if (hasNamespace(spec.linux?.namespaces, "pid")) {
-        if (syscall(__NR_unshare.toLong(), CLONE_NEWPID) == -1L) {
-            perror("unshare(CLONE_NEWPID)")
-            Logger.error("Failed to unshare PID namespace")
-            try {
-                mainSender.sendError("Failed to unshare PID namespace")
-            } catch (e: Exception) {
-                Logger.warn("Failed to send error message to main process: ${e.message ?: "unknown"}")
-            }
-            _exit(1)
-        }
-        Logger.debug("unshared pid namespace")
+        unshareNamespace("pid")
     }
 
     // Fork init process
     val initPid = fork()
     if (initPid == -1) {
         perror("fork(init)")
-        Logger.error("Failed to fork init process")
-        try {
-            mainSender.sendError("Failed to fork init process")
-        } catch (e: Exception) {
-            Logger.warn("Failed to send error message to main process: ${e.message ?: "unknown"}")
-        }
-        _exit(1)
+        throw Exception("Failed to fork init process")
     }
 
     if (initPid == 0) {
@@ -168,13 +94,8 @@ fun runIntermediateProcess(
         _exit(0)
     } else {
         // Intermediate process: send init PID to main process
-        try {
-            mainSender.intermediateReady(initPid)
-            Logger.debug("sent init pid=$initPid to main")
-        } catch (e: Exception) {
-            Logger.error("failed to send init pid: ${e.message ?: "unknown"}")
-            _exit(1)
-        }
+        mainSender.intermediateReady(initPid)
+        Logger.debug("sent init pid=$initPid to main")
 
         // Close channels (no more communication needed)
         mainSender.close()
@@ -185,10 +106,38 @@ fun runIntermediateProcess(
         val st = alloc<IntVar>()
         if (waitpid(initPid, st.ptr, 0) == -1) {
             perror("waitpid(init)")
-            Logger.error("Failed to wait for init process")
-            _exit(1)
+            throw Exception("Failed to wait for init process")
         }
         Logger.debug("init process exited")
         _exit(0)
+    }
+}
+
+/**
+ * Entry point for intermediate process
+ * Handles errors and communicates them to main process
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun runIntermediateProcess(
+    spec: Spec,
+    rootfsPath: String,
+    mainSender: MainSender,
+    interReceiver: IntermediateReceiver,
+    initReceiver: InitReceiver,
+    notifyListener: NotifyListener
+) {
+    try {
+        intermediateProcessInternal(spec, rootfsPath, mainSender, interReceiver, initReceiver, notifyListener)
+    } catch (e: Exception) {
+        Logger.error("intermediate process failed: ${e.message ?: "unknown"}")
+
+        // Try to send error to main process (best effort)
+        try {
+            mainSender.sendError("Intermediate process failed: ${e.message}")
+        } catch (sendErr: Exception) {
+            Logger.warn("failed to send error to main process: ${sendErr.message ?: "unknown"}")
+        }
+
+        _exit(1)
     }
 }
