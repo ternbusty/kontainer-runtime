@@ -1,6 +1,8 @@
 package process
 
-import channel.*
+import channel.InitSender
+import channel.IntermediateSender
+import channel.MainReceiver
 import kotlinx.cinterop.*
 import logger.Logger
 import platform.posix.*
@@ -68,21 +70,19 @@ fun runMainProcess(
     }
 
     // Kernel requires disabling setgroups before writing gid_map (CVE-2014-8989)
-    if (!writeText("/proc/$intermediatePid/setgroups", "deny\n")) {
-        perror("write setgroups")
-        Logger.error("Failed to write setgroups")
-        _exit(1)
-    }
+    try {
+        Logger.debug("disabling setgroups for pid $intermediatePid")
+        writeText("/proc/$intermediatePid/setgroups", "deny\n")
 
-    Logger.debug("writing uid_map for pid $intermediatePid")
-    if (!writeText("/proc/$intermediatePid/uid_map", uidMap)) {
-        Logger.error("failed to write uid_map")
-        _exit(1)
-    }
+        Logger.debug("writing uid_map for pid $intermediatePid")
+        writeText("/proc/$intermediatePid/uid_map", uidMap)
 
-    Logger.debug("writing gid_map for pid $intermediatePid")
-    if (!writeText("/proc/$intermediatePid/gid_map", gidMap)) {
-        Logger.error("failed to write gid_map")
+        Logger.debug("writing gid_map for pid $intermediatePid")
+        writeText("/proc/$intermediatePid/gid_map", gidMap)
+
+        Logger.debug("successfully wrote UID/GID mappings")
+    } catch (e: Exception) {
+        Logger.error("failed to write UID/GID mappings: ${e.message ?: "unknown"}")
         _exit(1)
     }
 
@@ -117,7 +117,7 @@ fun runMainProcess(
             Logger.debug("received seccomp notify FD: $notifyFd")
 
             // If listenerPath is specified, forward the FD to the listener
-            spec.linux.seccomp?.listenerPath?.let { listenerPath ->
+            spec.linux.seccomp.listenerPath?.let { listenerPath ->
                 Logger.debug("forwarding seccomp notify FD to listener: $listenerPath")
                 try {
                     val containerState = ContainerState(

@@ -15,31 +15,29 @@ const val CLONE_NEWPID: Int = 0x20000000     // PID namespace
 const val CLONE_NEWNET: Int = 0x40000000     // Network namespace
 
 /**
- * Unshare specified namespaces
+ * Unshare a single namespace by type
+ *
+ * @param type Namespace type (user, mount, network, uts, ipc, pid)
+ * @throws Exception if unshare fails
  */
 @OptIn(ExperimentalForeignApi::class)
-fun unshareNamespaces(namespaces: List<Namespace>) {
-    for (ns in namespaces) {
-        val flag = when (ns.type) {
-            "mount" -> CLONE_NEWNS
-            "network" -> CLONE_NEWNET
-            "uts" -> CLONE_NEWUTS
-            "ipc" -> CLONE_NEWIPC
-            "pid" -> CLONE_NEWPID
-            "user" -> CLONE_NEWUSER
-            else -> {
-                Logger.warn("unknown namespace type: ${ns.type}")
-                continue
-            }
-        }
-
-        if (syscall(__NR_unshare.toLong(), flag) == -1L) {
-            perror("unshare(${ns.type})")
-            throw Exception("Failed to unshare ${ns.type} namespace")
-        }
-
-        Logger.debug("unshared ${ns.type} namespace")
+fun unshareNamespace(type: String) {
+    val flag = when (type) {
+        "mount" -> CLONE_NEWNS
+        "network" -> CLONE_NEWNET
+        "uts" -> CLONE_NEWUTS
+        "ipc" -> CLONE_NEWIPC
+        "pid" -> CLONE_NEWPID
+        "user" -> CLONE_NEWUSER
+        else -> throw IllegalArgumentException("Unknown namespace type: $type")
     }
+
+    if (syscall(__NR_unshare.toLong(), flag) == -1L) {
+        perror("unshare($type)")
+        throw Exception("Failed to unshare $type namespace")
+    }
+
+    Logger.debug("unshared $type namespace")
 }
 
 /**
