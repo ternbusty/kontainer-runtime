@@ -1,11 +1,14 @@
 package cgroup
 
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.cstr
 import kotlinx.cinterop.memScoped
 import logger.Logger
-import platform.posix.*
+import platform.posix.F_OK
+import platform.posix.access
+import platform.posix.mkdir
+import platform.posix.perror
 import spec.LinuxResources
+import utils.writeText
 
 /**
  * Cgroup v2 management
@@ -61,42 +64,24 @@ fun setupCgroup(pid: Int, cgroupPath: String?, resources: LinuxResources?) {
             val subtreeControlPath = "$CGROUP_ROOT/$CGROUP_SUBTREE_CONTROL"
 
             for (controller in requiredControllers) {
-                val cmd = "+$controller"
-                val file = fopen(subtreeControlPath, "w")
-                if (file != null) {
-                    if (fprintf(file, "%s", cmd.cstr.ptr) < 0) {
-                        val errNum = errno
-                        fclose(file)
-                        // EEXIST means controller is already enabled, which is OK
-                        if (errNum != EEXIST) {
-                            perror("write subtree_control")
-                            Logger.error("failed to enable $controller controller")
-                            throw Exception("Failed to enable required cgroup controller: $controller")
-                        }
-                        Logger.debug("$controller controller already enabled")
-                    } else {
-                        Logger.debug("enabled $controller controller")
-                    }
-                    fclose(file)
-                } else {
-                    perror("open subtree_control")
-                    Logger.error("failed to open subtree_control")
-                    throw Exception("Failed to open cgroup subtree_control")
+                try {
+                    writeText(subtreeControlPath, "+$controller")
+                    Logger.debug("enabled $controller controller")
+                } catch (e: Exception) {
+                    Logger.error("failed to enable $controller controller: ${e.message}")
+                    throw Exception("Failed to enable required cgroup controller: $controller", e)
                 }
             }
         }
 
         // Add process to cgroup
         val procsPath = "$fullPath/$CGROUP_PROCS"
-        val procsFile = fopen(procsPath, "w")
-        if (procsFile != null) {
-            fprintf(procsFile, "%d", pid)
-            fclose(procsFile)
+        try {
+            writeText(procsPath, pid.toString())
             Logger.debug("added PID $pid to cgroup")
-        } else {
-            perror("open cgroup.procs")
-            Logger.warn("failed to add process to cgroup")
-            return@memScoped
+        } catch (e: Exception) {
+            Logger.error("failed to add PID to cgroup: ${e.message}")
+            throw Exception("Failed to add PID to cgroup", e)
         }
 
         // Apply resource limits if specified
@@ -214,22 +199,13 @@ private fun applyCpuLimits(
 /**
  * Write value to a cgroup file
  */
-@OptIn(ExperimentalForeignApi::class)
 private fun writeCgroupFile(path: String, value: String, name: String) {
-    memScoped {
-        val file = fopen(path, "w")
-        if (file != null) {
-            if (fprintf(file, "%s", value.cstr.ptr) >= 0) {
-                Logger.debug("set $name = $value")
-            } else {
-                perror("write $name")
-                Logger.warn("failed to write $name")
-            }
-            fclose(file)
-        } else {
-            perror("open $name")
-            Logger.warn("failed to open $name")
-        }
+    try {
+        writeText(path, value)
+        Logger.debug("set $name = $value")
+    } catch (e: Exception) {
+        Logger.warn("failed to write $name: ${e.message}")
+        // Note: This is warn-only for resource limits (Priority 2 issue)
     }
 }
 
