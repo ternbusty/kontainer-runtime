@@ -48,14 +48,7 @@ fun runInitProcess(
             Logger.debug("initializing seccomp filter (privileged path)")
             val notifyFd = initializeSeccomp(seccomp)
             Logger.info("seccomp filter initialized successfully")
-
-            // If seccomp returns a notify FD, send it to main process
-            if (notifyFd != null) {
-                Logger.debug("sending seccomp notify FD to main process")
-                mainSender.seccompNotifyRequest(notifyFd)
-                initReceiver.waitForSeccompRequestDone()
-                Logger.debug("seccomp notify FD handled by main process")
-            }
+            syncSeccompNotifyFd(notifyFd, mainSender, initReceiver)
         }
     }
 
@@ -140,14 +133,7 @@ fun runInitProcess(
             Logger.debug("initializing seccomp filter (unprivileged path)")
             val notifyFd = initializeSeccomp(seccomp)
             Logger.info("seccomp filter initialized successfully")
-
-            // If seccomp returns a notify FD, send it to main process
-            if (notifyFd != null) {
-                Logger.debug("sending seccomp notify FD to main process")
-                mainSender.seccompNotifyRequest(notifyFd)
-                initReceiver.waitForSeccompRequestDone()
-                Logger.debug("seccomp notify FD handled by main process")
-            }
+            syncSeccompNotifyFd(notifyFd, mainSender, initReceiver)
         }
     }
 
@@ -197,5 +183,28 @@ fun runInitProcess(
         perror("execve")
         Logger.error("Failed to execute ${processArgs[0]}")
         _exit(127)
+    }
+}
+
+/**
+ * Synchronize seccomp notify FD with main process
+ * 
+ * If a notify FD is provided:
+ * - Send it to main process via seccompNotifyRequest()
+ * - Wait for main process to handle it
+ * 
+ * This follows the same pattern as youki's sync_seccomp()
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun syncSeccompNotifyFd(
+    notifyFd: Int?,
+    mainSender: MainSender,
+    initReceiver: channel.InitReceiver
+) {
+    if (notifyFd != null) {
+        Logger.debug("sending seccomp notify FD to main process")
+        mainSender.seccompNotifyRequest(notifyFd)
+        initReceiver.waitForSeccompRequestDone()
+        Logger.debug("seccomp notify FD handled by main process")
     }
 }
