@@ -75,33 +75,27 @@ private fun emulateCloseRange(preserveFds: Int = 0) {
 
     val openFds = getOpenFds()
     if (openFds.isEmpty()) {
-        Logger.warn("failed to enumerate open FDs, cannot emulate close_range")
-        return
+        Logger.error("failed to enumerate open FDs, cannot emulate close_range")
+        throw Exception("Failed to enumerate open FDs for close_range emulation (CVE-2024-21626 mitigation)")
     }
 
     val fdsToClose = openFds.filter { it >= minFd }
-    var successCount = 0
-    var failCount = 0
 
     for (fd in fdsToClose) {
         // Get current flags
         val currentFlags = fcntl(fd, F_GETFD)
         if (currentFlags == -1) {
-            // FD might have been closed already, or doesn't support fcntl
-            failCount++
+            // FD might have been closed already - this is OK (race condition)
             continue
         }
 
         // Set FD_CLOEXEC flag
-        if (fcntl(fd, F_SETFD, currentFlags or FD_CLOEXEC) == -1) {
-            Logger.warn("failed to set CLOEXEC on FD $fd")
-            failCount++
-        } else {
-            successCount++
-        }
+        // Intentionally ignore errors here -- the cases where this might fail
+        // are basically file descriptors that have already been closed (race condition).
+        fcntl(fd, F_SETFD, currentFlags or FD_CLOEXEC)
     }
 
-    Logger.debug("emulated close_range: set CLOEXEC on $successCount FDs, $failCount failed")
+    Logger.debug("emulated close_range: set CLOEXEC on ${fdsToClose.size} FDs")
 }
 
 /**
