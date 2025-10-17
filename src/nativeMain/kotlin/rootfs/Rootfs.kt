@@ -1,15 +1,11 @@
 package rootfs
 
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.cstr
-import kotlinx.cinterop.memScoped
 import logger.Logger
-import platform.linux.__NR_pivot_root
 import platform.posix.*
-
-// Mount syscall number
-private const val __NR_mount = 165L
-private const val __NR_umount2 = 166L
+import syscall.mount
+import syscall.pivotRoot
+import syscall.umount2
 
 // Mount flags (from linux/mount.h)
 const val MS_RDONLY = 1
@@ -24,7 +20,7 @@ const val MS_SLAVE = 524288  // 1 << 19
 const val MNT_DETACH = 2
 
 /**
- * Mount a filesystem using syscall
+ * Mount a filesystem using syscall layer
  */
 @OptIn(ExperimentalForeignApi::class)
 fun mountFs(
@@ -34,24 +30,15 @@ fun mountFs(
     flags: ULong,
     data: String? = null
 ): Int {
-    memScoped {
-        val src = source?.cstr?.ptr
-        val tgt = target.cstr.ptr
-        val fs = fstype?.cstr?.ptr
-        val d = data?.cstr?.ptr
-
-        return syscall(__NR_mount, src, tgt, fs, flags, d).toInt()
-    }
+    return mount(source, target, fstype, flags, data)
 }
 
 /**
- * Umount filesystem using syscall
+ * Umount filesystem using syscall layer
  */
 @OptIn(ExperimentalForeignApi::class)
-fun umount2(target: String, flags: Int): Int {
-    memScoped {
-        return syscall(__NR_umount2, target.cstr.ptr, flags).toInt()
-    }
+fun umountFs(target: String, flags: Int): Int {
+    return umount2(target, flags)
 }
 
 /**
@@ -227,12 +214,10 @@ fun pivotRoot(newRoot: String) {
 
     // Perform pivot_root syscall using newroot for both arguments
     // This puts the old root at the same location as new root
-    memScoped {
-        if (syscall(__NR_pivot_root.toLong(), newRoot.cstr.ptr, newRoot.cstr.ptr) == -1L) {
-            perror("pivot_root")
-            close(newrootFd)
-            throw Exception("Failed to pivot_root")
-        }
+    if (pivotRoot(newRoot, newRoot) == -1) {
+        perror("pivot_root")
+        close(newrootFd)
+        throw Exception("Failed to pivot_root")
     }
 
     // Change to the new root using file descriptor
@@ -258,7 +243,7 @@ fun pivotRoot(newRoot: String) {
 
     // Unmount the old root with lazy unmount
     // Since we used pivot_root(newroot, newroot), old root is at /
-    if (umount2("/", MNT_DETACH) != 0) {
+    if (umountFs("/", MNT_DETACH) != 0) {
         perror("umount2 old root")
         Logger.warn("failed to unmount old root")
     } else {

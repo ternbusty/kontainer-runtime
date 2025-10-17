@@ -1,12 +1,10 @@
 package namespace
 
-import kotlinx.cinterop.*
+import kotlinx.cinterop.ExperimentalForeignApi
 import logger.Logger
-import platform.linux.__NR_unshare
-import platform.posix.*
 import spec.Namespace
+import syscall.unshare
 
-// Namespace clone flags
 const val CLONE_NEWNS: Int = 0x00020000      // Mount namespace
 const val CLONE_NEWUTS: Int = 0x04000000     // UTS namespace
 const val CLONE_NEWIPC: Int = 0x08000000     // IPC namespace
@@ -32,11 +30,7 @@ fun unshareNamespace(type: String) {
         else -> throw IllegalArgumentException("Unknown namespace type: $type")
     }
 
-    if (syscall(__NR_unshare.toLong(), flag) == -1L) {
-        perror("unshare($type)")
-        throw Exception("Failed to unshare $type namespace")
-    }
-
+    unshare(flag)
     Logger.debug("unshared $type namespace")
 }
 
