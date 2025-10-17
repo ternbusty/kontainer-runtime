@@ -13,13 +13,8 @@ repositories {
 kotlin {
     val hostOs = System.getProperty("os.name")
     val isArm64 = System.getProperty("os.arch") == "aarch64"
-    val isMingwX64 = hostOs.startsWith("Windows")
     val nativeTarget = when {
-        hostOs == "Mac OS X" && isArm64 -> macosArm64()
-        hostOs == "Mac OS X" && !isArm64 -> macosX64()
-        hostOs == "Linux" && isArm64 -> linuxArm64()
         hostOs == "Linux" && !isArm64 -> linuxX64()
-        isMingwX64 -> mingwX64("native")
         else -> throw GradleException("Host OS is not supported in Kotlin/Native.")
     }
 
@@ -31,14 +26,10 @@ kotlin {
             }
         }
 
-        // Configure C interop for libseccomp and socket utilities
         compilations.getByName("main").cinterops {
-            val libseccomp by creating {
-                // .def file is automatically found at src/nativeInterop/cinterop/libseccomp.def
-            }
-            val socket by creating {
-                // .def file is automatically found at src/nativeInterop/cinterop/socket.def
-            }
+            val libseccomp by creating {}
+            val socket by creating {}
+            val wait by creating {}
         }
     }
 
@@ -46,60 +37,5 @@ kotlin {
         nativeMain.dependencies {
             implementation(libs.kotlinxSerializationJson)
         }
-    }
-
-    tasks.register<Exec>("runWithSudo") {
-        group = "application"
-        description = "Builds and runs the native binary with sudo (create command)"
-        dependsOn("linkDebugExecutableLinuxX64")
-        commandLine(
-            "sudo",
-            "-S",
-            "${layout.buildDirectory.get()}/bin/linuxX64/debugExecutable/${project.name}.kexe",
-            "create",
-            "--bundle",
-            "test-bundle",
-            "test-container"
-        )
-        standardInput = System.`in`
-    }
-
-    tasks.register<Exec>("startWithSudo") {
-        group = "application"
-        description = "Starts a created container with sudo (start command)"
-        commandLine(
-            "sudo",
-            "-S",
-            "${layout.buildDirectory.get()}/bin/linuxX64/debugExecutable/${project.name}.kexe",
-            "start",
-            "test-container"
-        )
-        standardInput = System.`in`
-    }
-
-    tasks.register<Exec>("stateWithSudo") {
-        group = "application"
-        description = "Gets the state of a container with sudo (state command)"
-        commandLine(
-            "sudo",
-            "-S",
-            "${layout.buildDirectory.get()}/bin/linuxX64/debugExecutable/${project.name}.kexe",
-            "state",
-            "test-container"
-        )
-        standardInput = System.`in`
-    }
-
-    tasks.register<Exec>("deleteWithSudo") {
-        group = "application"
-        description = "Deletes a container with sudo (delete command)"
-        commandLine(
-            "sudo",
-            "-S",
-            "${layout.buildDirectory.get()}/bin/linuxX64/debugExecutable/${project.name}.kexe",
-            "delete",
-            "test-container"
-        )
-        standardInput = System.`in`
     }
 }
