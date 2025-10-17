@@ -11,6 +11,7 @@ import namespace.hasNamespace
 import namespace.unshareNamespace
 import platform.posix.*
 import spec.Spec
+import syscall.cloneSibling
 
 /**
  * Intermediate process
@@ -83,21 +84,19 @@ private fun intermediateProcessInternal(
         unshareNamespace("pid")
     }
 
-    // Fork init process
-    val initPid = fork()
-    if (initPid == -1) {
-        perror("fork(init)")
-        throw Exception("Failed to fork init process")
-    }
-
-    if (initPid == 0) {
+    // Clone init process as sibling (using CLONE_PARENT)
+    // This ensures that when intermediate process exits, init process remains
+    // a child of the main process, not re-parented to PID 1
+    val initPid = cloneSibling {
         // Init process
         // Close interReceiver in init process (not needed)
         interReceiver.close()
 
         try {
             runInitProcess(spec, rootfsPath, mainSender, initReceiver, notifyListener)
-            _exit(0)
+            // runInitProcess calls execve and never returns
+            // If we reach here, something went wrong
+            Logger.error("runInitProcess returned unexpectedly")
         } catch (e: Exception) {
             Logger.error("init process failed: ${e.message ?: "unknown"}")
 
@@ -107,28 +106,28 @@ private fun intermediateProcessInternal(
             } catch (sendErr: Exception) {
                 Logger.warn("failed to send error to main process: ${sendErr.message ?: "unknown"}")
             }
-
-            _exit(1)
         }
-    } else {
-        // Intermediate process: send init PID to main process
-        mainSender.intermediateReady(initPid)
-        Logger.debug("sent init pid=$initPid to main")
 
-        // Close channels (no more communication needed)
-        mainSender.close()
-        interReceiver.close()
-        initReceiver.close()
-
-        // Wait for init process to exit
-        val st = alloc<IntVar>()
-        if (waitpid(initPid, st.ptr, 0) == -1) {
-            perror("waitpid(init)")
-            throw Exception("Failed to wait for init process")
-        }
-        Logger.debug("init process exited")
-        _exit(0)
+        // If we reach here, something went wrong
+        _exit(1)
+        @Suppress("UNREACHABLE_CODE")
+        error("unreachable")
     }
+
+    // Intermediate process: send init PID to main process
+    mainSender.intermediateReady(initPid)
+    Logger.debug("sent init pid=$initPid to main")
+
+    // Close channels (no more communication needed)
+    mainSender.close()
+    interReceiver.close()
+    initReceiver.close()
+
+    // With CLONE_PARENT, init process is a sibling (not a child) of intermediate process.
+    // Therefore, intermediate process cannot wait for init process (would get ECHILD).
+    // The main process will manage the init process lifecycle.
+    Logger.debug("intermediate process finished, exiting")
+    _exit(0)
 }
 
 /**

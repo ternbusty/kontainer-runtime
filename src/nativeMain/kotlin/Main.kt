@@ -2,7 +2,10 @@ import channel.*
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.memScoped
 import logger.Logger
-import platform.posix.*
+import platform.posix.exit
+import platform.posix.fork
+import platform.posix.getpid
+import platform.posix.perror
 import process.runIntermediateProcess
 import process.runMainProcess
 import spec.loadSpec
@@ -26,8 +29,7 @@ fun main(args: Array<String>): Unit = memScoped {
         exit(1)
     }
 
-    val command = args[0]
-    when (command) {
+    when (val command = args[0]) {
         "create" -> createContainer(args.drop(1).toTypedArray())
         "start" -> startContainer(args.drop(1).toTypedArray())
         else -> {
@@ -90,8 +92,7 @@ fun createContainer(args: Array<String>) {
     }
 
     // Fork intermediate process
-    val intermediatePid = fork()
-    when (intermediatePid) {
+    when (val intermediatePid = fork()) {
         -1 -> {
             perror("fork")
             Logger.error("Failed to fork intermediate process")
@@ -121,7 +122,8 @@ fun createContainer(args: Array<String>) {
             // Close notify listener in main process (only used by init process)
             notifyListener.close()
 
-            val initPid = runMainProcess(spec, containerId, bundlePath, intermediatePid, mainReceiver, interSender, initSender)
+            val initPid =
+                runMainProcess(spec, containerId, bundlePath, intermediatePid, mainReceiver, interSender, initSender)
 
             // Save container state for start command
             Logger.info("container $containerId created with init PID $initPid")
