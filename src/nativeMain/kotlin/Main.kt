@@ -1,5 +1,6 @@
 import command.create
 import command.delete
+import command.kill
 import command.start
 import command.state
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -17,6 +18,7 @@ import platform.posix.exit
  *   create <container-id> <bundle-path>  - Create a container
  *   start <container-id>                  - Start a created container
  *   state <container-id>                  - Display container state
+ *   kill <container-id> <signal>          - Send a signal to a container
  *   delete [--force|-f] <container-id>    - Delete a container
  */
 @OptIn(ExperimentalForeignApi::class)
@@ -30,6 +32,7 @@ fun main(args: Array<String>): Unit = memScoped {
         Logger.error("  create <container-id> <bundle-path>    Create a new container")
         Logger.error("  start <container-id>                    Start a created container")
         Logger.error("  state <container-id>                    Display container state")
+        Logger.error("  kill <container-id> <signal>            Send a signal to a container")
         Logger.error("  delete [--force|-f] <container-id>      Delete a container")
         exit(1)
     }
@@ -62,6 +65,15 @@ fun main(args: Array<String>): Unit = memScoped {
             state(cmdArgs[0])
         }
 
+        "kill" -> {
+            val cmdArgs = args.drop(1)
+            if (cmdArgs.size < 2) {
+                Logger.error("Usage: kontainer-runtime kill <container-id> <signal>")
+                exit(1)
+            }
+            kill(cmdArgs[0], cmdArgs[1])
+        }
+
         "delete" -> {
             // Parse --force or -f flag
             val remainingArgs = args.drop(1).toList()
@@ -78,7 +90,7 @@ fun main(args: Array<String>): Unit = memScoped {
 
         else -> {
             Logger.error("unknown command: $command")
-            Logger.error("available commands: create, start, state, delete")
+            Logger.error("available commands: create, start, state, kill, delete")
             exit(1)
         }
     }

@@ -20,9 +20,6 @@ private const val SYS_clone = 56L
 // Clone flags
 private const val CLONE_PARENT = 0x00008000L
 
-// Signals
-private const val SIGCHLD = 17
-
 /**
  * Size of clone3_args structure in bytes
  * 11 fields * 8 bytes (ULong) = 88 bytes

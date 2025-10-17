@@ -6,9 +6,67 @@ import platform.posix.*
 
 /**
  * Signal numbers (Linux)
+ * https://man7.org/linux/man-pages/man7/signal.7.html
  */
-const val SIGKILL = 9
-const val SIGTERM = 15
+const val SIGHUP = 1     // Hangup detected on controlling terminal or death of controlling process
+const val SIGINT = 2     // Interrupt from keyboard
+const val SIGQUIT = 3    // Quit from keyboard
+const val SIGILL = 4     // Illegal Instruction
+const val SIGABRT = 6    // Abort signal from abort(3)
+const val SIGFPE = 8     // Floating-point exception
+const val SIGKILL = 9    // Kill signal (cannot be caught or ignored)
+const val SIGSEGV = 11   // Invalid memory reference
+const val SIGPIPE = 13   // Broken pipe: write to pipe with no readers
+const val SIGALRM = 14   // Timer signal from alarm(2)
+const val SIGTERM = 15   // Termination signal
+const val SIGUSR1 = 10   // User-defined signal 1
+const val SIGUSR2 = 12   // User-defined signal 2
+const val SIGCHLD = 17   // Child stopped or terminated
+const val SIGCONT = 18   // Continue if stopped
+const val SIGSTOP = 19   // Stop process (cannot be caught or ignored)
+const val SIGTSTP = 20   // Stop typed at terminal
+const val SIGTTIN = 21   // Terminal input for background process
+const val SIGTTOU = 22   // Terminal output for background process
+
+/**
+ * Parse signal string to signal number
+ *
+ * Accepts both signal names (e.g., "SIGKILL", "KILL") and numbers (e.g., "9").
+ *
+ * @param signalStr Signal string to parse
+ * @return Signal number
+ * @throws IllegalArgumentException if signal is invalid
+ */
+fun parseSignal(signalStr: String): Int {
+    // Try parsing as number first
+    signalStr.toIntOrNull()?.let { return it }
+
+    // Parse as signal name (with or without SIG prefix)
+    val normalized = if (signalStr.startsWith("SIG")) signalStr else "SIG$signalStr"
+
+    return when (normalized.uppercase()) {
+        "SIGHUP" -> SIGHUP
+        "SIGINT" -> SIGINT
+        "SIGQUIT" -> SIGQUIT
+        "SIGILL" -> SIGILL
+        "SIGABRT" -> SIGABRT
+        "SIGFPE" -> SIGFPE
+        "SIGKILL" -> SIGKILL
+        "SIGSEGV" -> SIGSEGV
+        "SIGPIPE" -> SIGPIPE
+        "SIGALRM" -> SIGALRM
+        "SIGTERM" -> SIGTERM
+        "SIGUSR1" -> SIGUSR1
+        "SIGUSR2" -> SIGUSR2
+        "SIGCHLD" -> SIGCHLD
+        "SIGCONT" -> SIGCONT
+        "SIGSTOP" -> SIGSTOP
+        "SIGTSTP" -> SIGTSTP
+        "SIGTTIN" -> SIGTTIN
+        "SIGTTOU" -> SIGTTOU
+        else -> throw IllegalArgumentException("Unknown signal: $signalStr")
+    }
+}
 
 /**
  * Send a signal to a process
