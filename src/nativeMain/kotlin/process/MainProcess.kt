@@ -7,8 +7,8 @@ import kotlinx.cinterop.*
 import logger.Logger
 import platform.posix.*
 import seccomp.sendToSeccompListener
-import spec.ContainerState
 import spec.Spec
+import state.State
 import utils.writeText
 
 /**
@@ -129,13 +129,14 @@ fun runMainProcess(
             spec.linux.seccomp.listenerPath?.let { listenerPath ->
                 Logger.debug("forwarding seccomp notify FD to listener: $listenerPath")
                 try {
-                    val containerState = ContainerState(
+                    val containerState = State(
                         ociVersion = spec.ociVersion,
                         id = containerId,
                         status = "creating",
                         pid = initPid,
                         bundle = bundlePath,
-                        annotations = null
+                        annotations = null,
+                        created = null  // Not set yet during creating phase
                     )
                     sendToSeccompListener(listenerPath, containerState, notifyFd)
                     Logger.debug("forwarded seccomp notify FD to listener")

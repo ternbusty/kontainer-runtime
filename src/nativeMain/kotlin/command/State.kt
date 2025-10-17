@@ -3,6 +3,7 @@ package command
 import kotlinx.cinterop.ExperimentalForeignApi
 import logger.Logger
 import platform.posix.exit
+import state.StateCodec
 import state.loadState
 import state.refreshStatus
 
@@ -29,11 +30,7 @@ fun state(containerId: String) {
 
     // Output state as JSON to stdout (OCI Runtime Spec requirement)
     try {
-        val json = kotlinx.serialization.json.Json {
-            prettyPrint = true
-            encodeDefaults = false
-        }
-        println(json.encodeToString(state))
+        println(StateCodec.encode(state))
     } catch (e: Exception) {
         Logger.error("failed to serialize state: ${e.message ?: "unknown"}")
         exit(1)

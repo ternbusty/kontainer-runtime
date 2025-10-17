@@ -37,12 +37,7 @@ fun saveKontainerConfig(config: KontainerConfig, containerId: String) {
 
     Logger.debug("saving kontainer config to $configPath")
 
-    val json = Json {
-        prettyPrint = true
-        encodeDefaults = false
-    }
-
-    val jsonString = json.encodeToString(config)
+    val jsonString = ConfigCodec.encode(config)
 
     val file = fopen(configPath, "w")
         ?: throw Exception("Failed to open config file for writing: $configPath")
@@ -88,13 +83,42 @@ fun loadKontainerConfig(containerId: String): KontainerConfig {
             buffer[bytesRead.toInt()] = 0.toByte()
             val jsonString = buffer.toKString()
 
-            val json = Json {
-                ignoreUnknownKeys = true
-            }
-
-            return json.decodeFromString<KontainerConfig>(jsonString)
+            return ConfigCodec.decode(jsonString)
         }
     } finally {
         fclose(file)
+    }
+}
+
+/**
+ * JSON codec for KontainerConfig serialization/deserialization
+ *
+ * Provides centralized JSON configuration for encoding and decoding internal config.
+ */
+object ConfigCodec {
+    private val json = Json {
+        prettyPrint = true
+        encodeDefaults = false
+        ignoreUnknownKeys = true
+    }
+
+    /**
+     * Encode config to JSON string
+     *
+     * @param config KontainerConfig to encode
+     * @return JSON string
+     */
+    fun encode(config: KontainerConfig): String {
+        return json.encodeToString(config)
+    }
+
+    /**
+     * Decode JSON string to KontainerConfig
+     *
+     * @param text JSON string
+     * @return KontainerConfig object
+     */
+    fun decode(text: String): KontainerConfig {
+        return json.decodeFromString(text)
     }
 }

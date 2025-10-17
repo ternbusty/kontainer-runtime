@@ -4,8 +4,8 @@ import kotlinx.cinterop.*
 import logger.Logger
 import platform.linux.*
 import platform.posix.*
-import spec.ContainerState
-import spec.StateCodec
+import state.State
+import state.StateCodec
 
 /**
  * SeccompListener handles sending seccomp notify FD to external listener
@@ -28,7 +28,7 @@ import spec.StateCodec
  * @param notifyFd Seccomp notify file descriptor
  */
 @OptIn(ExperimentalForeignApi::class)
-fun sendToSeccompListener(listenerPath: String, state: ContainerState, notifyFd: Int) {
+fun sendToSeccompListener(listenerPath: String, state: State, notifyFd: Int) {
     Logger.debug("sending seccomp notify FD to listener: $listenerPath")
 
     // Create Unix socket
@@ -67,8 +67,8 @@ fun sendToSeccompListener(listenerPath: String, state: ContainerState, notifyFd:
 
         Logger.debug("connected to seccomp listener")
 
-        // Send container state as JSON
-        val stateJson = StateCodec.encode(state) + "\n"
+        // Send container state as JSON (compact format for network transmission)
+        val stateJson = StateCodec.encode(state, pretty = false) + "\n"
         val stateBytes = stateJson.encodeToByteArray()
 
         memScoped {

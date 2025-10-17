@@ -114,7 +114,7 @@ fun State.save() {
 
     // Serialize state to JSON
     val json = try {
-        Json.encodeToString(this)
+        StateCodec.encode(this)
     } catch (e: Exception) {
         Logger.error("failed to serialize state: ${e.message ?: "unknown"}")
         throw Exception("Failed to serialize state: ${e.message}")
@@ -228,7 +228,7 @@ fun loadState(containerId: String): State {
 
             // Parse JSON
             try {
-                val state = Json.decodeFromString<State>(json)
+                val state = StateCodec.decode(json)
                 Logger.info("loaded state for container ${state.id}")
                 return state
             } catch (e: Exception) {
@@ -462,5 +462,52 @@ fun State.refreshStatus(): State {
         this.copy(status = newStatus)
     } else {
         this
+    }
+}
+
+/**
+ * JSON codec for State serialization/deserialization
+ *
+ * Provides common JSON configuration for encoding and decoding container state.
+ * Similar to youki's StateCodec.
+ */
+object StateCodec {
+    // For pretty-printed output (state command, save to disk)
+    private val prettyJson = Json {
+        prettyPrint = true
+        encodeDefaults = false
+        ignoreUnknownKeys = true
+    }
+
+    // For compact output (seccomp listener, network transmission)
+    private val compactJson = Json {
+        prettyPrint = false
+        encodeDefaults = false
+        ignoreUnknownKeys = true
+    }
+
+    /**
+     * Encode state to JSON string
+     *
+     * @param state State to encode
+     * @param pretty If true, use pretty-printed format (default). If false, use compact format.
+     * @return JSON string
+     */
+    fun encode(state: State, pretty: Boolean = true): String {
+        return if (pretty) {
+            prettyJson.encodeToString(state)
+        } else {
+            compactJson.encodeToString(state)
+        }
+    }
+
+    /**
+     * Decode JSON string to State
+     *
+     * @param text JSON string
+     * @return State object
+     */
+    fun decode(text: String): State {
+        return prettyJson.decodeFromString(text)
     }
 }
