@@ -46,7 +46,13 @@ fun main(args: Array<String>): Unit = memScoped {
         "create" -> createContainer(args.drop(1).toTypedArray())
         "start" -> startContainer(args.drop(1).toTypedArray())
         "state" -> stateContainer(args.drop(1).toTypedArray())
-        "delete" -> deleteContainer(args.drop(1).toTypedArray())
+        "delete" -> {
+            // Parse --force or -f flag
+            val remainingArgs = args.drop(1).toList()
+            val force = remainingArgs.contains("--force") || remainingArgs.contains("-f")
+            val containerArgs = remainingArgs.filter { it != "--force" && it != "-f" }.toTypedArray()
+            deleteContainer(containerArgs, force)
+        }
         else -> {
             Logger.error("unknown command: $command")
             Logger.error("available commands: create, start, state, delete")
@@ -273,18 +279,24 @@ fun startContainer(args: Array<String>) {
 }
 
 @OptIn(ExperimentalForeignApi::class)
-fun deleteContainer(args: Array<String>) {
+fun deleteContainer(args: Array<String>, force: Boolean = false) {
     if (args.isEmpty()) {
-        Logger.error("Usage: kontainer-runtime delete <container-id>")
+        Logger.error("Usage: kontainer-runtime delete [--force|-f] <container-id>")
         exit(1)
     }
 
     val containerId = args[0]
 
-    Logger.info("deleting container: $containerId")
+    Logger.info("deleting container: $containerId${if (force) " (force)" else ""}")
 
     // Check if container exists
     if (!containerExists(containerId)) {
+        if (force) {
+            // With force flag, non-existent container is not an error
+            Logger.debug("container $containerId does not exist, but force flag is set")
+            Logger.info("container $containerId deleted successfully")
+            exit(0)
+        }
         Logger.error("container $containerId does not exist")
         exit(1)
     }
@@ -304,6 +316,7 @@ fun deleteContainer(args: Array<String>) {
 
     // Check if container can be deleted
     // Following youki/runc behavior: allow deletion of 'stopped' and 'created' states
+    // With force flag, allow deletion of any state
     when (state.status) {
         "stopped" -> {
             // Can delete stopped containers
@@ -311,6 +324,7 @@ fun deleteContainer(args: Array<String>) {
         }
         "created" -> {
             // For created containers, kill the process first
+            // Note: youki/runc allow deleting 'created' without force flag
             Logger.debug("container is created, killing process before deletion")
             state.pid?.let { pid ->
                 try {
@@ -322,11 +336,33 @@ fun deleteContainer(args: Array<String>) {
                 }
             }
         }
+        "running", "paused", "creating" -> {
+            // Cannot delete running/paused/creating containers without force flag
+            if (force) {
+                Logger.debug("container is in '${state.status}' state, but force flag is set")
+                Logger.debug("killing process before deletion")
+                state.pid?.let { pid ->
+                    try {
+                        killProcess(pid)
+                        Logger.debug("killed process $pid")
+                    } catch (e: Exception) {
+                        Logger.warn("failed to kill process $pid: ${e.message ?: "unknown"}")
+                        // Continue with deletion even if kill fails
+                    }
+                }
+            } else {
+                Logger.error("cannot delete container in '${state.status}' state")
+                Logger.error("use --force flag to force deletion, or stop the container first")
+                exit(1)
+            }
+        }
         else -> {
-            // Cannot delete running/paused containers without force flag
-            Logger.error("cannot delete container in '${state.status}' state")
-            Logger.error("container must be stopped before deletion")
-            exit(1)
+            // Unknown status
+            Logger.warn("unknown container status: ${state.status}")
+            if (!force) {
+                Logger.error("cannot delete container in unknown state without force flag")
+                exit(1)
+            }
         }
     }
 
