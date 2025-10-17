@@ -3,7 +3,6 @@ package config
 import kotlinx.cinterop.*
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import logger.Logger
 import platform.posix.fclose
@@ -13,7 +12,7 @@ import platform.posix.fread
 /**
  * Internal configuration for Kontainer Runtime
  *
- * Similar to youki's YoukiConfig, this stores runtime-specific configuration
+ * This stores runtime-specific configuration
  * that is independent of the OCI bundle. This allows operations like delete
  * to work even if the bundle has been moved or deleted.
  */
