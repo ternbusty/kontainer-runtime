@@ -1,0 +1,35 @@
+headers = sched.h
+headerFilter = sched.h
+package = platform.linux
+compilerOpts = -D_GNU_SOURCE
+---
+
+// Namespace flags for clone/unshare
+static inline int _CLONE_NEWNS() {
+    return CLONE_NEWNS;
+}
+
+static inline int _CLONE_NEWUTS() {
+    return CLONE_NEWUTS;
+}
+
+static inline int _CLONE_NEWIPC() {
+    return CLONE_NEWIPC;
+}
+
+static inline int _CLONE_NEWUSER() {
+    return CLONE_NEWUSER;
+}
+
+static inline int _CLONE_NEWPID() {
+    return CLONE_NEWPID;
+}
+
+static inline int _CLONE_NEWNET() {
+    return CLONE_NEWNET;
+}
+
+// Other clone flags
+static inline int _CLONE_PARENT() {
+    return CLONE_PARENT;
+}

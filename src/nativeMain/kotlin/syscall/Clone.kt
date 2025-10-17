@@ -2,6 +2,7 @@ package syscall
 
 import kotlinx.cinterop.*
 import logger.Logger
+import platform.linux._CLONE_PARENT
 import platform.posix.*
 
 /**
@@ -16,9 +17,6 @@ import platform.posix.*
 // System call numbers (x86_64 Linux)
 private const val SYS_clone3 = 435L
 private const val SYS_clone = 56L
-
-// Clone flags
-private const val CLONE_PARENT = 0x00008000L
 
 /**
  * Size of clone3_args structure in bytes
@@ -69,7 +67,7 @@ private fun tryClone3(callback: () -> Nothing): Int? = memScoped {
     // Set fields in order:
     // 0: flags, 1: pidfd, 2: child_tid, 3: parent_tid, 4: exit_signal
     // 5: stack, 6: stack_size, 7: tls, 8: set_tid, 9: set_tid_size, 10: cgroup
-    args[0] = CLONE_PARENT.toULong()  // flags
+    args[0] = _CLONE_PARENT().toULong()  // flags
     args[1] = 0u  // pidfd
     args[2] = 0u  // child_tid
     args[3] = 0u  // parent_tid

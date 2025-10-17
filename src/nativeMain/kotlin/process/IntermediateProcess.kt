@@ -5,7 +5,8 @@ import channel.InitReceiver
 import channel.IntermediateReceiver
 import channel.MainSender
 import channel.NotifyListener
-import kotlinx.cinterop.*
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.memScoped
 import logger.Logger
 import namespace.hasNamespace
 import namespace.unshareNamespace

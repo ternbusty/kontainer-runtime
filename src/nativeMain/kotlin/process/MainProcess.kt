@@ -5,20 +5,15 @@ import channel.IntermediateSender
 import channel.MainReceiver
 import kotlinx.cinterop.*
 import logger.Logger
+import platform.linux._WEXITSTATUS
+import platform.linux._WIFEXITED
+import platform.linux._WIFSIGNALED
+import platform.linux._WTERMSIG
 import platform.posix.*
 import seccomp.sendToSeccompListener
 import spec.Spec
 import state.State
 import utils.writeText
-
-/**
- * Wait status check macros (from sys/wait.h)
- * These are C macros, so we need to implement them manually in Kotlin
- */
-private fun WIFEXITED(status: Int): Boolean = ((status and 0x7f) == 0)
-private fun WEXITSTATUS(status: Int): Int = ((status and 0xff00) shr 8)
-private fun WIFSIGNALED(status: Int): Boolean = ((((status and 0x7f) + 1) shr 1) > 0)
-private fun WTERMSIG(status: Int): Int = (status and 0x7f)
 
 /**
  * Main process - Parent process
@@ -148,7 +143,6 @@ fun runMainProcess(
                 Logger.warn("seccomp notify FD received but no listenerPath specified")
             }
 
-            // Send completion signal to init process
             initSender.seccompNotifyDone()
             Logger.debug("sent seccomp notify done signal")
         } catch (e: Exception) {
@@ -157,7 +151,6 @@ fun runMainProcess(
         }
     }
 
-    // Wait for init process to be ready
     try {
         mainReceiver.waitForInitReady()
         Logger.debug("init process is ready")
@@ -165,8 +158,6 @@ fun runMainProcess(
         Logger.error("error waiting for init ready: ${e.message ?: "unknown"}")
         _exit(1)
     }
-
-    // Close channels
     mainReceiver.close()
     initSender.close()
 
@@ -190,15 +181,15 @@ fun runMainProcess(
     } else {
         // Check exit status
         val status = st.value
-        if (WIFEXITED(status)) {
-            val exitCode = WEXITSTATUS(status)
+        if (_WIFEXITED(status) != 0) {
+            val exitCode = _WEXITSTATUS(status)
             if (exitCode != 0) {
                 Logger.warn("intermediate process failed with exit status: $exitCode")
             } else {
                 Logger.debug("intermediate process exited successfully")
             }
-        } else if (WIFSIGNALED(status)) {
-            val signal = WTERMSIG(status)
+        } else if (_WIFSIGNALED(status) != 0) {
+            val signal = _WTERMSIG(status)
             Logger.warn("intermediate process killed by signal: $signal")
         } else {
             Logger.warn("intermediate process exited abnormally (status=$status)")

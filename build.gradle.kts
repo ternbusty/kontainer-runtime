@@ -30,6 +30,7 @@ kotlin {
             val libseccomp by creating {}
             val socket by creating {}
             val wait by creating {}
+            val sched by creating {}
         }
     }
 
