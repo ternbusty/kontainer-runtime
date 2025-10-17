@@ -14,37 +14,27 @@ import spec.SeccompArg
 
 /**
  * Translate OCI spec action string to libseccomp action constant
- *
- * libseccomp action constants:
- * - SCMP_ACT_KILL_PROCESS = 0x80000000U
- * - SCMP_ACT_KILL_THREAD  = 0x00000000U
- * - SCMP_ACT_TRAP         = 0x00030000U
- * - SCMP_ACT_ERRNO(x)     = 0x00050000U | (x & 0x0000ffffU)
- * - SCMP_ACT_TRACE(x)     = 0x7ff00000U | (x & 0x0000ffffU)
- * - SCMP_ACT_LOG          = 0x7ffc0000U
- * - SCMP_ACT_ALLOW        = 0x7fff0000U
- * - SCMP_ACT_NOTIFY       = 0x7fc00000U
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun translateAction(action: String, errno: UInt?): UInt {
     return when (action) {
-        "SCMP_ACT_KILL" -> 0x00000000u  // SCMP_ACT_KILL_THREAD
-        "SCMP_ACT_KILL_PROCESS" -> 0x80000000u
-        "SCMP_ACT_KILL_THREAD" -> 0x00000000u
-        "SCMP_ACT_TRAP" -> 0x00030000u
+        "SCMP_ACT_KILL" -> SCMP_ACT_KILL_THREAD
+        "SCMP_ACT_KILL_PROCESS" -> SCMP_ACT_KILL_PROCESS
+        "SCMP_ACT_KILL_THREAD" -> SCMP_ACT_KILL_THREAD
+        "SCMP_ACT_TRAP" -> SCMP_ACT_TRAP
         "SCMP_ACT_ERRNO" -> {
-            val errnoVal = (errno ?: 1u) and 0x0000ffffu
-            0x00050000u or errnoVal
+            val errnoVal = errno ?: 1u
+            _SCMP_ACT_ERRNO(errnoVal)
         }
 
         "SCMP_ACT_TRACE" -> {
-            val traceVal = (errno ?: 1u) and 0x0000ffffu
-            0x7ff00000u or traceVal
+            val traceVal = errno ?: 1u
+            _SCMP_ACT_TRACE(traceVal)
         }
 
-        "SCMP_ACT_ALLOW" -> 0x7fff0000u
-        "SCMP_ACT_LOG" -> 0x7ffc0000u
-        "SCMP_ACT_NOTIFY" -> 0x7fc00000u
+        "SCMP_ACT_ALLOW" -> SCMP_ACT_ALLOW
+        "SCMP_ACT_LOG" -> SCMP_ACT_LOG
+        "SCMP_ACT_NOTIFY" -> SCMP_ACT_NOTIFY
         else -> {
             Logger.error("Unknown seccomp action: $action")
             throw Exception("Unknown seccomp action: $action")
@@ -54,26 +44,17 @@ private fun translateAction(action: String, errno: UInt?): UInt {
 
 /**
  * Translate OCI spec operator string to libseccomp operator constant
- *
- * enum scmp_compare values:
- * - SCMP_CMP_NE        = 1  (not equal)
- * - SCMP_CMP_LT        = 2  (less than)
- * - SCMP_CMP_LE        = 3  (less than or equal)
- * - SCMP_CMP_EQ        = 4  (equal)
- * - SCMP_CMP_GE        = 5  (greater than or equal)
- * - SCMP_CMP_GT        = 6  (greater than)
- * - SCMP_CMP_MASKED_EQ = 7  (masked equality)
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun translateOp(op: String): UInt {
+private fun translateOp(op: String): scmp_compare {
     return when (op) {
-        "SCMP_CMP_NE" -> 1u
-        "SCMP_CMP_LT" -> 2u
-        "SCMP_CMP_LE" -> 3u
-        "SCMP_CMP_EQ" -> 4u
-        "SCMP_CMP_GE" -> 5u
-        "SCMP_CMP_GT" -> 6u
-        "SCMP_CMP_MASKED_EQ" -> 7u
+        "SCMP_CMP_NE" -> SCMP_CMP_NE
+        "SCMP_CMP_LT" -> SCMP_CMP_LT
+        "SCMP_CMP_LE" -> SCMP_CMP_LE
+        "SCMP_CMP_EQ" -> SCMP_CMP_EQ
+        "SCMP_CMP_GE" -> SCMP_CMP_GE
+        "SCMP_CMP_GT" -> SCMP_CMP_GT
+        "SCMP_CMP_MASKED_EQ" -> SCMP_CMP_MASKED_EQ
         else -> {
             Logger.error("Unknown seccomp operator: $op")
             throw Exception("Unknown seccomp operator: $op")
@@ -114,8 +95,7 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int? {
     try {
         // Set CTL_NNP to false (don't automatically set no_new_privs)
         // We handle no_new_privs separately based on the OCI spec
-        // SCMP_FLTATR_CTL_NNP = 3
-        if (seccomp_attr_set(ctx, 3u, 0u) < 0) {
+        if (seccomp_attr_set(ctx, SCMP_FLTATR_CTL_NNP, 0u) < 0) {
             perror("seccomp_attr_set(SCMP_FLTATR_CTL_NNP)")
             Logger.warn("failed to set SCMP_FLTATR_CTL_NNP")
         }
@@ -205,7 +185,7 @@ private fun addSyscallRule(ctx: COpaquePointer?, syscall: LinuxSyscall, defaultA
             // Add conditional rules
             // Note: libseccomp requires one rule per argument comparison
             syscall.args.forEach { arg ->
-                if (addSyscallArgRule(ctx, action, syscallNum, name, arg) < 0) {
+                if (addSyscallArgRule(ctx, action, syscallNum, arg) < 0) {
                     Logger.error("failed to add conditional rule for syscall $name")
                     throw Exception("Failed to add conditional seccomp rule for syscall: $name")
                 }
@@ -222,7 +202,6 @@ private fun addSyscallArgRule(
     ctx: COpaquePointer?,
     action: UInt,
     syscallNum: Int,
-    name: String,
     arg: SeccompArg
 ): Int {
     return memScoped {

@@ -3,7 +3,9 @@ package syscall
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.cstr
 import kotlinx.cinterop.memScoped
+import platform.linux.__NR_mount
 import platform.linux.__NR_pivot_root
+import platform.linux.__NR_umount2
 import platform.posix.syscall
 
 /**
@@ -12,10 +14,6 @@ import platform.posix.syscall
  * Provides thin wrappers around mount-related system calls.
  * This layer should not contain business logic - just syscall invocation.
  */
-
-// Mount syscall numbers
-private const val __NR_mount = 165L
-private const val __NR_umount2 = 166L
 
 /**
  * Mount a filesystem
@@ -41,7 +39,7 @@ fun mount(
         val fs = fstype?.cstr?.ptr
         val d = data?.cstr?.ptr
 
-        syscall(__NR_mount, src, tgt, fs, flags, d).toInt()
+        syscall(__NR_mount.toLong(), src, tgt, fs, flags, d).toInt()
     }
 }
 
@@ -55,7 +53,7 @@ fun mount(
 @OptIn(ExperimentalForeignApi::class)
 fun umount2(target: String, flags: Int): Int {
     return memScoped {
-        syscall(__NR_umount2, target.cstr.ptr, flags).toInt()
+        syscall(__NR_umount2.toLong(), target.cstr.ptr, flags).toInt()
     }
 }
 

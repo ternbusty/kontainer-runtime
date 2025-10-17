@@ -5,30 +5,6 @@ import logger.Logger
 import platform.posix.*
 
 /**
- * Signal numbers (Linux)
- * https://man7.org/linux/man-pages/man7/signal.7.html
- */
-const val SIGHUP = 1     // Hangup detected on controlling terminal or death of controlling process
-const val SIGINT = 2     // Interrupt from keyboard
-const val SIGQUIT = 3    // Quit from keyboard
-const val SIGILL = 4     // Illegal Instruction
-const val SIGABRT = 6    // Abort signal from abort(3)
-const val SIGFPE = 8     // Floating-point exception
-const val SIGKILL = 9    // Kill signal (cannot be caught or ignored)
-const val SIGSEGV = 11   // Invalid memory reference
-const val SIGPIPE = 13   // Broken pipe: write to pipe with no readers
-const val SIGALRM = 14   // Timer signal from alarm(2)
-const val SIGTERM = 15   // Termination signal
-const val SIGUSR1 = 10   // User-defined signal 1
-const val SIGUSR2 = 12   // User-defined signal 2
-const val SIGCHLD = 17   // Child stopped or terminated
-const val SIGCONT = 18   // Continue if stopped
-const val SIGSTOP = 19   // Stop process (cannot be caught or ignored)
-const val SIGTSTP = 20   // Stop typed at terminal
-const val SIGTTIN = 21   // Terminal input for background process
-const val SIGTTOU = 22   // Terminal output for background process
-
-/**
  * Parse signal string to signal number
  *
  * Accepts both signal names (e.g., "SIGKILL", "KILL") and numbers (e.g., "9").
