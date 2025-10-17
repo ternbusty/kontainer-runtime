@@ -15,11 +15,11 @@ import platform.posix.exit
  * Uses a 3-process architecture with 3 channels and notify socket for container lifecycle management
  *
  * Commands:
- *   create <container-id> <bundle-path>  - Create a container
- *   start <container-id>                  - Start a created container
- *   state <container-id>                  - Display container state
- *   kill <container-id> <signal>          - Send a signal to a container
- *   delete [--force|-f] <container-id>    - Delete a container
+ *   create [--bundle|-b <path>] [--pid-file <path>] <container-id>  - Create a container
+ *   start <container-id>                                             - Start a created container
+ *   state <container-id>                                             - Display container state
+ *   kill <container-id> <signal>                                     - Send a signal to a container
+ *   delete [--force|-f] <container-id>                               - Delete a container
  */
 @OptIn(ExperimentalForeignApi::class)
 fun main(args: Array<String>): Unit = memScoped {
@@ -29,22 +29,61 @@ fun main(args: Array<String>): Unit = memScoped {
         Logger.error("Usage: kontainer-runtime <command> [options] <container-id> [args...]")
         Logger.error("")
         Logger.error("Commands:")
-        Logger.error("  create <container-id> <bundle-path>    Create a new container")
-        Logger.error("  start <container-id>                    Start a created container")
-        Logger.error("  state <container-id>                    Display container state")
-        Logger.error("  kill <container-id> <signal>            Send a signal to a container")
-        Logger.error("  delete [--force|-f] <container-id>      Delete a container")
+        Logger.error("  create [--bundle|-b <path>] [--pid-file <path>] <container-id>    Create a new container")
+        Logger.error("  start <container-id>                                               Start a created container")
+        Logger.error("  state <container-id>                                               Display container state")
+        Logger.error("  kill <container-id> <signal>                                       Send a signal to a container")
+        Logger.error("  delete [--force|-f] <container-id>                                 Delete a container")
         exit(1)
     }
 
     when (val command = args[0]) {
         "create" -> {
             val cmdArgs = args.drop(1)
-            if (cmdArgs.size < 2) {
-                Logger.error("Usage: kontainer-runtime create <container-id> <bundle-path>")
+
+            // Parse options
+            var bundlePath = "."  // Default to current directory (OCI standard)
+            var pidFile: String? = null
+            var containerId: String? = null
+            var i = 0
+
+            while (i < cmdArgs.size) {
+                when (cmdArgs[i]) {
+                    "--bundle", "-b" -> {
+                        if (i + 1 >= cmdArgs.size) {
+                            Logger.error("--bundle requires a path argument")
+                            exit(1)
+                        }
+                        bundlePath = cmdArgs[i + 1]
+                        i += 2
+                    }
+                    "--pid-file" -> {
+                        if (i + 1 >= cmdArgs.size) {
+                            Logger.error("--pid-file requires a path argument")
+                            exit(1)
+                        }
+                        pidFile = cmdArgs[i + 1]
+                        i += 2
+                    }
+                    else -> {
+                        // Assume this is the container ID (last positional argument)
+                        if (cmdArgs[i].startsWith("-")) {
+                            Logger.error("unknown option: ${cmdArgs[i]}")
+                            Logger.error("Usage: kontainer-runtime create [--bundle|-b <path>] [--pid-file <path>] <container-id>")
+                            exit(1)
+                        }
+                        containerId = cmdArgs[i]
+                        i++
+                    }
+                }
+            }
+
+            if (containerId == null) {
+                Logger.error("Usage: kontainer-runtime create [--bundle|-b <path>] [--pid-file <path>] <container-id>")
                 exit(1)
             }
-            create(cmdArgs[0], cmdArgs[1])
+
+            create(containerId!!, bundlePath, pidFile)
         }
 
         "start" -> {

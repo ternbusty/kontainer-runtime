@@ -57,8 +57,9 @@ kotlin {
             "-S",
             "${layout.buildDirectory.get()}/bin/linuxX64/debugExecutable/${project.name}.kexe",
             "create",
-            "test-container",
-            "test-bundle"
+            "--bundle",
+            "test-bundle",
+            "test-container"
         )
         standardInput = System.`in`
     }

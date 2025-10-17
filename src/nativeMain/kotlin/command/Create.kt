@@ -19,15 +19,17 @@ import spec.loadSpec
 import state.containerExists
 import state.createState
 import state.save
+import utils.writeText
 
 /**
  * Create command - Creates a new container
  *
  * @param containerId Container ID
- * @param bundlePath Path to OCI bundle directory
+ * @param bundlePath Path to OCI bundle directory (default: current directory)
+ * @param pidFile Optional path to write the container's init process PID
  */
 @OptIn(ExperimentalForeignApi::class)
-fun create(containerId: String, bundlePath: String): Unit = memScoped {
+fun create(containerId: String, bundlePath: String = ".", pidFile: String? = null): Unit = memScoped {
     if (containerExists(containerId)) {
         Logger.error("container $containerId already exists")
         exit(1)
@@ -136,6 +138,18 @@ fun create(containerId: String, bundlePath: String): Unit = memScoped {
             } catch (e: Exception) {
                 Logger.error("failed to save kontainer config: ${e.message ?: "unknown"}")
                 exit(1)
+            }
+
+            // Write PID to file if --pid-file was specified
+            if (pidFile != null) {
+                Logger.debug("writing PID to file: $pidFile")
+                try {
+                    writeText(pidFile, "$initPid\n")
+                    Logger.debug("successfully wrote PID $initPid to $pidFile")
+                } catch (e: Exception) {
+                    Logger.error("failed to write PID file: ${e.message ?: "unknown"}")
+                    exit(1)
+                }
             }
 
             Logger.info("container $containerId created with init PID $initPid")

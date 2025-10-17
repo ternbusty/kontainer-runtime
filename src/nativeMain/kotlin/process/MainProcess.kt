@@ -63,7 +63,7 @@ fun runMainProcess(
         } + "\n"
     } else {
         // Fallback: map container root to current effective UID
-        val hostUid = geteuid().toUInt()
+        val hostUid = geteuid()
         "0 $hostUid 1\n"
     }
 
@@ -74,7 +74,7 @@ fun runMainProcess(
         } + "\n"
     } else {
         // Fallback: map container root to current effective GID
-        val hostGid = getegid().toUInt()
+        val hostGid = getegid()
         "0 $hostGid 1\n"
     }
 
