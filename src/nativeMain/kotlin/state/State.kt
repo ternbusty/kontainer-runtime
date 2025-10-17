@@ -6,6 +6,10 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import logger.Logger
 import platform.posix.*
+import utils.createDirectories
+import utils.fileExists
+import utils.readJsonFile
+import utils.writeJsonFile
 
 /**
  * Container state information
@@ -93,24 +97,8 @@ fun State.save() {
 
     Logger.debug("saving state to $statePath")
 
-    // Create container directory (recursive)
-    // First create STATE_ROOT if needed
-    if (mkdir(STATE_ROOT, 0x1EDu) != 0) {  // 0x1ED = 0755 octal
-        val errNum = errno
-        if (errNum != EEXIST) {
-            perror("mkdir($STATE_ROOT)")
-            throw Exception("Failed to create state root directory: errno=$errNum")
-        }
-    }
-
-    // Then create container directory
-    if (mkdir(containerDir, 0x1EDu) != 0) {  // 0x1ED = 0755 octal
-        val errNum = errno
-        if (errNum != EEXIST) {
-            perror("mkdir($containerDir)")
-            throw Exception("Failed to create container directory: errno=$errNum")
-        }
-    }
+    // Create container directory (and parent directories if needed)
+    createDirectories(containerDir)
 
     // Serialize state to JSON
     val json = try {
@@ -122,30 +110,9 @@ fun State.save() {
 
     Logger.debug("serialized state: $json")
 
-    // Write to file
-    val file = fopen(statePath, "w")
-    if (file == null) {
-        perror("fopen($statePath)")
-        throw Exception("Failed to open state file for writing")
-    }
-
-    try {
-        val written = fputs(json, file)
-        if (written == EOF) {
-            perror("fputs")
-            throw Exception("Failed to write state file")
-        }
-
-        // Ensure data is flushed to disk
-        if (fflush(file) != 0) {
-            perror("fflush")
-            throw Exception("Failed to flush state file")
-        }
-
-        Logger.info("saved state for container ${this.id}")
-    } finally {
-        fclose(file)
-    }
+    // Write JSON to file
+    writeJsonFile(statePath, json)
+    Logger.info("saved state for container ${this.id}")
 }
 
 /**
@@ -157,17 +124,15 @@ fun State.save() {
 @OptIn(ExperimentalForeignApi::class)
 fun containerExists(containerId: String): Boolean {
     val statePath = getStatePath(containerId)
+    val exists = fileExists(statePath)
 
-    // Try to open state file for reading
-    val file = fopen(statePath, "r")
-    if (file != null) {
-        fclose(file)
+    if (exists) {
         Logger.debug("container $containerId exists at $statePath")
-        return true
+    } else {
+        Logger.debug("container $containerId does not exist")
     }
 
-    Logger.debug("container $containerId does not exist")
-    return false
+    return exists
 }
 
 /**
@@ -185,60 +150,15 @@ fun loadState(containerId: String): State {
 
     Logger.debug("loading state from $statePath")
 
-    // Open file for reading
-    val file = fopen(statePath, "r")
-    if (file == null) {
-        perror("fopen($statePath)")
-        throw Exception("Failed to open state file (container may not exist)")
+    val state = try {
+        readJsonFile(statePath, StateCodec::decode)
+    } catch (e: Exception) {
+        Logger.error("failed to load state: ${e.message ?: "unknown"}")
+        throw Exception("Failed to load state file (container may not exist): ${e.message}")
     }
 
-    try {
-        // Read entire file into buffer
-        // Seek to end to get file size
-        if (fseek(file, 0, SEEK_END) != 0) {
-            perror("fseek")
-            throw Exception("Failed to seek in state file")
-        }
-
-        val fileSize = ftell(file)
-        if (fileSize == -1L) {
-            perror("ftell")
-            throw Exception("Failed to get state file size")
-        }
-
-        // Seek back to beginning
-        if (fseek(file, 0, SEEK_SET) != 0) {
-            perror("fseek")
-            throw Exception("Failed to seek in state file")
-        }
-
-        // Read file content
-        memScoped {
-            val buffer = allocArray<ByteVar>(fileSize.toInt() + 1)
-            val bytesRead = fread(buffer, 1u, fileSize.toULong(), file)
-            if (bytesRead.toLong() != fileSize) {
-                perror("fread")
-                throw Exception("Failed to read state file")
-            }
-
-            buffer[fileSize.toInt()] = 0  // Null terminate
-            val json = buffer.toKString()
-
-            Logger.debug("loaded state json: $json")
-
-            // Parse JSON
-            try {
-                val state = StateCodec.decode(json)
-                Logger.info("loaded state for container ${state.id}")
-                return state
-            } catch (e: Exception) {
-                Logger.error("failed to parse state: ${e.message ?: "unknown"}")
-                throw Exception("Failed to parse state file: ${e.message}")
-            }
-        }
-    } finally {
-        fclose(file)
-    }
+    Logger.info("loaded state for container ${state.id}")
+    return state
 }
 
 /**
@@ -469,7 +389,6 @@ fun State.refreshStatus(): State {
  * JSON codec for State serialization/deserialization
  *
  * Provides common JSON configuration for encoding and decoding container state.
- * Similar to youki's StateCodec.
  */
 object StateCodec {
     // For pretty-printed output (state command, save to disk)

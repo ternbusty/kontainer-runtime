@@ -28,7 +28,6 @@ import state.save
  */
 @OptIn(ExperimentalForeignApi::class)
 fun create(containerId: String, bundlePath: String): Unit = memScoped {
-    // Check if container already exists
     if (containerExists(containerId)) {
         Logger.error("container $containerId already exists")
         exit(1)
@@ -88,10 +87,10 @@ fun create(containerId: String, bundlePath: String): Unit = memScoped {
         0 -> {
             // Intermediate process
             // Close receivers and senders that this process doesn't need
+            // Keep initReceiver - will be passed to init process
             mainReceiver.close()
             interSender.close()
             initSender.close()
-            // Keep initReceiver - will be passed to init process
 
             runIntermediateProcess(spec, rootfsPath, mainSender, interReceiver, initReceiver, notifyListener)
         }
@@ -99,10 +98,10 @@ fun create(containerId: String, bundlePath: String): Unit = memScoped {
         else -> {
             // Main process (parent process)
             // Close senders and receivers that this process doesn't need
+            // Keep initSender - will be used to send messages to init process
             mainSender.close()
             interReceiver.close()
             initReceiver.close()
-            // Keep initSender - will be used to send messages to init process
 
             // Close notify listener in main process (only used by init process)
             notifyListener.close()

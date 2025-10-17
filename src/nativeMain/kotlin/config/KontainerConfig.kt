@@ -5,9 +5,8 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import logger.Logger
-import platform.posix.fclose
-import platform.posix.fopen
-import platform.posix.fread
+import utils.readJsonFile
+import utils.writeJsonFile
 
 /**
  * Internal configuration for Kontainer Runtime
@@ -38,21 +37,9 @@ fun saveKontainerConfig(config: KontainerConfig, containerId: String) {
     Logger.debug("saving kontainer config to $configPath")
 
     val jsonString = ConfigCodec.encode(config)
+    writeJsonFile(configPath, jsonString)
 
-    val file = fopen(configPath, "w")
-        ?: throw Exception("Failed to open config file for writing: $configPath")
-
-    try {
-        // Write JSON string
-        val bytes = jsonString.encodeToByteArray()
-        val written = platform.posix.fwrite(bytes.refTo(0), 1u, bytes.size.toULong(), file)
-        if (written != bytes.size.toULong()) {
-            throw Exception("Failed to write complete config file")
-        }
-        Logger.debug("saved kontainer config")
-    } finally {
-        fclose(file)
-    }
+    Logger.debug("saved kontainer config")
 }
 
 /**
@@ -69,25 +56,7 @@ fun loadKontainerConfig(containerId: String): KontainerConfig {
 
     Logger.debug("loading kontainer config from $configPath")
 
-    val file = fopen(configPath, "r")
-        ?: throw Exception("Failed to open config file: $configPath")
-
-    try {
-        memScoped {
-            val buffer = allocArray<ByteVar>(4096)
-            val bytesRead = fread(buffer, 1u, 4095u, file)
-            if (bytesRead == 0UL) {
-                throw Exception("Config file is empty: $configPath")
-            }
-
-            buffer[bytesRead.toInt()] = 0.toByte()
-            val jsonString = buffer.toKString()
-
-            return ConfigCodec.decode(jsonString)
-        }
-    } finally {
-        fclose(file)
-    }
+    return readJsonFile(configPath, ConfigCodec::decode)
 }
 
 /**

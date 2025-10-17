@@ -3,9 +3,7 @@ package spec
 import kotlinx.cinterop.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import platform.posix.fclose
-import platform.posix.fopen
-import platform.posix.fread
+import utils.readJsonFile
 
 /**
  * OCI Runtime Specification (minimal implementation)
@@ -149,41 +147,22 @@ data class Linux(
  */
 @OptIn(ExperimentalForeignApi::class)
 fun loadSpec(configPath: String): Spec {
-    val fp = fopen(configPath, "r") ?: throw Exception("Failed to open config file: $configPath")
-
-    try {
-        // Read entire file into memory
-        val json = memScoped {
-            val buffer = StringBuilder()
-            // Allocate 1025 bytes: 1024 for data + 1 for null terminator
-            val chunk = allocArray<ByteVar>(1025)
-
-            while (true) {
-                val bytesRead = fread(chunk, 1.convert(), 1024.convert(), fp).toInt()
-                if (bytesRead <= 0) break
-
-                // Null terminate the chunk
-                chunk[bytesRead] = 0
-                buffer.append(chunk.toKString())
-            }
-
-            buffer.toString()
-        }
-
-        val jsonParser = Json {
-            ignoreUnknownKeys = true
-            isLenient = true
-            coerceInputValues = true
-        }
-        val spec = jsonParser.decodeFromString<Spec>(json)
-
-        // Validate process.args is not empty (kotlinx.serialization doesn't check this)
-        if (spec.process.args.isEmpty()) {
-            throw Exception("Spec validation failed: process.args must not be empty")
-        }
-
-        return spec
-    } finally {
-        fclose(fp)
+    // JSON parser with lenient settings for OCI spec
+    val jsonParser = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+        coerceInputValues = true
     }
+
+    // Read and parse JSON file
+    val spec = readJsonFile(configPath) { json ->
+        jsonParser.decodeFromString<Spec>(json)
+    }
+
+    // Validate process.args is not empty (kotlinx.serialization doesn't check this)
+    if (spec.process.args.isEmpty()) {
+        throw Exception("Spec validation failed: process.args must not be empty")
+    }
+
+    return spec
 }
