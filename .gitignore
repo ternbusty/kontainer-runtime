@@ -28,6 +28,9 @@ bin/
 !**/src/main/**/bin/
 !**/src/test/**/bin/
 
+### Kotlin Native
+*.klib
+
 ### NetBeans ###
 /nbproject/private/
 /nbbuild/
