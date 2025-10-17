@@ -52,14 +52,40 @@ kotlin {
         group = "application"
         description = "Builds and runs the native binary with sudo (create command)"
         dependsOn("linkDebugExecutableLinuxX64")
-        commandLine("sudo", "-S", "${layout.buildDirectory.get()}/bin/linuxX64/debugExecutable/${project.name}.kexe", "create", "test-container", "test-bundle")
+        commandLine(
+            "sudo",
+            "-S",
+            "${layout.buildDirectory.get()}/bin/linuxX64/debugExecutable/${project.name}.kexe",
+            "create",
+            "test-container",
+            "test-bundle"
+        )
         standardInput = System.`in`
     }
 
     tasks.register<Exec>("startWithSudo") {
         group = "application"
         description = "Starts a created container with sudo (start command)"
-        commandLine("sudo", "-S", "${layout.buildDirectory.get()}/bin/linuxX64/debugExecutable/${project.name}.kexe", "start", "test-container")
+        commandLine(
+            "sudo",
+            "-S",
+            "${layout.buildDirectory.get()}/bin/linuxX64/debugExecutable/${project.name}.kexe",
+            "start",
+            "test-container"
+        )
+        standardInput = System.`in`
+    }
+
+    tasks.register<Exec>("stateWithSudo") {
+        group = "application"
+        description = "Gets the state of a container with sudo (state command)"
+        commandLine(
+            "sudo",
+            "-S",
+            "${layout.buildDirectory.get()}/bin/linuxX64/debugExecutable/${project.name}.kexe",
+            "state",
+            "test-container"
+        )
         standardInput = System.`in`
     }
 }

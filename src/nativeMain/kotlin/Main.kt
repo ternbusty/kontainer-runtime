@@ -9,6 +9,11 @@ import platform.posix.perror
 import process.runIntermediateProcess
 import process.runMainProcess
 import spec.loadSpec
+import state.createState
+import state.loadState
+import state.refreshStatus
+import state.save
+import state.withStatus
 
 /**
  * Kontainer Runtime - Container runtime written in Kotlin/Native
@@ -32,9 +37,10 @@ fun main(args: Array<String>): Unit = memScoped {
     when (val command = args[0]) {
         "create" -> createContainer(args.drop(1).toTypedArray())
         "start" -> startContainer(args.drop(1).toTypedArray())
+        "state" -> stateContainer(args.drop(1).toTypedArray())
         else -> {
             Logger.error("unknown command: $command")
-            Logger.error("available commands: create, start")
+            Logger.error("available commands: create, start, state")
             exit(1)
         }
     }
@@ -126,11 +132,63 @@ fun createContainer(args: Array<String>) {
                 runMainProcess(spec, containerId, bundlePath, intermediatePid, mainReceiver, interSender, initSender)
 
             // Save container state for start command
+            Logger.debug("saving container state")
+            try {
+                val state = createState(
+                    ociVersion = spec.ociVersion,
+                    containerId = containerId,
+                    status = "created",
+                    pid = initPid,
+                    bundle = bundlePath,
+                    annotations = null
+                )
+                state.save()
+            } catch (e: Exception) {
+                Logger.error("failed to save container state: ${e.message ?: "unknown"}")
+                exit(1)
+            }
+
             Logger.info("container $containerId created with init PID $initPid")
             Logger.info("run 'kontainer-runtime start $containerId' to start the container")
 
             exit(0)
         }
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+fun stateContainer(args: Array<String>) {
+    if (args.isEmpty()) {
+        Logger.error("Usage: kontainer-runtime state <container-id>")
+        exit(1)
+    }
+
+    val containerId = args[0]
+
+    // Load container state
+    var state = try {
+        loadState(containerId)
+    } catch (e: Exception) {
+        Logger.error("failed to load container state: ${e.message ?: "unknown"}")
+        Logger.error("container may not exist or state file is corrupted")
+        exit(1)
+        return
+    }
+
+    // Refresh status to reflect actual process state
+    // This checks /proc/{pid} and updates status accordingly
+    state = state.refreshStatus()
+
+    // Output state as JSON to stdout (OCI Runtime Spec requirement)
+    try {
+        val json = kotlinx.serialization.json.Json {
+            prettyPrint = true
+            encodeDefaults = false
+        }
+        println(json.encodeToString(state))
+    } catch (e: Exception) {
+        Logger.error("failed to serialize state: ${e.message ?: "unknown"}")
+        exit(1)
     }
 }
 
@@ -142,14 +200,43 @@ fun startContainer(args: Array<String>) {
     }
 
     val containerId = args[0]
-    val notifySocketPath = "/tmp/kontainer-$containerId.sock"
 
     Logger.info("starting container: $containerId")
+
+    // Load container state to verify it exists
+    var state = try {
+        loadState(containerId)
+    } catch (e: Exception) {
+        Logger.error("failed to load container state: ${e.message ?: "unknown"}")
+        Logger.error("container may not exist or state file is corrupted")
+        exit(1)
+        return
+    }
+
+    // Refresh status to check actual process state
+    state = state.refreshStatus()
+
+    // Verify container is in 'created' state
+    if (state.status != "created") {
+        Logger.error("container is in '${state.status}' state, expected 'created'")
+        exit(1)
+    }
+
+    Logger.debug("container ${state.id} has init PID ${state.pid}")
+
+    val notifySocketPath = "/tmp/kontainer-$containerId.sock"
 
     // Send start signal to notify socket
     val notifySocket = NotifySocket(notifySocketPath)
     try {
         notifySocket.notifyContainerStart()
+        Logger.debug("sent start signal to container")
+
+        // Update state to "running" and save
+        val updatedState = state.withStatus("running")
+        updatedState.save()
+        Logger.debug("updated container state to 'running'")
+
         Logger.info("container $containerId started successfully")
     } catch (e: Exception) {
         Logger.error("failed to start container: ${e.message ?: "unknown"}")
