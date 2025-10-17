@@ -273,6 +273,71 @@ fun State.withStatus(newStatus: String): State {
 }
 
 /**
+ * Delete notify socket for a container
+ *
+ * Removes /tmp/kontainer-{container-id}.sock
+ * Errors are ignored (socket may not exist)
+ *
+ * @param containerId Container ID
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun deleteNotifySocket(containerId: String) {
+    val notifySocketPath = "/tmp/kontainer-$containerId.sock"
+
+    Logger.debug("deleting notify socket: $notifySocketPath")
+
+    if (unlink(notifySocketPath) != 0) {
+        val errNum = errno
+        if (errNum != ENOENT) {
+            // File doesn't exist - OK, already deleted
+            Logger.warn("failed to delete notify socket $notifySocketPath: errno=$errNum")
+        }
+    } else {
+        Logger.debug("deleted notify socket: $notifySocketPath")
+    }
+}
+
+/**
+ * Delete container directory and all its contents
+ *
+ * Recursively removes /run/kontainer/{container-id}/
+ *
+ * @param containerId Container ID
+ * @throws Exception if directory deletion fails
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun deleteContainerDir(containerId: String) {
+    val containerDir = getContainerDir(containerId)
+
+    Logger.debug("deleting container directory: $containerDir")
+
+    // Check if directory exists
+    val dir = opendir(containerDir)
+    if (dir == null) {
+        val errNum = errno
+        if (errNum == ENOENT) {
+            // Directory doesn't exist - already deleted
+            Logger.debug("container directory $containerDir does not exist")
+            return
+        }
+        perror("opendir")
+        Logger.error("failed to open container directory $containerDir: errno=$errNum")
+        throw Exception("Failed to open container directory: errno=$errNum")
+    }
+    closedir(dir)
+
+    // Use rm -rf to recursively delete
+    // This is simpler than implementing recursive deletion in Kotlin
+    val result = system("rm -rf $containerDir")
+    if (result != 0) {
+        Logger.error("failed to delete container directory $containerDir: exit code=$result")
+        throw Exception("Failed to delete container directory: exit code=$result")
+    }
+
+    Logger.info("deleted container directory: $containerDir")
+}
+
+/**
  * Check if a process is alive by reading /proc/{pid}/stat
  *
  * @param pid Process ID to check

@@ -231,3 +231,39 @@ private fun getRequiredControllers(resources: LinuxResources?): List<String> {
 
     return controllers
 }
+
+/**
+ * Cleanup cgroup for a container
+ *
+ * Removes the cgroup directory for the container.
+ * Errors are logged as warnings and do not fail the operation.
+ *
+ * @param cgroupPath Relative path from /sys/fs/cgroup
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun cleanupCgroup(cgroupPath: String?) {
+    if (cgroupPath == null) {
+        Logger.debug("no cgroup path specified, skipping cleanup")
+        return
+    }
+
+    val fullPath = "$CGROUP_ROOT/$cgroupPath"
+    Logger.debug("cleaning up cgroup at $fullPath")
+
+    // Check if directory exists
+    if (access(fullPath, F_OK) != 0) {
+        Logger.debug("cgroup directory $fullPath does not exist, already cleaned up")
+        return
+    }
+
+    // Remove cgroup directory using rmdir
+    // Note: rmdir only works if the cgroup is empty (no processes)
+    val result = platform.posix.rmdir(fullPath)
+    if (result != 0) {
+        val errNum = platform.posix.errno
+        // Warn but don't fail - cgroup cleanup is best-effort
+        Logger.warn("failed to remove cgroup directory $fullPath: errno=$errNum")
+    } else {
+        Logger.debug("removed cgroup directory: $fullPath")
+    }
+}

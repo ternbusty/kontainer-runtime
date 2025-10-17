@@ -1,4 +1,8 @@
+import cgroup.cleanupCgroup
 import channel.*
+import config.KontainerConfig
+import config.loadKontainerConfig
+import config.saveKontainerConfig
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.memScoped
 import logger.Logger
@@ -11,10 +15,13 @@ import process.runMainProcess
 import spec.loadSpec
 import state.containerExists
 import state.createState
+import state.deleteContainerDir
+import state.deleteNotifySocket
 import state.loadState
 import state.refreshStatus
 import state.save
 import state.withStatus
+import syscall.killProcess
 
 /**
  * Kontainer Runtime - Container runtime written in Kotlin/Native
@@ -39,9 +46,10 @@ fun main(args: Array<String>): Unit = memScoped {
         "create" -> createContainer(args.drop(1).toTypedArray())
         "start" -> startContainer(args.drop(1).toTypedArray())
         "state" -> stateContainer(args.drop(1).toTypedArray())
+        "delete" -> deleteContainer(args.drop(1).toTypedArray())
         else -> {
             Logger.error("unknown command: $command")
-            Logger.error("available commands: create, start, state")
+            Logger.error("available commands: create, start, state, delete")
             exit(1)
         }
     }
@@ -156,6 +164,18 @@ fun createContainer(args: Array<String>) {
                 exit(1)
             }
 
+            // Save internal configuration (independent of bundle)
+            Logger.debug("saving kontainer config")
+            try {
+                val kontainerConfig = KontainerConfig(
+                    cgroupPath = spec.linux?.cgroupsPath
+                )
+                saveKontainerConfig(kontainerConfig, containerId)
+            } catch (e: Exception) {
+                Logger.error("failed to save kontainer config: ${e.message ?: "unknown"}")
+                exit(1)
+            }
+
             Logger.info("container $containerId created with init PID $initPid")
             Logger.info("run 'kontainer-runtime start $containerId' to start the container")
 
@@ -248,6 +268,102 @@ fun startContainer(args: Array<String>) {
         Logger.info("container $containerId started successfully")
     } catch (e: Exception) {
         Logger.error("failed to start container: ${e.message ?: "unknown"}")
+        exit(1)
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+fun deleteContainer(args: Array<String>) {
+    if (args.isEmpty()) {
+        Logger.error("Usage: kontainer-runtime delete <container-id>")
+        exit(1)
+    }
+
+    val containerId = args[0]
+
+    Logger.info("deleting container: $containerId")
+
+    // Check if container exists
+    if (!containerExists(containerId)) {
+        Logger.error("container $containerId does not exist")
+        exit(1)
+    }
+
+    // Load container state and refresh to get actual status
+    var state = try {
+        loadState(containerId)
+    } catch (e: Exception) {
+        Logger.error("failed to load container state: ${e.message ?: "unknown"}")
+        exit(1)
+        return
+    }
+
+    // Refresh status to check actual process state
+    state = state.refreshStatus()
+    Logger.debug("container status: ${state.status}")
+
+    // Check if container can be deleted
+    // Following youki/runc behavior: allow deletion of 'stopped' and 'created' states
+    when (state.status) {
+        "stopped" -> {
+            // Can delete stopped containers
+            Logger.debug("container is stopped, proceeding with deletion")
+        }
+        "created" -> {
+            // For created containers, kill the process first
+            Logger.debug("container is created, killing process before deletion")
+            state.pid?.let { pid ->
+                try {
+                    killProcess(pid)
+                    Logger.debug("killed process $pid")
+                } catch (e: Exception) {
+                    Logger.warn("failed to kill process $pid: ${e.message ?: "unknown"}")
+                    // Continue with deletion even if kill fails
+                }
+            }
+        }
+        else -> {
+            // Cannot delete running/paused containers without force flag
+            Logger.error("cannot delete container in '${state.status}' state")
+            Logger.error("container must be stopped before deletion")
+            exit(1)
+        }
+    }
+
+    // Load internal config to get cgroup path
+    // This is independent of bundle, so works even if bundle was moved/deleted
+    val config = try {
+        loadKontainerConfig(containerId)
+    } catch (e: Exception) {
+        Logger.warn("failed to load kontainer config: ${e.message ?: "unknown"}")
+        Logger.warn("will skip cgroup cleanup")
+        null
+    }
+
+    // Cleanup cgroup
+    config?.cgroupPath?.let { cgroupPath ->
+        try {
+            cleanupCgroup(cgroupPath)
+        } catch (e: Exception) {
+            Logger.warn("failed to cleanup cgroup: ${e.message ?: "unknown"}")
+            // Continue with deletion even if cgroup cleanup fails
+        }
+    }
+
+    // Delete notify socket
+    try {
+        deleteNotifySocket(containerId)
+    } catch (e: Exception) {
+        Logger.warn("failed to delete notify socket: ${e.message ?: "unknown"}")
+        // Continue with deletion
+    }
+
+    // Delete container directory
+    try {
+        deleteContainerDir(containerId)
+        Logger.info("container $containerId deleted successfully")
+    } catch (e: Exception) {
+        Logger.error("failed to delete container directory: ${e.message ?: "unknown"}")
         exit(1)
     }
 }

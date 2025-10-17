@@ -88,4 +88,17 @@ kotlin {
         )
         standardInput = System.`in`
     }
+
+    tasks.register<Exec>("deleteWithSudo") {
+        group = "application"
+        description = "Deletes a container with sudo (delete command)"
+        commandLine(
+            "sudo",
+            "-S",
+            "${layout.buildDirectory.get()}/bin/linuxX64/debugExecutable/${project.name}.kexe",
+            "delete",
+            "test-container"
+        )
+        standardInput = System.`in`
+    }
 }
