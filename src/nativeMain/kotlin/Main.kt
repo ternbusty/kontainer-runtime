@@ -9,6 +9,7 @@ import platform.posix.perror
 import process.runIntermediateProcess
 import process.runMainProcess
 import spec.loadSpec
+import state.containerExists
 import state.createState
 import state.loadState
 import state.refreshStatus
@@ -55,6 +56,13 @@ fun createContainer(args: Array<String>) {
 
     val containerId = args[0]
     val bundlePath = args[1]
+
+    // Check if container already exists (youki compatibility)
+    if (containerExists(containerId)) {
+        Logger.error("container $containerId already exists")
+        exit(1)
+    }
+
     val configPath = "$bundlePath/config.json"
 
     Logger.info("creating container: $containerId")

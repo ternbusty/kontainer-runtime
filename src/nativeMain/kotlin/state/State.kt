@@ -149,6 +149,28 @@ fun State.save() {
 }
 
 /**
+ * Check if a container with the given ID already exists
+ *
+ * @param containerId Container ID to check
+ * @return true if container exists, false otherwise
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun containerExists(containerId: String): Boolean {
+    val statePath = getStatePath(containerId)
+
+    // Try to open state file for reading
+    val file = fopen(statePath, "r")
+    if (file != null) {
+        fclose(file)
+        Logger.debug("container $containerId exists at $statePath")
+        return true
+    }
+
+    Logger.debug("container $containerId does not exist")
+    return false
+}
+
+/**
  * Load container state from disk
  *
  * Reads state.json from /run/kontainer/{container-id}/
@@ -327,8 +349,6 @@ private fun isProcessAlive(pid: Int): Boolean {
  * - PID is null
  * - Process doesn't exist in /proc
  * - Process is zombie (Z) or dead (X)
- *
- * This matches youki's refresh_status() behavior.
  *
  * @return New State with updated status, or original State if no change needed
  */
