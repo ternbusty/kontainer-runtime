@@ -1,0 +1,10 @@
+headers = sys/prctl.h
+headerFilter = sys/prctl.h
+package = platform.linux
+
+---
+
+// prctl operations (from linux/prctl.h)
+static inline int _PR_SET_NO_NEW_PRIVS() {
+    return PR_SET_NO_NEW_PRIVS;
+}

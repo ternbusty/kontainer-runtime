@@ -1,0 +1,13 @@
+headers = unistd.h
+headerFilter = unistd.h
+package = platform.linux
+
+---
+
+// System call numbers for x86_64 Linux
+// Defined in asm/unistd_64.h
+
+static inline long _SYS_clone3() {
+    return 435;  // __NR_clone3
+}
+

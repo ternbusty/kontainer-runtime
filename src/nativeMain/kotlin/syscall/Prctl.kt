@@ -2,6 +2,8 @@ package syscall
 
 import kotlinx.cinterop.ExperimentalForeignApi
 import logger.Logger
+import platform.linux._PR_SET_NO_NEW_PRIVS
+import platform.linux.__NR_prctl
 import platform.posix.errno
 import platform.posix.perror
 import platform.posix.syscall
@@ -11,12 +13,6 @@ import platform.posix.syscall
  *
  * See https://man7.org/linux/man-pages/man2/prctl.2.html
  */
-
-// System call number for prctl (all architectures)
-private const val SYS_prctl = 157L
-
-// prctl operations
-private const val PR_SET_NO_NEW_PRIVS = 38
 
 /**
  * Set the no_new_privs bit for the calling thread
@@ -39,8 +35,8 @@ fun setNoNewPrivileges() {
     Logger.debug("setting no_new_privileges")
 
     val result = syscall(
-        SYS_prctl,
-        PR_SET_NO_NEW_PRIVS.toLong(),
+        __NR_prctl.toLong(),
+        _PR_SET_NO_NEW_PRIVS().toLong(),
         1L,  // arg2: 1 to set no_new_privs
         0L,  // arg3: unused
         0L,  // arg4: unused

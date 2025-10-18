@@ -3,7 +3,11 @@ package syscall
 import kotlinx.cinterop.*
 import logger.Logger
 import platform.linux._CLONE_PARENT
-import platform.posix.*
+import platform.linux._SYS_clone3
+import platform.posix.ENOSYS
+import platform.posix.errno
+import platform.posix.perror
+import platform.posix.syscall
 
 /**
  * Clone system call wrapper with CLONE_PARENT support
@@ -13,10 +17,6 @@ import platform.posix.*
  * the init process is not re-parented to PID 1 (system init), but remains a child
  * of the main process.
  */
-
-// System call numbers (x86_64 Linux)
-private const val SYS_clone3 = 435L
-private const val SYS_clone = 56L
 
 /**
  * Size of clone3_args structure in bytes
@@ -82,7 +82,7 @@ private fun tryClone3(callback: () -> Nothing): Int? = memScoped {
 
     Logger.debug("calling clone3 with CLONE_PARENT flag")
 
-    val result = syscall(SYS_clone3, args, CLONE3_ARGS_SIZE.toLong())
+    val result = syscall(_SYS_clone3(), args, CLONE3_ARGS_SIZE.toLong())
 
     when {
         result == -1L -> {
@@ -98,18 +98,21 @@ private fun tryClone3(callback: () -> Nothing): Int? = memScoped {
                 throw Exception("Failed to clone3: errno=$errNum")
             }
         }
+
         result == 0L -> {
             // Child process
             Logger.debug("clone3: in child process")
             callback()
             // callback calls _exit() and never returns
         }
+
         result > 0 -> {
             // Parent process
             val pid = result.toInt()
             Logger.debug("clone3: cloned child with PID $pid")
             return@memScoped pid
         }
+
         else -> {
             Logger.error("clone3 returned unexpected value: $result")
             throw Exception("clone3 returned unexpected value: $result")
