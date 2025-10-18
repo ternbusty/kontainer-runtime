@@ -19,7 +19,7 @@ fun runInitProcess(
     rootfsPath: String,
     mainSender: MainSender,
     initReceiver: channel.InitReceiver,
-    notifyListener: NotifyListener
+    notifyListener: NotifyListener,
 ) {
     Logger.setContext("init")
     Logger.debug("started, pid=${getpid()} ppid=${getppid()}")
@@ -91,16 +91,17 @@ fun runInitProcess(
     // Handle LISTEN_FDS for systemd socket activation
     // See https://www.freedesktop.org/software/systemd/man/sd_listen_fds.html
     val listenFds = getenv("LISTEN_FDS")?.toKString()?.toIntOrNull() ?: 0
-    val preserveFds = if (listenFds > 0) {
-        // LISTEN_FDS will be passed to container init process
-        // LISTEN_PID will be set to PID 1 (init process in container)
-        processEnv.add("LISTEN_FDS=$listenFds")
-        processEnv.add("LISTEN_PID=1")
-        Logger.debug("preserving $listenFds FDs for systemd socket activation")
-        listenFds
-    } else {
-        0
-    }
+    val preserveFds =
+        if (listenFds > 0) {
+            // LISTEN_FDS will be passed to container init process
+            // LISTEN_PID will be set to PID 1 (init process in container)
+            processEnv.add("LISTEN_FDS=$listenFds")
+            processEnv.add("LISTEN_PID=1")
+            Logger.debug("preserving $listenFds FDs for systemd socket activation")
+            listenFds
+        } else {
+            0
+        }
 
     // Set UID/GID to spec.process.user values before executing container process
     // Note: setgid must be called before setuid (once we drop to non-root, we can't setgid)
@@ -193,7 +194,7 @@ fun runInitProcess(
 private fun syncSeccompNotifyFd(
     notifyFd: Int?,
     mainSender: MainSender,
-    initReceiver: channel.InitReceiver
+    initReceiver: channel.InitReceiver,
 ) {
     if (notifyFd != null) {
         Logger.debug("sending seccomp notify FD to main process")

@@ -14,15 +14,16 @@ import syscall.unshare
  */
 @OptIn(ExperimentalForeignApi::class)
 fun unshareNamespace(type: String) {
-    val flag = when (type) {
-        "mount" -> _CLONE_NEWNS()
-        "network" -> _CLONE_NEWNET()
-        "uts" -> _CLONE_NEWUTS()
-        "ipc" -> _CLONE_NEWIPC()
-        "pid" -> _CLONE_NEWPID()
-        "user" -> _CLONE_NEWUSER()
-        else -> throw IllegalArgumentException("Unknown namespace type: $type")
-    }
+    val flag =
+        when (type) {
+            "mount" -> _CLONE_NEWNS()
+            "network" -> _CLONE_NEWNET()
+            "uts" -> _CLONE_NEWUTS()
+            "ipc" -> _CLONE_NEWIPC()
+            "pid" -> _CLONE_NEWPID()
+            "user" -> _CLONE_NEWUSER()
+            else -> throw IllegalArgumentException("Unknown namespace type: $type")
+        }
 
     unshare(flag)
     Logger.debug("unshared $type namespace")
@@ -31,6 +32,7 @@ fun unshareNamespace(type: String) {
 /**
  * Check if a namespace type exists in the list
  */
-fun hasNamespace(namespaces: List<Namespace>?, type: String): Boolean {
-    return namespaces?.any { it.type == type } ?: false
-}
+fun hasNamespace(
+    namespaces: List<Namespace>?,
+    type: String,
+): Boolean = namespaces?.any { it.type == type } ?: false

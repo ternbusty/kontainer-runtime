@@ -34,20 +34,24 @@ private const val CPU_MAX = "cpu.max"
  * @param resources Resource limits to apply
  */
 @OptIn(ExperimentalForeignApi::class)
-fun setupCgroup(pid: Int, cgroupPath: String?, resources: LinuxResources?) {
+fun setupCgroup(
+    pid: Int,
+    cgroupPath: String?,
+    resources: LinuxResources?,
+) {
     // Skip if no cgroup path or resources specified
     if (cgroupPath == null && resources == null) {
         return
     }
 
     memScoped {
-        val path = cgroupPath ?: "kontainer-${pid}"
+        val path = cgroupPath ?: "kontainer-$pid"
         val fullPath = "$CGROUP_ROOT/$path"
 
         Logger.debug("setting up cgroup at $fullPath")
 
         // Create cgroup directory
-        createDirectories(fullPath, 0x1EDu)  // 0x1ED = 0755 octal
+        createDirectories(fullPath, 0x1EDu) // 0x1ED = 0755 octal
         Logger.debug("created cgroup directory: $fullPath")
 
         // Enable controllers in subtree_control
@@ -88,7 +92,10 @@ fun setupCgroup(pid: Int, cgroupPath: String?, resources: LinuxResources?) {
  * Apply resource limits to cgroup
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun applyResources(cgroupPath: String, resources: LinuxResources) {
+private fun applyResources(
+    cgroupPath: String,
+    resources: LinuxResources,
+) {
     // Apply memory limits
     resources.memory?.let { memory ->
         applyMemoryLimits(cgroupPath, memory.limit, memory.reservation, memory.swap)
@@ -108,7 +115,7 @@ private fun applyMemoryLimits(
     cgroupPath: String,
     limit: Long?,
     reservation: Long?,
-    swap: Long?
+    swap: Long?,
 ) {
     // Set memory.max (memory limit)
     limit?.let {
@@ -130,10 +137,11 @@ private fun applyMemoryLimits(
             val memorySwapPath = "$cgroupPath/$MEMORY_SWAP_MAX"
             // In cgroup v2, swap is separate from memory (unlike v1 where swap was memory+swap)
             // So if swap=2048 and limit=1024, we write 2048-1024=1024 to memory.swap.max
-            val value = when {
-                swapValue == -1L || limitValue == -1L -> "max"
-                else -> (swapValue - limitValue).toString()
-            }
+            val value =
+                when {
+                    swapValue == -1L || limitValue == -1L -> "max"
+                    else -> (swapValue - limitValue).toString()
+                }
             writeCgroupFile(memorySwapPath, value, "memory.swap.max")
         }
     }
@@ -147,18 +155,19 @@ private fun applyCpuLimits(
     cgroupPath: String,
     shares: Long?,
     quota: Long?,
-    period: Long?
+    period: Long?,
 ) {
     // Convert shares to cpu.weight (cgroup v1 shares -> cgroup v2 weight conversion)
     // Formula: weight = 1 + ((shares - 2) * 9999) / 262142
     shares?.let {
         if (it > 0) {
-            val weight = if (it == 0L) {
-                0L
-            } else {
-                val w = 1L + ((it - 2) * 9999 / 262142)
-                minOf(w, 10000L)  // MAX_CPU_WEIGHT = 10000
-            }
+            val weight =
+                if (it == 0L) {
+                    0L
+                } else {
+                    val w = 1L + ((it - 2) * 9999 / 262142)
+                    minOf(w, 10000L) // MAX_CPU_WEIGHT = 10000
+                }
             if (weight != 0L) {
                 val cpuWeightPath = "$cgroupPath/$CPU_WEIGHT"
                 writeCgroupFile(cpuWeightPath, weight.toString(), "cpu.weight")
@@ -169,19 +178,21 @@ private fun applyCpuLimits(
     // Set cpu.max (format: "quota period")
     if (quota != null || period != null) {
         val cpuMaxPath = "$cgroupPath/$CPU_MAX"
-        val quotaStr = when {
-            quota == null -> null
-            quota <= 0 -> "max"
-            else -> quota.toString()
-        }
+        val quotaStr =
+            when {
+                quota == null -> null
+                quota <= 0 -> "max"
+                else -> quota.toString()
+            }
         val periodStr = period?.toString()
 
-        val value = when {
-            quotaStr != null && periodStr != null -> "$quotaStr $periodStr"
-            quotaStr != null -> quotaStr
-            periodStr != null -> "max $periodStr"
-            else -> null
-        }
+        val value =
+            when {
+                quotaStr != null && periodStr != null -> "$quotaStr $periodStr"
+                quotaStr != null -> quotaStr
+                periodStr != null -> "max $periodStr"
+                else -> null
+            }
 
         value?.let {
             writeCgroupFile(cpuMaxPath, it, "cpu.max")
@@ -192,7 +203,11 @@ private fun applyCpuLimits(
 /**
  * Write value to a cgroup file
  */
-private fun writeCgroupFile(path: String, value: String, name: String) {
+private fun writeCgroupFile(
+    path: String,
+    value: String,
+    name: String,
+) {
     try {
         writeText(path, value)
         Logger.debug("set $name = $value")

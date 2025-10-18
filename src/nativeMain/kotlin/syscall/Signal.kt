@@ -56,7 +56,10 @@ fun parseSignal(signalStr: String): Int {
  * @throws Exception if kill fails with error other than ESRCH
  */
 @OptIn(ExperimentalForeignApi::class)
-fun killProcess(pid: Int, signal: Int = SIGKILL) {
+fun killProcess(
+    pid: Int,
+    signal: Int = SIGKILL,
+) {
     Logger.debug("sending signal $signal to process $pid")
 
     val result = kill(pid, signal)

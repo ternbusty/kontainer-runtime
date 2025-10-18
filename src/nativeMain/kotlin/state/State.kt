@@ -23,11 +23,14 @@ import utils.writeJsonFile
  * Represents the runtime status of a container.
  * Compatible with OCI Runtime Specification.
  */
-enum class ContainerStatus(val value: String) {
+enum class ContainerStatus(
+    val value: String,
+) {
     CREATING("creating"),
     CREATED("created"),
     RUNNING("running"),
-    STOPPED("stopped");
+    STOPPED("stopped"),
+    ;
 
     /**
      * Check if container can be started
@@ -55,10 +58,9 @@ enum class ContainerStatus(val value: String) {
          * @return ContainerStatus enum value
          * @throws IllegalArgumentException if status string is unknown
          */
-        fun fromString(value: String): ContainerStatus {
-            return entries.find { it.value == value }
+        fun fromString(value: String): ContainerStatus =
+            entries.find { it.value == value }
                 ?: throw IllegalArgumentException("Unknown container status: $value")
-        }
     }
 }
 
@@ -71,7 +73,10 @@ object ContainerStatusSerializer : KSerializer<ContainerStatus> {
     override val descriptor: SerialDescriptor =
         PrimitiveSerialDescriptor("ContainerStatus", PrimitiveKind.STRING)
 
-    override fun serialize(encoder: Encoder, value: ContainerStatus) {
+    override fun serialize(
+        encoder: Encoder,
+        value: ContainerStatus,
+    ) {
         encoder.encodeString(value.value)
     }
 
@@ -96,25 +101,19 @@ object ContainerStatusSerializer : KSerializer<ContainerStatus> {
 data class State(
     @SerialName("ociVersion")
     val ociVersion: String,
-
     @SerialName("id")
     val id: String,
-
     @SerialName("status")
     @Serializable(with = ContainerStatusSerializer::class)
     val status: ContainerStatus,
-
     @SerialName("pid")
-    val pid: Int? = null,  // Required on Linux when status is "created" or "running"
-
+    val pid: Int? = null, // Required on Linux when status is "created" or "running"
     @SerialName("bundle")
     val bundle: String,
-
     @SerialName("annotations")
     val annotations: Map<String, String>? = null,
-
     @SerialName("created")
-    val created: String? = null  // ISO 8601 timestamp (extension, not in OCI spec)
+    val created: String? = null, // ISO 8601 timestamp (extension, not in OCI spec)
 )
 
 private const val STATE_ROOT = "/run/kontainer"
@@ -123,35 +122,33 @@ private const val STATE_FILE_NAME = "state.json"
 /**
  * Get the directory path for a container's state
  */
-private fun getContainerDir(containerId: String): String {
-    return "$STATE_ROOT/$containerId"
-}
+private fun getContainerDir(containerId: String): String = "$STATE_ROOT/$containerId"
 
 /**
  * Get the full path to the state file
  */
-private fun getStatePath(containerId: String): String {
-    return "${getContainerDir(containerId)}/$STATE_FILE_NAME"
-}
+private fun getStatePath(containerId: String): String = "${getContainerDir(containerId)}/$STATE_FILE_NAME"
 
 /**
  * Get current timestamp in ISO 8601 format
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun getCurrentTimestamp(): String = memScoped {
-    val now = alloc<time_tVar>()
-    time(now.ptr)
+private fun getCurrentTimestamp(): String =
+    memScoped {
+        val now = alloc<time_tVar>()
+        time(now.ptr)
 
-    val timeinfo = localtime(now.ptr) ?: run {
-        Logger.warn("localtime failed, using fallback timestamp")
-        return "1970-01-01T00:00:00Z"
+        val timeinfo =
+            localtime(now.ptr) ?: run {
+                Logger.warn("localtime failed, using fallback timestamp")
+                return "1970-01-01T00:00:00Z"
+            }
+
+        // Format: YYYY-MM-DDTHH:MM:SSZ
+        val buffer = allocArray<ByteVar>(32)
+        strftime(buffer, 32.toULong(), "%Y-%m-%dT%H:%M:%SZ", timeinfo)
+        return buffer.toKString()
     }
-
-    // Format: YYYY-MM-DDTHH:MM:SSZ
-    val buffer = allocArray<ByteVar>(32)
-    strftime(buffer, 32.toULong(), "%Y-%m-%dT%H:%M:%SZ", timeinfo)
-    return buffer.toKString()
-}
 
 /**
  * Save container state to disk
@@ -172,12 +169,13 @@ fun State.save() {
     createDirectories(containerDir)
 
     // Serialize state to JSON
-    val json = try {
-        StateCodec.encode(this)
-    } catch (e: Exception) {
-        Logger.error("failed to serialize state: ${e.message ?: "unknown"}")
-        throw Exception("Failed to serialize state: ${e.message}")
-    }
+    val json =
+        try {
+            StateCodec.encode(this)
+        } catch (e: Exception) {
+            Logger.error("failed to serialize state: ${e.message ?: "unknown"}")
+            throw Exception("Failed to serialize state: ${e.message}")
+        }
 
     Logger.debug("serialized state: $json")
 
@@ -221,12 +219,13 @@ fun loadState(containerId: String): State {
 
     Logger.debug("loading state from $statePath")
 
-    val state = try {
-        readJsonFile(statePath, StateCodec::decode)
-    } catch (e: Exception) {
-        Logger.error("failed to load state: ${e.message ?: "unknown"}")
-        throw Exception("Failed to load state file (container may not exist): ${e.message}")
-    }
+    val state =
+        try {
+            readJsonFile(statePath, StateCodec::decode)
+        } catch (e: Exception) {
+            Logger.error("failed to load state: ${e.message ?: "unknown"}")
+            throw Exception("Failed to load state file (container may not exist): ${e.message}")
+        }
 
     Logger.info("loaded state for container ${state.id}")
     return state
@@ -241,25 +240,22 @@ fun createState(
     status: ContainerStatus,
     pid: Int?,
     bundle: String,
-    annotations: Map<String, String>? = null
-): State {
-    return State(
+    annotations: Map<String, String>? = null,
+): State =
+    State(
         ociVersion = ociVersion,
         id = containerId,
         status = status,
         pid = pid,
         bundle = bundle,
         annotations = annotations,
-        created = getCurrentTimestamp()
+        created = getCurrentTimestamp(),
     )
-}
 
 /**
  * Create a new State with updated status
  */
-fun State.withStatus(newStatus: ContainerStatus): State {
-    return this.copy(status = newStatus)
-}
+fun State.withStatus(newStatus: ContainerStatus): State = this.copy(status = newStatus)
 
 /**
  * Delete notify socket for a container
@@ -356,7 +352,7 @@ private fun isProcessAlive(pid: Int): Boolean {
                 return false
             }
 
-            buffer[bytesRead.toInt()] = 0  // Null terminate
+            buffer[bytesRead.toInt()] = 0 // Null terminate
             val statContent = buffer.toKString()
 
             // Parse state: skip "pid (comm) " and get the state character
@@ -407,43 +403,44 @@ private fun isProcessAlive(pid: Int): Boolean {
  * @return New State with updated status, or original State if no change needed
  */
 fun State.refreshStatus(): State {
-    val newStatus = when {
-        // No PID means container is stopped
-        this.pid == null -> {
-            Logger.debug("container ${this.id} has no PID, status: stopped")
-            ContainerStatus.STOPPED
-        }
+    val newStatus =
+        when {
+            // No PID means container is stopped
+            this.pid == null -> {
+                Logger.debug("container ${this.id} has no PID, status: stopped")
+                ContainerStatus.STOPPED
+            }
 
-        // Check if process is actually alive
-        !isProcessAlive(this.pid) -> {
-            Logger.debug("container ${this.id} process ${this.pid} is not alive, status: stopped")
-            ContainerStatus.STOPPED
-        }
+            // Check if process is actually alive
+            !isProcessAlive(this.pid) -> {
+                Logger.debug("container ${this.id} process ${this.pid} is not alive, status: stopped")
+                ContainerStatus.STOPPED
+            }
 
-        // Process exists and is alive
-        else -> {
-            // Keep current status if it's a valid non-running state
-            when (this.status) {
-                ContainerStatus.CREATING, ContainerStatus.CREATED -> {
-                    Logger.debug("container ${this.id} process ${this.pid} is alive, keeping status: ${this.status.value}")
-                    this.status
-                }
+            // Process exists and is alive
+            else -> {
+                // Keep current status if it's a valid non-running state
+                when (this.status) {
+                    ContainerStatus.CREATING, ContainerStatus.CREATED -> {
+                        Logger.debug("container ${this.id} process ${this.pid} is alive, keeping status: ${this.status.value}")
+                        this.status
+                    }
 
-                ContainerStatus.STOPPED -> {
-                    // Process is alive but status is stopped - inconsistent state
-                    // This shouldn't happen, but if it does, update to running
-                    Logger.warn("container ${this.id} status is 'stopped' but process ${this.pid} is alive, updating to 'running'")
-                    ContainerStatus.RUNNING
-                }
+                    ContainerStatus.STOPPED -> {
+                        // Process is alive but status is stopped - inconsistent state
+                        // This shouldn't happen, but if it does, update to running
+                        Logger.warn("container ${this.id} status is 'stopped' but process ${this.pid} is alive, updating to 'running'")
+                        ContainerStatus.RUNNING
+                    }
 
-                ContainerStatus.RUNNING -> {
-                    // Process is alive and running
-                    Logger.debug("container ${this.id} process ${this.pid} is alive, status: running")
-                    ContainerStatus.RUNNING
+                    ContainerStatus.RUNNING -> {
+                        // Process is alive and running
+                        Logger.debug("container ${this.id} process ${this.pid} is alive, status: running")
+                        ContainerStatus.RUNNING
+                    }
                 }
             }
         }
-    }
 
     // Return updated state if status changed
     return if (newStatus != this.status) {
@@ -461,18 +458,20 @@ fun State.refreshStatus(): State {
  */
 object StateCodec {
     // For pretty-printed output (state command, save to disk)
-    private val prettyJson = Json {
-        prettyPrint = true
-        encodeDefaults = false
-        ignoreUnknownKeys = true
-    }
+    private val prettyJson =
+        Json {
+            prettyPrint = true
+            encodeDefaults = false
+            ignoreUnknownKeys = true
+        }
 
     // For compact output (seccomp listener, network transmission)
-    private val compactJson = Json {
-        prettyPrint = false
-        encodeDefaults = false
-        ignoreUnknownKeys = true
-    }
+    private val compactJson =
+        Json {
+            prettyPrint = false
+            encodeDefaults = false
+            ignoreUnknownKeys = true
+        }
 
     /**
      * Encode state to JSON string
@@ -481,13 +480,15 @@ object StateCodec {
      * @param pretty If true, use pretty-printed format (default). If false, use compact format.
      * @return JSON string
      */
-    fun encode(state: State, pretty: Boolean = true): String {
-        return if (pretty) {
+    fun encode(
+        state: State,
+        pretty: Boolean = true,
+    ): String =
+        if (pretty) {
             prettyJson.encodeToString(state)
         } else {
             compactJson.encodeToString(state)
         }
-    }
 
     /**
      * Decode JSON string to State
@@ -495,7 +496,5 @@ object StateCodec {
      * @param text JSON string
      * @return State object
      */
-    fun decode(text: String): State {
-        return prettyJson.decodeFromString(text)
-    }
+    fun decode(text: String): State = prettyJson.decodeFromString(text)
 }

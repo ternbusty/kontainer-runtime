@@ -34,14 +34,15 @@ import platform.posix.syscall
 fun setNoNewPrivileges() {
     Logger.debug("setting no_new_privileges")
 
-    val result = syscall(
-        __NR_prctl.toLong(),
-        _PR_SET_NO_NEW_PRIVS().toLong(),
-        1L,  // arg2: 1 to set no_new_privs
-        0L,  // arg3: unused
-        0L,  // arg4: unused
-        0L   // arg5: unused
-    )
+    val result =
+        syscall(
+            __NR_prctl.toLong(),
+            _PR_SET_NO_NEW_PRIVS().toLong(),
+            1L, // arg2: 1 to set no_new_privs
+            0L, // arg3: unused
+            0L, // arg4: unused
+            0L, // arg5: unused
+        )
 
     if (result == -1L) {
         val errNum = errno

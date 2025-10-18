@@ -15,7 +15,10 @@ import platform.posix.*
  * @throws Exception if write fails for any reason
  */
 @OptIn(ExperimentalForeignApi::class)
-fun writeText(path: String, content: String) {
+fun writeText(
+    path: String,
+    content: String,
+) {
     val fp = fopen(path, "w")
     if (fp == null) {
         val errNum = errno
@@ -109,20 +112,21 @@ fun readTextFile(path: String): String {
         }
 
         // Read entire file
-        val content = memScoped {
-            val buffer = allocArray<ByteVar>(fileSize.toInt() + 1)
-            val bytesRead = fread(buffer, 1u, fileSize.toULong(), fp)
+        val content =
+            memScoped {
+                val buffer = allocArray<ByteVar>(fileSize.toInt() + 1)
+                val bytesRead = fread(buffer, 1u, fileSize.toULong(), fp)
 
-            if (bytesRead.toLong() != fileSize) {
-                val errNum = errno
-                Logger.error("partial read from $path: read $bytesRead of $fileSize bytes (errno=$errNum)")
-                throw Exception("Partial read from $path: read $bytesRead of $fileSize bytes")
+                if (bytesRead.toLong() != fileSize) {
+                    val errNum = errno
+                    Logger.error("partial read from $path: read $bytesRead of $fileSize bytes (errno=$errNum)")
+                    throw Exception("Partial read from $path: read $bytesRead of $fileSize bytes")
+                }
+
+                // Null terminate and convert to String
+                buffer[fileSize.toInt()] = 0
+                buffer.toKString()
             }
-
-            // Null terminate and convert to String
-            buffer[fileSize.toInt()] = 0
-            buffer.toKString()
-        }
 
         // Close file
         if (fclose(fp) != 0) {
@@ -151,15 +155,19 @@ fun readTextFile(path: String): String {
  * @throws Exception if file read or JSON parsing fails
  */
 @OptIn(ExperimentalForeignApi::class)
-fun <T> readJsonFile(path: String, decoder: (String) -> T): T {
+fun <T> readJsonFile(
+    path: String,
+    decoder: (String) -> T,
+): T {
     Logger.debug("reading JSON file: $path")
 
-    val jsonContent = try {
-        readTextFile(path)
-    } catch (e: Exception) {
-        Logger.error("failed to read JSON file $path: ${e.message}")
-        throw Exception("Failed to read JSON file $path: ${e.message}")
-    }
+    val jsonContent =
+        try {
+            readTextFile(path)
+        } catch (e: Exception) {
+            Logger.error("failed to read JSON file $path: ${e.message}")
+            throw Exception("Failed to read JSON file $path: ${e.message}")
+        }
 
     Logger.debug("parsing JSON from $path")
 
@@ -181,7 +189,10 @@ fun <T> readJsonFile(path: String, decoder: (String) -> T): T {
  * @throws Exception if write fails
  */
 @OptIn(ExperimentalForeignApi::class)
-fun writeJsonFile(path: String, jsonContent: String) {
+fun writeJsonFile(
+    path: String,
+    jsonContent: String,
+) {
     Logger.debug("writing JSON to file: $path")
 
     try {
@@ -204,7 +215,10 @@ fun writeJsonFile(path: String, jsonContent: String) {
  * @throws Exception if directory creation fails (except for EEXIST)
  */
 @OptIn(ExperimentalForeignApi::class)
-fun createDirectories(path: String, mode: UInt = 0x1EDu) {  // 0x1ED = 0755 octal
+fun createDirectories(
+    path: String,
+    mode: UInt = 0x1EDu,
+) { // 0x1ED = 0755 octal
     Logger.debug("creating directories: $path")
 
     // Split path into components

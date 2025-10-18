@@ -31,9 +31,9 @@ fun mount(
     target: String,
     fstype: String?,
     flags: ULong,
-    data: String? = null
-): Int {
-    return memScoped {
+    data: String? = null,
+): Int =
+    memScoped {
         val src = source?.cstr?.ptr
         val tgt = target.cstr.ptr
         val fs = fstype?.cstr?.ptr
@@ -41,7 +41,6 @@ fun mount(
 
         syscall(__NR_mount.toLong(), src, tgt, fs, flags, d).toInt()
     }
-}
 
 /**
  * Unmount a filesystem
@@ -51,11 +50,13 @@ fun mount(
  * @return 0 on success, -1 on error (check errno)
  */
 @OptIn(ExperimentalForeignApi::class)
-fun umount2(target: String, flags: Int): Int {
-    return memScoped {
+fun umount2(
+    target: String,
+    flags: Int,
+): Int =
+    memScoped {
         syscall(__NR_umount2.toLong(), target.cstr.ptr, flags).toInt()
     }
-}
 
 /**
  * Change the root filesystem
@@ -68,8 +69,10 @@ fun umount2(target: String, flags: Int): Int {
  * @return 0 on success, -1 on error (check errno)
  */
 @OptIn(ExperimentalForeignApi::class)
-fun pivotRoot(newRoot: String, putOld: String): Int {
-    return memScoped {
+fun pivotRoot(
+    newRoot: String,
+    putOld: String,
+): Int =
+    memScoped {
         syscall(__NR_pivot_root.toLong(), newRoot.cstr.ptr, putOld.cstr.ptr).toInt()
     }
-}

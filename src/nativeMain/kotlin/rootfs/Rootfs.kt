@@ -14,7 +14,7 @@ const val MS_NODEV = 4
 const val MS_NOEXEC = 8
 const val MS_BIND = 4096
 const val MS_REC = 16384
-const val MS_SLAVE = 524288  // 1 << 19
+const val MS_SLAVE = 524288 // 1 << 19
 
 // Umount flags
 const val MNT_DETACH = 2
@@ -28,18 +28,17 @@ fun mountFs(
     target: String,
     fstype: String?,
     flags: ULong,
-    data: String? = null
-): Int {
-    return mount(source, target, fstype, flags, data)
-}
+    data: String? = null,
+): Int = mount(source, target, fstype, flags, data)
 
 /**
  * Umount filesystem using syscall layer
  */
 @OptIn(ExperimentalForeignApi::class)
-fun umountFs(target: String, flags: Int): Int {
-    return umount2(target, flags)
-}
+fun umountFs(
+    target: String,
+    flags: Int,
+): Int = umount2(target, flags)
 
 /**
  * Prepare rootfs with basic mounts
@@ -60,7 +59,7 @@ fun prepareRootfs(rootfsPath: String) {
                 source = "proc",
                 target = procPath,
                 fstype = "proc",
-                flags = (MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong()
+                flags = (MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong(),
             ) != 0
         ) {
             val errNum = errno
@@ -79,7 +78,7 @@ fun prepareRootfs(rootfsPath: String) {
                 target = devPath,
                 fstype = "tmpfs",
                 flags = (MS_NOSUID or MS_NOEXEC).toULong(),
-                data = "mode=755"
+                data = "mode=755",
             ) != 0
         ) {
             val errNum = errno
@@ -100,7 +99,7 @@ fun prepareRootfs(rootfsPath: String) {
                 source = "sysfs",
                 target = sysPath,
                 fstype = "sysfs",
-                flags = (MS_NOSUID or MS_NODEV or MS_NOEXEC or MS_RDONLY).toULong()
+                flags = (MS_NOSUID or MS_NODEV or MS_NOEXEC or MS_RDONLY).toULong(),
             ) != 0
         ) {
             val errNum = errno
@@ -125,7 +124,10 @@ fun prepareRootfs(rootfsPath: String) {
  * @throws Exception if device creation fails
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun createDeviceNode(path: String, name: String) {
+private fun createDeviceNode(
+    path: String,
+    name: String,
+) {
     // Create empty file first
     // Mode 0666 for device files
     val fd = open(path, O_RDWR or O_CREAT, 0x1B6u)
@@ -152,7 +154,7 @@ private fun createDeviceNode(path: String, name: String) {
             source = hostDevPath,
             target = path,
             fstype = null,
-            flags = MS_BIND.toULong()
+            flags = MS_BIND.toULong(),
         ) != 0
     ) {
         val errNum = errno
@@ -195,7 +197,7 @@ fun pivotRoot(newRoot: String) {
             source = newRoot,
             target = newRoot,
             fstype = null,
-            flags = (MS_BIND or MS_REC).toULong()
+            flags = (MS_BIND or MS_REC).toULong(),
         ) != 0
     ) {
         perror("bind mount rootfs")
@@ -234,7 +236,7 @@ fun pivotRoot(newRoot: String) {
             source = null,
             target = "/",
             fstype = null,
-            flags = (MS_SLAVE or MS_REC).toULong()
+            flags = (MS_SLAVE or MS_REC).toULong(),
         ) != 0
     ) {
         perror("make old root slave")

@@ -9,7 +9,9 @@ import kotlinx.serialization.json.Json
 @Serializable
 sealed class Message {
     @Serializable
-    data class IntermediateReady(val pid: Int) : Message()
+    data class IntermediateReady(
+        val pid: Int,
+    ) : Message()
 
     @Serializable
     object InitReady : Message()
@@ -27,26 +29,27 @@ sealed class Message {
     object SeccompNotifyDone : Message()
 
     @Serializable
-    data class ExecFailed(val error: String) : Message()
+    data class ExecFailed(
+        val error: String,
+    ) : Message()
 
     @Serializable
-    data class OtherError(val error: String) : Message()
+    data class OtherError(
+        val error: String,
+    ) : Message()
 }
 
 /**
  * JSON encoder/decoder for Message
  */
 object MessageCodec {
-    private val json = Json {
-        ignoreUnknownKeys = true
-        isLenient = true
-    }
+    private val json =
+        Json {
+            ignoreUnknownKeys = true
+            isLenient = true
+        }
 
-    fun encode(message: Message): String {
-        return json.encodeToString(message)
-    }
+    fun encode(message: Message): String = json.encodeToString(message)
 
-    fun decode(text: String): Message {
-        return json.decodeFromString(text)
-    }
+    fun decode(text: String): Message = json.decodeFromString(text)
 }

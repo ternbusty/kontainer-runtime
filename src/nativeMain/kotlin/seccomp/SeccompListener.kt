@@ -28,7 +28,11 @@ import state.StateCodec
  * @param notifyFd Seccomp notify file descriptor
  */
 @OptIn(ExperimentalForeignApi::class)
-fun sendToSeccompListener(listenerPath: String, state: State, notifyFd: Int) {
+fun sendToSeccompListener(
+    listenerPath: String,
+    state: State,
+    notifyFd: Int,
+) {
     Logger.debug("sending seccomp notify FD to listener: $listenerPath")
 
     // Create Unix socket
@@ -47,7 +51,7 @@ fun sendToSeccompListener(listenerPath: String, state: State, notifyFd: Int) {
 
             // Copy path to sun_path
             val pathBytes = listenerPath.encodeToByteArray()
-            if (pathBytes.size >= 108) {  // sizeof(sun_path) is typically 108
+            if (pathBytes.size >= 108) { // sizeof(sun_path) is typically 108
                 Logger.error("listener path too long: $listenerPath")
                 throw Exception("Listener path too long")
             }
@@ -95,7 +99,10 @@ fun sendToSeccompListener(listenerPath: String, state: State, notifyFd: Int) {
  * Send file descriptor using SCM_RIGHTS
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun sendFdToListener(sock: Int, fd: Int) {
+private fun sendFdToListener(
+    sock: Int,
+    fd: Int,
+) {
     memScoped {
         // Dummy data to send (required by sendmsg)
         val dummy = byteArrayOf(0)

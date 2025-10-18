@@ -16,8 +16,11 @@ import spec.SeccompArg
  * Translate OCI spec action string to libseccomp action constant
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun translateAction(action: String, errno: UInt?): UInt {
-    return when (action) {
+private fun translateAction(
+    action: String,
+    errno: UInt?,
+): UInt =
+    when (action) {
         "SCMP_ACT_KILL" -> SCMP_ACT_KILL_THREAD
         "SCMP_ACT_KILL_PROCESS" -> SCMP_ACT_KILL_PROCESS
         "SCMP_ACT_KILL_THREAD" -> SCMP_ACT_KILL_THREAD
@@ -40,14 +43,13 @@ private fun translateAction(action: String, errno: UInt?): UInt {
             throw Exception("Unknown seccomp action: $action")
         }
     }
-}
 
 /**
  * Translate OCI spec operator string to libseccomp operator constant
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun translateOp(op: String): scmp_compare {
-    return when (op) {
+private fun translateOp(op: String): scmp_compare =
+    when (op) {
         "SCMP_CMP_NE" -> SCMP_CMP_NE
         "SCMP_CMP_LT" -> SCMP_CMP_LT
         "SCMP_CMP_LE" -> SCMP_CMP_LE
@@ -60,14 +62,11 @@ private fun translateOp(op: String): scmp_compare {
             throw Exception("Unknown seccomp operator: $op")
         }
     }
-}
 
 /**
  * Check if seccomp config uses SCMP_ACT_NOTIFY action
  */
-private fun hasNotifyAction(seccomp: LinuxSeccomp): Boolean {
-    return seccomp.syscalls?.any { it.action == "SCMP_ACT_NOTIFY" } ?: false
-}
+private fun hasNotifyAction(seccomp: LinuxSeccomp): Boolean = seccomp.syscalls?.any { it.action == "SCMP_ACT_NOTIFY" } ?: false
 
 /**
  * Initialize and load seccomp filter based on OCI spec
@@ -86,11 +85,12 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int? {
 
     // Create filter context with default action
     val defaultAction = translateAction(seccomp.defaultAction, seccomp.defaultErrnoRet)
-    val ctx = seccomp_init(defaultAction) ?: run {
-        perror("seccomp_init")
-        Logger.error("Failed to initialize seccomp context")
-        throw Exception("Failed to initialize seccomp context")
-    }
+    val ctx =
+        seccomp_init(defaultAction) ?: run {
+            perror("seccomp_init")
+            Logger.error("Failed to initialize seccomp context")
+            throw Exception("Failed to initialize seccomp context")
+        }
 
     try {
         // Set CTL_NNP to false (don't automatically set no_new_privs)
@@ -124,18 +124,19 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int? {
         Logger.debug("seccomp filter loaded successfully")
 
         // If SCMP_ACT_NOTIFY is used, get the notify FD
-        val notifyFd = if (hasNotifyAction(seccomp)) {
-            val fd = seccomp_notify_fd(ctx)
-            if (fd < 0) {
-                perror("seccomp_notify_fd")
-                Logger.error("Failed to get seccomp notify FD")
-                throw Exception("Failed to get seccomp notify FD")
+        val notifyFd =
+            if (hasNotifyAction(seccomp)) {
+                val fd = seccomp_notify_fd(ctx)
+                if (fd < 0) {
+                    perror("seccomp_notify_fd")
+                    Logger.error("Failed to get seccomp notify FD")
+                    throw Exception("Failed to get seccomp notify FD")
+                }
+                Logger.debug("obtained seccomp notify FD: $fd")
+                fd
+            } else {
+                null
             }
-            Logger.debug("obtained seccomp notify FD: $fd")
-            fd
-        } else {
-            null
-        }
 
         return notifyFd
     } finally {
@@ -150,7 +151,11 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int? {
  * Add a syscall rule to the seccomp filter
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun addSyscallRule(ctx: COpaquePointer?, syscall: LinuxSyscall, defaultAction: UInt) {
+private fun addSyscallRule(
+    ctx: COpaquePointer?,
+    syscall: LinuxSyscall,
+    defaultAction: UInt,
+) {
     val action = translateAction(syscall.action, syscall.errnoRet)
 
     // Skip if action is the same as default (redundant rule)
@@ -202,15 +207,14 @@ private fun addSyscallArgRule(
     ctx: COpaquePointer?,
     action: UInt,
     syscallNum: Int,
-    arg: SeccompArg
-): Int {
-    return memScoped {
+    arg: SeccompArg,
+): Int =
+    memScoped {
         val cmp = alloc<scmp_arg_cmp>()
         cmp.arg = arg.index
         cmp.op = translateOp(arg.op)
         cmp.datum_a = arg.value
-        cmp.datum_b = 0u  // Used for SCMP_CMP_MASKED_EQ
+        cmp.datum_b = 0u // Used for SCMP_CMP_MASKED_EQ
 
         seccomp_rule_add_array(ctx, action, syscallNum, 1u, cmp.ptr)
     }
-}

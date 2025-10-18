@@ -15,14 +15,15 @@ import state.refreshStatus
 @OptIn(ExperimentalForeignApi::class)
 fun state(containerId: String) {
     // Load container state
-    var state = try {
-        loadState(containerId)
-    } catch (e: Exception) {
-        Logger.error("failed to load container state: ${e.message ?: "unknown"}")
-        Logger.error("container may not exist or state file is corrupted")
-        exit(1)
-        return
-    }
+    var state =
+        try {
+            loadState(containerId)
+        } catch (e: Exception) {
+            Logger.error("failed to load container state: ${e.message ?: "unknown"}")
+            Logger.error("container may not exist or state file is corrupted")
+            exit(1)
+            return
+        }
 
     // Refresh status to reflect actual process state
     // This checks /proc/{pid} and updates status accordingly

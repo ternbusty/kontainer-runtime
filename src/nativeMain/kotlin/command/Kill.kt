@@ -18,18 +18,22 @@ import syscall.parseSignal
  * @param signalStr Signal to send (name like "SIGTERM" or number like "15")
  */
 @OptIn(ExperimentalForeignApi::class)
-fun kill(containerId: String, signalStr: String) {
+fun kill(
+    containerId: String,
+    signalStr: String,
+) {
     Logger.info("killing container: $containerId with signal: $signalStr")
 
     // Load container state
-    var state = try {
-        loadState(containerId)
-    } catch (e: Exception) {
-        Logger.error("failed to load container state: ${e.message ?: "unknown"}")
-        Logger.error("container may not exist or state file is corrupted")
-        exit(1)
-        return
-    }
+    var state =
+        try {
+            loadState(containerId)
+        } catch (e: Exception) {
+            Logger.error("failed to load container state: ${e.message ?: "unknown"}")
+            Logger.error("container may not exist or state file is corrupted")
+            exit(1)
+            return
+        }
 
     // Refresh status to check actual process state
     state = state.refreshStatus()
@@ -45,13 +49,14 @@ fun kill(containerId: String, signalStr: String) {
     Logger.debug("container is in valid state for kill: ${state.status.value}")
 
     // Parse signal
-    val signal = try {
-        parseSignal(signalStr)
-    } catch (e: IllegalArgumentException) {
-        Logger.error("invalid signal: ${e.message ?: "unknown"}")
-        exit(1)
-        return
-    }
+    val signal =
+        try {
+            parseSignal(signalStr)
+        } catch (e: IllegalArgumentException) {
+            Logger.error("invalid signal: ${e.message ?: "unknown"}")
+            exit(1)
+            return
+        }
 
     Logger.debug("parsed signal: $signalStr -> $signal")
 

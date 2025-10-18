@@ -28,7 +28,10 @@ private fun createSocketPair(): Pair<Int, Int> {
  * Send a message through a socket
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun sendMessage(socket: Int, message: Message) {
+private fun sendMessage(
+    socket: Int,
+    message: Message,
+) {
     val json = MessageCodec.encode(message)
     val bytes = json.encodeToByteArray()
 
@@ -68,7 +71,11 @@ private fun receiveMessage(socket: Int): Message {
  * Send a message with a file descriptor using SCM_RIGHTS
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun sendMessageWithFd(socket: Int, message: Message, fd: Int) {
+private fun sendMessageWithFd(
+    socket: Int,
+    message: Message,
+    fd: Int,
+) {
     val json = MessageCodec.encode(message)
     val bytes = json.encodeToByteArray()
 
@@ -157,12 +164,11 @@ private fun receiveMessageWithFd(socket: Int): Pair<Message, Int> {
         // Extract file descriptor from control message
         var receivedFd = -1
         val cmsg = _CMSG_FIRSTHDR(msg.ptr)
-        if (cmsg != null) {
-            if (cmsg.pointed.cmsg_level == SOL_SOCKET && cmsg.pointed.cmsg_type == SCM_RIGHTS) {
-                val dataPtr = _CMSG_DATA(cmsg)
-                if (dataPtr != null) {
-                    receivedFd = dataPtr.reinterpret<IntVar>().pointed.value
-                }
+
+        if (cmsg != null && cmsg.pointed.cmsg_level == SOL_SOCKET && cmsg.pointed.cmsg_type == SCM_RIGHTS) {
+            val dataPtr = _CMSG_DATA(cmsg)
+            if (dataPtr != null) {
+                receivedFd = dataPtr.reinterpret<IntVar>().pointed.value
             }
         }
 
@@ -177,7 +183,9 @@ private fun receiveMessageWithFd(socket: Int): Pair<Message, Int> {
 /**
  * Main Channel - for communication from intermediate/init to main process
  */
-class MainSender(private val socket: Int) {
+class MainSender(
+    private val socket: Int,
+) {
     fun identifierMappingRequest() {
         sendMessage(socket, Message.WriteMapping)
     }
@@ -207,24 +215,24 @@ class MainSender(private val socket: Int) {
     }
 }
 
-class MainReceiver(private val socket: Int) {
-    fun waitForMappingRequest(): Message.WriteMapping {
-        return when (val msg = receiveMessage(socket)) {
+class MainReceiver(
+    private val socket: Int,
+) {
+    fun waitForMappingRequest(): Message.WriteMapping =
+        when (val msg = receiveMessage(socket)) {
             is Message.WriteMapping -> msg
             is Message.ExecFailed -> throw Exception("Exec failed: ${msg.error}")
             is Message.OtherError -> throw Exception("Error: ${msg.error}")
             else -> throw Exception("Unexpected message: $msg, expected WriteMapping")
         }
-    }
 
-    fun waitForIntermediateReady(): Int {
-        return when (val msg = receiveMessage(socket)) {
+    fun waitForIntermediateReady(): Int =
+        when (val msg = receiveMessage(socket)) {
             is Message.IntermediateReady -> msg.pid
             is Message.ExecFailed -> throw Exception("Exec failed: ${msg.error}")
             is Message.OtherError -> throw Exception("Error: ${msg.error}")
             else -> throw Exception("Unexpected message: $msg, expected IntermediateReady")
         }
-    }
 
     fun waitForInitReady() {
         when (val msg = receiveMessage(socket)) {
@@ -258,7 +266,9 @@ fun mainChannel(): Pair<MainSender, MainReceiver> {
 /**
  * Intermediate Channel - for communication from main to intermediate process
  */
-class IntermediateSender(private val socket: Int) {
+class IntermediateSender(
+    private val socket: Int,
+) {
     fun mappingWritten() {
         sendMessage(socket, Message.MappingWritten)
     }
@@ -268,7 +278,9 @@ class IntermediateSender(private val socket: Int) {
     }
 }
 
-class IntermediateReceiver(private val socket: Int) {
+class IntermediateReceiver(
+    private val socket: Int,
+) {
     fun waitForMappingAck() {
         when (val msg = receiveMessage(socket)) {
             is Message.MappingWritten -> return
@@ -289,7 +301,9 @@ fun intermediateChannel(): Pair<IntermediateSender, IntermediateReceiver> {
 /**
  * Init Channel - for communication from main to init process (reserved for future use like seccomp)
  */
-class InitSender(private val socket: Int) {
+class InitSender(
+    private val socket: Int,
+) {
     fun seccompNotifyDone() {
         sendMessage(socket, Message.SeccompNotifyDone)
     }
@@ -299,7 +313,9 @@ class InitSender(private val socket: Int) {
     }
 }
 
-class InitReceiver(private val socket: Int) {
+class InitReceiver(
+    private val socket: Int,
+) {
     fun waitForSeccompRequestDone() {
         when (val msg = receiveMessage(socket)) {
             is Message.SeccompNotifyDone -> return

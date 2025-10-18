@@ -1,6 +1,7 @@
 package syscall
 
 import kotlinx.cinterop.ExperimentalForeignApi
+import platform.linux.__NR_setns
 import platform.linux.__NR_unshare
 import platform.posix.errno
 import platform.posix.perror
@@ -41,11 +42,11 @@ fun unshare(flags: Int) {
  * @throws Exception if setns fails
  */
 @OptIn(ExperimentalForeignApi::class)
-fun setns(fd: Int, nstype: Int) {
-    // setns syscall number is 308 on x86_64
-    val __NR_setns = 308L
-
-    if (syscall(__NR_setns, fd, nstype) == -1L) {
+fun setns(
+    fd: Int,
+    nstype: Int,
+) {
+    if (syscall(__NR_setns.toLong(), fd, nstype) == -1L) {
         val errNum = errno
         perror("setns")
         throw Exception("Failed to setns (fd=$fd, nstype=0x${nstype.toString(16)}, errno=$errNum)")

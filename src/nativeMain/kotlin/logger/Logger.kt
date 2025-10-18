@@ -20,20 +20,23 @@ import platform.posix.*
  */
 @OptIn(ExperimentalForeignApi::class)
 object Logger {
-
     /**
      * Log levels in ascending order of severity
      */
-    enum class Level(val value: Int, val label: String) {
+    enum class Level(
+        val value: Int,
+        val label: String,
+    ) {
         TRACE(0, "TRACE"),
         DEBUG(1, "DEBUG"),
         INFO(2, "INFO"),
         WARN(3, "WARN"),
-        ERROR(4, "ERROR");
+        ERROR(4, "ERROR"),
+        ;
 
         companion object {
-            fun fromString(s: String): Level? {
-                return when (s.uppercase()) {
+            fun fromString(s: String): Level? =
+                when (s.uppercase()) {
                     "TRACE" -> TRACE
                     "DEBUG" -> DEBUG
                     "INFO" -> INFO
@@ -41,7 +44,6 @@ object Logger {
                     "ERROR" -> ERROR
                     else -> null
                 }
-            }
         }
     }
 
@@ -95,12 +97,19 @@ object Logger {
     /**
      * Internal log function
      */
-    private fun log(level: Level, message: String) {
+    private fun log(
+        level: Level,
+        message: String,
+    ) {
         if (level.value >= currentLevel.value) {
             val timestamp = getCurrentTimestamp()
             fprintf(
-                stderr, "[%s] [%s] [%s] %s\n",
-                timestamp, level.label, processContext, message
+                stderr,
+                "[%s] [%s] [%s] %s\n",
+                timestamp,
+                level.label,
+                processContext,
+                message,
             )
         }
     }

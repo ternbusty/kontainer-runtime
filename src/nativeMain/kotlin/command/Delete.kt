@@ -15,7 +15,10 @@ import syscall.killProcess
  * @param force If true, force deletion even if container is running
  */
 @OptIn(ExperimentalForeignApi::class)
-fun delete(containerId: String, force: Boolean = false) {
+fun delete(
+    containerId: String,
+    force: Boolean = false,
+) {
     Logger.info("deleting container: $containerId${if (force) " (force)" else ""}")
 
     // Check if container exists
@@ -31,13 +34,14 @@ fun delete(containerId: String, force: Boolean = false) {
     }
 
     // Load container state and refresh to get actual status
-    var state = try {
-        loadState(containerId)
-    } catch (e: Exception) {
-        Logger.error("failed to load container state: ${e.message ?: "unknown"}")
-        exit(1)
-        return
-    }
+    var state =
+        try {
+            loadState(containerId)
+        } catch (e: Exception) {
+            Logger.error("failed to load container state: ${e.message ?: "unknown"}")
+            exit(1)
+            return
+        }
 
     // Refresh status to check actual process state
     state = state.refreshStatus()
@@ -77,13 +81,14 @@ fun delete(containerId: String, force: Boolean = false) {
 
     // Load internal config to get cgroup path
     // This is independent of bundle, so works even if bundle was moved/deleted
-    val config = try {
-        loadKontainerConfig(containerId)
-    } catch (e: Exception) {
-        Logger.warn("failed to load kontainer config: ${e.message ?: "unknown"}")
-        Logger.warn("will skip cgroup cleanup")
-        null
-    }
+    val config =
+        try {
+            loadKontainerConfig(containerId)
+        } catch (e: Exception) {
+            Logger.warn("failed to load kontainer config: ${e.message ?: "unknown"}")
+            Logger.warn("will skip cgroup cleanup")
+            null
+        }
 
     // Cleanup cgroup
     config?.cgroupPath?.let { cgroupPath ->

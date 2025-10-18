@@ -3,6 +3,7 @@ plugins {
     kotlin("plugin.serialization") version "2.2.20"
     id("io.kotest") version "6.0.4"
     id("com.google.devtools.ksp") version "2.2.20-2.0.4"
+    id("org.jlleitschuh.gradle.ktlint") version "13.1.0"
 }
 
 group = "me.user"
@@ -14,24 +15,30 @@ repositories {
 }
 
 // Detect if this is a release build
-fun isReleaseTask(): Boolean {
-    return gradle.startParameter.taskNames.any {
+fun isReleaseTask(): Boolean =
+    gradle.startParameter.taskNames.any {
         it.contains("Release", ignoreCase = true)
     }
-}
+
+// Provider for generated source directory
+val buildConfigDir = layout.buildDirectory.dir("generated/buildconfig")
 
 // Generate BuildConfig.kt with build-time constants
 val generateBuildConfig by tasks.registering {
-    val outputDir = layout.buildDirectory.dir("generated/buildconfig").get().asFile
     val isRelease = isReleaseTask()
     val defaultLogLevel = if (isRelease) "INFO" else "DEBUG"
 
     // Track build type as input to invalidate cache when it changes
     inputs.property("buildType", if (isRelease) "release" else "debug")
 
+    // Declare outputs using Provider to wire task dependencies
+    outputs.dir(buildConfigDir)
+
     doLast {
+        val outputDir = buildConfigDir.get().asFile
         outputDir.mkdirs()
-        file("${outputDir.path}/BuildConfig.kt").writeText("""
+        file("${outputDir.path}/BuildConfig.kt").writeText(
+            """
             package config
 
             /**
@@ -41,19 +48,19 @@ val generateBuildConfig by tasks.registering {
             object BuildConfig {
                 const val DEFAULT_LOG_LEVEL = "$defaultLogLevel"
             }
-        """.trimIndent())
+            """.trimIndent(),
+        )
     }
-
-    outputs.dir(outputDir)
 }
 
 kotlin {
     val hostOs = System.getProperty("os.name")
     val isArm64 = System.getProperty("os.arch") == "aarch64"
-    val nativeTarget = when {
-        hostOs == "Linux" && !isArm64 -> linuxX64()
-        else -> throw GradleException("Host OS is not supported in Kotlin/Native.")
-    }
+    val nativeTarget =
+        when {
+            hostOs == "Linux" && !isArm64 -> linuxX64()
+            else -> throw GradleException("Host OS is not supported in Kotlin/Native.")
+        }
 
     nativeTarget.apply {
         binaries {
@@ -79,12 +86,12 @@ kotlin {
             dependencies {
                 implementation(libs.kotlinxSerializationJson)
             }
-            // Add generated BuildConfig to source set
-            kotlin.srcDir(layout.buildDirectory.dir("generated/buildconfig"))
+            // Add generated BuildConfig to source set using Provider
+            kotlin.srcDir(buildConfigDir)
         }
         nativeTest.dependencies {
-            implementation("io.kotest:kotest-assertions-core:${kotestVersion}")
-            implementation("io.kotest:kotest-framework-engine:${kotestVersion}")
+            implementation("io.kotest:kotest-assertions-core:$kotestVersion")
+            implementation("io.kotest:kotest-framework-engine:$kotestVersion")
         }
     }
 
@@ -93,5 +100,31 @@ kotlin {
         compilations["main"].compileTaskProvider.configure {
             dependsOn(generateBuildConfig)
         }
+    }
+}
+
+// Ensure ktlint tasks run after generation if they touch generated sources
+tasks.withType<org.jlleitschuh.gradle.ktlint.tasks.KtLintCheckTask>().configureEach {
+    dependsOn(generateBuildConfig)
+}
+tasks.withType<org.jlleitschuh.gradle.ktlint.tasks.KtLintFormatTask>().configureEach {
+    dependsOn(generateBuildConfig)
+}
+
+ktlint {
+    version.set("1.7.1")
+    verbose.set(true)
+    reporters {
+        reporter(org.jlleitschuh.gradle.ktlint.reporter.ReporterType.CHECKSTYLE)
+    }
+    // Exclude all generated sources without using deprecated buildDir getter
+    filter {
+        val genRoot =
+            layout.buildDirectory
+                .dir("generated")
+                .get()
+                .asFile
+                .toPath()
+        exclude { it.file.toPath().startsWith(genRoot) }
     }
 }

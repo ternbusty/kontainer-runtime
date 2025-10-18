@@ -16,14 +16,15 @@ fun start(containerId: String) {
     Logger.info("starting container: $containerId")
 
     // Load container state to verify it exists
-    var state = try {
-        loadState(containerId)
-    } catch (e: Exception) {
-        Logger.error("failed to load container state: ${e.message ?: "unknown"}")
-        Logger.error("container may not exist or state file is corrupted")
-        exit(1)
-        return
-    }
+    var state =
+        try {
+            loadState(containerId)
+        } catch (e: Exception) {
+            Logger.error("failed to load container state: ${e.message ?: "unknown"}")
+            Logger.error("container may not exist or state file is corrupted")
+            exit(1)
+            return
+        }
 
     // Refresh status to check actual process state
     state = state.refreshStatus()

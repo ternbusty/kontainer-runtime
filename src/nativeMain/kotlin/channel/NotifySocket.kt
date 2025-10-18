@@ -16,7 +16,9 @@ const val NOTIFY_FILE = "notify.sock"
  * Waits for start signal from the main process
  */
 @OptIn(ExperimentalForeignApi::class)
-class NotifyListener(socketPath: String) {
+class NotifyListener(
+    socketPath: String,
+) {
     private val socket: Int
 
     init {
@@ -47,7 +49,7 @@ class NotifyListener(socketPath: String) {
             for (i in pathBytes.indices) {
                 addr.sun_path[i] = pathBytes[i]
             }
-            addr.sun_path[pathBytes.size] = 0  // null terminate
+            addr.sun_path[pathBytes.size] = 0 // null terminate
 
             val addrPtr = addr.ptr.reinterpret<sockaddr>()
             val addrLen = sizeOf<sockaddr_un>().toUInt()
@@ -112,7 +114,9 @@ class NotifyListener(socketPath: String) {
  * Sends start signal to the init process
  */
 @OptIn(ExperimentalForeignApi::class)
-class NotifySocket(private val socketPath: String) {
+class NotifySocket(
+    private val socketPath: String,
+) {
     fun notifyContainerStart() {
         Logger.debug("NotifySocket: connecting to $socketPath")
 

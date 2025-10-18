@@ -15,13 +15,13 @@ data class Spec(
     val root: Root,
     val process: Process,
     val hostname: String? = null,
-    val linux: Linux? = null
+    val linux: Linux? = null,
 )
 
 @Serializable
 data class Root(
     val path: String,
-    val readonly: Boolean = false
+    val readonly: Boolean = false,
 )
 
 @Serializable
@@ -30,39 +30,39 @@ data class Process(
     val env: List<String>? = null,
     val cwd: String = "/",
     val noNewPrivileges: Boolean? = null,
-    val user: User = User()
+    val user: User = User(),
 )
 
 @Serializable
 data class User(
     val uid: UInt = 0u,
-    val gid: UInt = 0u
+    val gid: UInt = 0u,
 )
 
 @Serializable
 data class Namespace(
-    val type: String
+    val type: String,
 )
 
 @Serializable
 data class LinuxIdMapping(
     val containerID: UInt,
     val hostID: UInt,
-    val size: UInt
+    val size: UInt,
 )
 
 @Serializable
 data class LinuxMemory(
     val limit: Long? = null,
     val reservation: Long? = null,
-    val swap: Long? = null
+    val swap: Long? = null,
 )
 
 @Serializable
 data class LinuxCpu(
     val shares: Long? = null,
     val quota: Long? = null,
-    val period: Long? = null
+    val period: Long? = null,
 )
 
 /**
@@ -71,7 +71,7 @@ data class LinuxCpu(
 @Serializable
 data class LinuxResources(
     val memory: LinuxMemory? = null,
-    val cpu: LinuxCpu? = null
+    val cpu: LinuxCpu? = null,
 )
 
 /**
@@ -81,7 +81,7 @@ data class LinuxResources(
 data class SeccompArg(
     val index: UInt,
     val value: ULong,
-    val op: String
+    val op: String,
 )
 
 /**
@@ -91,7 +91,7 @@ data class SeccompArg(
 data class Filter(
     val caps: List<String>? = null,
     val arches: List<String>? = null,
-    val minKernel: String? = null
+    val minKernel: String? = null,
 )
 
 /**
@@ -105,7 +105,7 @@ data class LinuxSyscall(
     val errnoRet: UInt? = null,
     val includes: Filter? = null,
     val excludes: Filter? = null,
-    val comment: String? = null
+    val comment: String? = null,
 )
 
 /**
@@ -114,7 +114,7 @@ data class LinuxSyscall(
 @Serializable
 data class ArchMap(
     val architecture: String,
-    val subArchitectures: List<String>? = null
+    val subArchitectures: List<String>? = null,
 )
 
 /**
@@ -129,7 +129,7 @@ data class LinuxSeccomp(
     val syscalls: List<LinuxSyscall>? = null,
     val flags: List<String>? = null,
     val listenerPath: String? = null,
-    val listenerMetadata: String? = null
+    val listenerMetadata: String? = null,
 )
 
 @Serializable
@@ -139,7 +139,7 @@ data class Linux(
     val gidMappings: List<LinuxIdMapping>? = null,
     val resources: LinuxResources? = null,
     val cgroupsPath: String? = null,
-    val seccomp: LinuxSeccomp? = null
+    val seccomp: LinuxSeccomp? = null,
 )
 
 /**
@@ -148,16 +148,18 @@ data class Linux(
 @OptIn(ExperimentalForeignApi::class)
 fun loadSpec(configPath: String): Spec {
     // JSON parser with lenient settings for OCI spec
-    val jsonParser = Json {
-        ignoreUnknownKeys = true
-        isLenient = true
-        coerceInputValues = true
-    }
+    val jsonParser =
+        Json {
+            ignoreUnknownKeys = true
+            isLenient = true
+            coerceInputValues = true
+        }
 
     // Read and parse JSON file
-    val spec = readJsonFile(configPath) { json ->
-        jsonParser.decodeFromString<Spec>(json)
-    }
+    val spec =
+        readJsonFile(configPath) { json ->
+            jsonParser.decodeFromString<Spec>(json)
+        }
 
     // Validate process.args is not empty (kotlinx.serialization doesn't check this)
     if (spec.process.args.isEmpty()) {

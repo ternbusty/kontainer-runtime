@@ -103,17 +103,18 @@ private fun emulateCloseRange(preserveFds: Int = 0) {
  */
 @OptIn(ExperimentalForeignApi::class)
 fun closeRange(preserveFds: Int = 0) {
-    val minFd = 3 + preserveFds  // stdin=0, stdout=1, stderr=2, then preserve_fds
+    val minFd = 3 + preserveFds // stdin=0, stdout=1, stderr=2, then preserve_fds
     val maxFd = Int.MAX_VALUE
 
     Logger.debug("setting CLOEXEC on FDs >= $minFd")
 
-    val result = syscall(
-        _SYS_close_range(),
-        minFd.toLong(),
-        maxFd.toLong(),
-        _CLOSE_RANGE_CLOEXEC().toLong()
-    )
+    val result =
+        syscall(
+            _SYS_close_range(),
+            minFd.toLong(),
+            maxFd.toLong(),
+            _CLOSE_RANGE_CLOEXEC().toLong(),
+        )
 
     if (result == -1L) {
         val errNum = errno

@@ -1,10 +1,10 @@
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 
-class MyFirstTestClass : FunSpec({
+class Test :
+    FunSpec({
 
-    test("my first test") {
-        1 + 2 shouldBe 3
-    }
-
-})
+        test("my first test") {
+            1 + 2 shouldBe 3
+        }
+    })

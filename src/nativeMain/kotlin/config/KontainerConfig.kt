@@ -21,7 +21,7 @@ private const val CONTAINER_ROOT = "/run/kontainer"
 
 @Serializable
 data class KontainerConfig(
-    @SerialName("cgroup_path") val cgroupPath: String?
+    @SerialName("cgroup_path") val cgroupPath: String?,
 )
 
 /**
@@ -30,7 +30,10 @@ data class KontainerConfig(
  * @throws Exception if save fails
  */
 @OptIn(ExperimentalForeignApi::class)
-fun saveKontainerConfig(config: KontainerConfig, containerId: String) {
+fun saveKontainerConfig(
+    config: KontainerConfig,
+    containerId: String,
+) {
     val containerDir = "$CONTAINER_ROOT/$containerId"
     val configPath = "$containerDir/$KONTAINER_CONFIG_NAME"
 
@@ -65,11 +68,12 @@ fun loadKontainerConfig(containerId: String): KontainerConfig {
  * Provides centralized JSON configuration for encoding and decoding internal config.
  */
 object ConfigCodec {
-    private val json = Json {
-        prettyPrint = true
-        encodeDefaults = false
-        ignoreUnknownKeys = true
-    }
+    private val json =
+        Json {
+            prettyPrint = true
+            encodeDefaults = false
+            ignoreUnknownKeys = true
+        }
 
     /**
      * Encode config to JSON string
@@ -77,9 +81,7 @@ object ConfigCodec {
      * @param config KontainerConfig to encode
      * @return JSON string
      */
-    fun encode(config: KontainerConfig): String {
-        return json.encodeToString(config)
-    }
+    fun encode(config: KontainerConfig): String = json.encodeToString(config)
 
     /**
      * Decode JSON string to KontainerConfig
@@ -87,7 +89,5 @@ object ConfigCodec {
      * @param text JSON string
      * @return KontainerConfig object
      */
-    fun decode(text: String): KontainerConfig {
-        return json.decodeFromString(text)
-    }
+    fun decode(text: String): KontainerConfig = json.decodeFromString(text)
 }
