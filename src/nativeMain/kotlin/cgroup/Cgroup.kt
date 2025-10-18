@@ -5,9 +5,8 @@ import kotlinx.cinterop.memScoped
 import logger.Logger
 import platform.posix.F_OK
 import platform.posix.access
-import platform.posix.mkdir
-import platform.posix.perror
 import spec.LinuxResources
+import utils.createDirectories
 import utils.writeText
 
 /**
@@ -48,14 +47,8 @@ fun setupCgroup(pid: Int, cgroupPath: String?, resources: LinuxResources?) {
         Logger.debug("setting up cgroup at $fullPath")
 
         // Create cgroup directory
-        if (access(fullPath, F_OK) != 0) {
-            if (mkdir(fullPath, 0x1EDu) != 0) {  // 0x1ED = 0755 octal
-                perror("mkdir cgroup")
-                Logger.warn("failed to create cgroup directory")
-                return@memScoped
-            }
-            Logger.debug("created cgroup directory: $fullPath")
-        }
+        createDirectories(fullPath, 0x1EDu)  // 0x1ED = 0755 octal
+        Logger.debug("created cgroup directory: $fullPath")
 
         // Enable controllers in subtree_control
         // Only enable controllers that are actually needed based on resources
