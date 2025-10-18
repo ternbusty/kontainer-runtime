@@ -4,23 +4,13 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.pointed
 import kotlinx.cinterop.toKString
 import logger.Logger
+import platform.linux._CLOSE_RANGE_CLOEXEC
+import platform.linux._SYS_close_range
 import platform.posix.*
 
 /**
  * FD cleanup implementation using close_range(2) syscall with fallback
  */
-
-// System call number for close_range (x86_64 Linux)
-private const val SYS_close_range = 436L
-
-// Flag to set FD_CLOEXEC on file descriptors instead of closing them immediately
-// FDs will be automatically closed on execve
-private const val CLOSE_RANGE_CLOEXEC = 4
-
-// fcntl operations
-private const val F_GETFD = 1
-private const val F_SETFD = 2
-private const val FD_CLOEXEC = 1
 
 /**
  * Get list of open file descriptors by reading /proc/self/fd
@@ -119,10 +109,10 @@ fun closeRange(preserveFds: Int = 0) {
     Logger.debug("setting CLOEXEC on FDs >= $minFd")
 
     val result = syscall(
-        SYS_close_range,
+        _SYS_close_range(),
         minFd.toLong(),
         maxFd.toLong(),
-        CLOSE_RANGE_CLOEXEC.toLong()
+        _CLOSE_RANGE_CLOEXEC().toLong()
     )
 
     if (result == -1L) {

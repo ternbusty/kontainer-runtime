@@ -1,0 +1,15 @@
+headers = unistd.h
+headerFilter = unistd.h
+package = platform.linux
+compilerOpts = -D_GNU_SOURCE
+---
+
+static inline long _SYS_close_range() {
+    return 436;  // syscall number for close_range on x86_64 Linux
+}
+
+// close_range flags (from linux/close_range.h)
+// CLOSE_RANGE_CLOEXEC: Set the FD_CLOEXEC bit instead of closing the file descriptor
+static inline unsigned int _CLOSE_RANGE_CLOEXEC() {
+     return (1U << 2);  // 4
+}

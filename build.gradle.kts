@@ -31,6 +31,7 @@ kotlin {
             val socket by creating {}
             val wait by creating {}
             val sched by creating {}
+            val closerange by creating {}
         }
     }
 
