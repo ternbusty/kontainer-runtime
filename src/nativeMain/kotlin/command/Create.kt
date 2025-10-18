@@ -16,6 +16,7 @@ import platform.posix.perror
 import process.runIntermediateProcess
 import process.runMainProcess
 import spec.loadSpec
+import state.ContainerStatus
 import state.containerExists
 import state.createState
 import state.save
@@ -117,7 +118,7 @@ fun create(containerId: String, bundlePath: String = ".", pidFile: String? = nul
                 val state = createState(
                     ociVersion = spec.ociVersion,
                     containerId = containerId,
-                    status = "created",
+                    status = ContainerStatus.CREATED,
                     pid = initPid,
                     bundle = bundlePath,
                     annotations = null

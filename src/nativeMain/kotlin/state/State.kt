@@ -1,8 +1,14 @@
 package state
 
 import kotlinx.cinterop.*
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 import logger.Logger
 import platform.posix.*
@@ -10,6 +16,70 @@ import utils.createDirectories
 import utils.fileExists
 import utils.readJsonFile
 import utils.writeJsonFile
+
+/**
+ * Container status enum
+ *
+ * Represents the runtime status of a container.
+ * Compatible with OCI Runtime Specification.
+ */
+enum class ContainerStatus(val value: String) {
+    CREATING("creating"),
+    CREATED("created"),
+    RUNNING("running"),
+    STOPPED("stopped");
+
+    /**
+     * Check if container can be started
+     * Only CREATED containers can be started
+     */
+    fun canStart(): Boolean = this == CREATED
+
+    /**
+     * Check if container can receive signals
+     * CREATED and RUNNING containers can be killed
+     */
+    fun canKill(): Boolean = this in setOf(CREATED, RUNNING)
+
+    /**
+     * Check if container can be deleted
+     * Only STOPPED containers can be deleted (without force flag)
+     */
+    fun canDelete(): Boolean = this == STOPPED
+
+    companion object {
+        /**
+         * Parse status string to ContainerStatus
+         *
+         * @param value Status string ("creating", "created", etc.)
+         * @return ContainerStatus enum value
+         * @throws IllegalArgumentException if status string is unknown
+         */
+        fun fromString(value: String): ContainerStatus {
+            return entries.find { it.value == value }
+                ?: throw IllegalArgumentException("Unknown container status: $value")
+        }
+    }
+}
+
+/**
+ * Custom serializer for ContainerStatus enum
+ *
+ * Serializes enum as its string value for JSON compatibility
+ */
+object ContainerStatusSerializer : KSerializer<ContainerStatus> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("ContainerStatus", PrimitiveKind.STRING)
+
+    override fun serialize(encoder: Encoder, value: ContainerStatus) {
+        encoder.encodeString(value.value)
+    }
+
+    override fun deserialize(decoder: Decoder): ContainerStatus {
+        val str = decoder.decodeString()
+        return ContainerStatus.fromString(str)
+    }
+}
 
 /**
  * Container state information
@@ -31,7 +101,8 @@ data class State(
     val id: String,
 
     @SerialName("status")
-    val status: String,  // "creating", "created", "running", "stopped", "paused"
+    @Serializable(with = ContainerStatusSerializer::class)
+    val status: ContainerStatus,
 
     @SerialName("pid")
     val pid: Int? = null,  // Required on Linux when status is "created" or "running"
@@ -167,7 +238,7 @@ fun loadState(containerId: String): State {
 fun createState(
     ociVersion: String,
     containerId: String,
-    status: String,
+    status: ContainerStatus,
     pid: Int?,
     bundle: String,
     annotations: Map<String, String>? = null
@@ -185,10 +256,8 @@ fun createState(
 
 /**
  * Create a new State with updated status
- *
- * This is a convenience function for state transitions (e.g., "created" -> "running")
  */
-fun State.withStatus(newStatus: String): State {
+fun State.withStatus(newStatus: ContainerStatus): State {
     return this.copy(status = newStatus)
 }
 
@@ -330,7 +399,7 @@ private fun isProcessAlive(pid: Int): Boolean {
  * Refresh container status based on actual process state
  *
  * Checks /proc/{pid} to determine if the container process is still running.
- * Updates status to "stopped" if:
+ * Updates status to STOPPED if:
  * - PID is null
  * - Process doesn't exist in /proc
  * - Process is zombie (Z) or dead (X)
@@ -342,35 +411,35 @@ fun State.refreshStatus(): State {
         // No PID means container is stopped
         this.pid == null -> {
             Logger.debug("container ${this.id} has no PID, status: stopped")
-            "stopped"
+            ContainerStatus.STOPPED
         }
 
         // Check if process is actually alive
         !isProcessAlive(this.pid) -> {
             Logger.debug("container ${this.id} process ${this.pid} is not alive, status: stopped")
-            "stopped"
+            ContainerStatus.STOPPED
         }
 
         // Process exists and is alive
         else -> {
             // Keep current status if it's a valid non-running state
             when (this.status) {
-                "creating", "created", "paused" -> {
-                    Logger.debug("container ${this.id} process ${this.pid} is alive, keeping status: ${this.status}")
+                ContainerStatus.CREATING, ContainerStatus.CREATED -> {
+                    Logger.debug("container ${this.id} process ${this.pid} is alive, keeping status: ${this.status.value}")
                     this.status
                 }
 
-                "stopped" -> {
+                ContainerStatus.STOPPED -> {
                     // Process is alive but status is stopped - inconsistent state
                     // This shouldn't happen, but if it does, update to running
                     Logger.warn("container ${this.id} status is 'stopped' but process ${this.pid} is alive, updating to 'running'")
-                    "running"
+                    ContainerStatus.RUNNING
                 }
 
-                else -> {
-                    // Default to running if process is alive
+                ContainerStatus.RUNNING -> {
+                    // Process is alive and running
                     Logger.debug("container ${this.id} process ${this.pid} is alive, status: running")
-                    "running"
+                    ContainerStatus.RUNNING
                 }
             }
         }
@@ -378,7 +447,7 @@ fun State.refreshStatus(): State {
 
     // Return updated state if status changed
     return if (newStatus != this.status) {
-        Logger.info("container ${this.id} status changed: ${this.status} -> $newStatus")
+        Logger.info("container ${this.id} status changed: ${this.status.value} -> ${newStatus.value}")
         this.copy(status = newStatus)
     } else {
         this

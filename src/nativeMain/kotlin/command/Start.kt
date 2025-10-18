@@ -4,10 +4,7 @@ import channel.NotifySocket
 import kotlinx.cinterop.ExperimentalForeignApi
 import logger.Logger
 import platform.posix.exit
-import state.loadState
-import state.refreshStatus
-import state.save
-import state.withStatus
+import state.*
 
 /**
  * Start command - Starts a created container
@@ -32,8 +29,8 @@ fun start(containerId: String) {
     state = state.refreshStatus()
 
     // Verify container is in 'created' state
-    if (state.status != "created") {
-        Logger.error("container is in '${state.status}' state, expected 'created'")
+    if (!state.status.canStart()) {
+        Logger.error("container is in '${state.status.value}' state, expected 'created'")
         exit(1)
     }
 
@@ -48,7 +45,7 @@ fun start(containerId: String) {
         Logger.debug("sent start signal to container")
 
         // Update state to "running" and save
-        val updatedState = state.withStatus("running")
+        val updatedState = state.withStatus(ContainerStatus.RUNNING)
         updatedState.save()
         Logger.debug("updated container state to 'running'")
 

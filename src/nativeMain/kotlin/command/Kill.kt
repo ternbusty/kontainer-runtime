@@ -33,20 +33,16 @@ fun kill(containerId: String, signalStr: String) {
 
     // Refresh status to check actual process state
     state = state.refreshStatus()
-    Logger.debug("container status: ${state.status}")
+    Logger.debug("container status: ${state.status.value}")
 
     // Validate status - only created or running containers can be killed
-    when (state.status) {
-        "created", "running" -> {
-            // Valid states for kill
-            Logger.debug("container is in valid state for kill: ${state.status}")
-        }
-        else -> {
-            Logger.error("cannot kill container in '${state.status}' state")
-            Logger.error("kill can only be used on containers in 'created' or 'running' states")
-            exit(1)
-        }
+    if (!state.status.canKill()) {
+        Logger.error("cannot kill container in '${state.status.value}' state")
+        Logger.error("kill can only be used on containers in 'created' or 'running' states")
+        exit(1)
     }
+
+    Logger.debug("container is in valid state for kill: ${state.status.value}")
 
     // Parse signal
     val signal = try {

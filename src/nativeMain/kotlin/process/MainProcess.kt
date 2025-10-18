@@ -12,6 +12,7 @@ import platform.linux._WTERMSIG
 import platform.posix.*
 import seccomp.sendToSeccompListener
 import spec.Spec
+import state.ContainerStatus
 import state.State
 import utils.writeText
 
@@ -127,7 +128,7 @@ fun runMainProcess(
                     val containerState = State(
                         ociVersion = spec.ociVersion,
                         id = containerId,
-                        status = "creating",
+                        status = ContainerStatus.CREATING,
                         pid = initPid,
                         bundle = bundlePath,
                         annotations = null,

@@ -41,20 +41,21 @@ fun delete(containerId: String, force: Boolean = false) {
 
     // Refresh status to check actual process state
     state = state.refreshStatus()
-    Logger.debug("container status: ${state.status}")
+    Logger.debug("container status: ${state.status.value}")
 
     // Check if container can be deleted
-    // Allow deletion of 'stopped' and 'created' states
+    // Allow deletion of 'stopped' state without force
     // With force flag, allow deletion of any state
-    when (state.status) {
-        "stopped" -> {
-            // Can delete stopped containers
+    when {
+        state.status.canDelete() -> {
+            // STOPPED status: can delete without killing process
             Logger.debug("container is stopped, proceeding with deletion")
         }
 
-        "created" -> {
-            // For created containers, kill the process first
-            Logger.debug("container is created, killing process before deletion")
+        force -> {
+            // Force flag set: kill process before deletion
+            Logger.debug("container is in '${state.status.value}' state, but force flag is set")
+            Logger.debug("killing process before deletion")
             state.pid?.let { pid ->
                 try {
                     killProcess(pid)
@@ -66,34 +67,11 @@ fun delete(containerId: String, force: Boolean = false) {
             }
         }
 
-        "running", "paused", "creating" -> {
-            // Cannot delete running/paused/creating containers without force flag
-            if (force) {
-                Logger.debug("container is in '${state.status}' state, but force flag is set")
-                Logger.debug("killing process before deletion")
-                state.pid?.let { pid ->
-                    try {
-                        killProcess(pid)
-                        Logger.debug("killed process $pid")
-                    } catch (e: Exception) {
-                        Logger.warn("failed to kill process $pid: ${e.message ?: "unknown"}")
-                        // Continue with deletion even if kill fails
-                    }
-                }
-            } else {
-                Logger.error("cannot delete container in '${state.status}' state")
-                Logger.error("use --force flag to force deletion, or stop the container first")
-                exit(1)
-            }
-        }
-
         else -> {
-            // Unknown status
-            Logger.warn("unknown container status: ${state.status}")
-            if (!force) {
-                Logger.error("cannot delete container in unknown state without force flag")
-                exit(1)
-            }
+            // Cannot delete without force flag
+            Logger.error("cannot delete container in '${state.status.value}' state")
+            Logger.error("use --force flag to force deletion, or stop the container first")
+            exit(1)
         }
     }
 
