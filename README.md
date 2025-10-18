@@ -1,22 +1,46 @@
-[![official JetBrains project](https://jb.gg/badges/official-plastic.svg)](https://confluence.jetbrains.com/display/ALL/JetBrains+on+GitHub)
-[![Kotlin](https://img.shields.io/badge/Kotlin-2.0-blue.svg?style=flat&logo=kotlin)](https://kotlinlang.org)
+[![Kotlin](https://img.shields.io/badge/Kotlin-2.2-blue.svg?style=flat&logo=kotlin)](https://kotlinlang.org)
+[![Kotlin Native](https://img.shields.io/badge/Kotlin-Native-green.svg?style=flat&logo=kotlin)](https://kotlinlang.org/docs/native-overview.html)
 
-# Kotlin/Native Template
+# Kontainer Runtime
 
-A mostly-empty template to get started creating a Kotlin/Native project. 
+Kontainer Runtime is a low lever container runtime written in Kotlin/Native.
 
-## Getting Started
+## How to Run
 
-1. On the project page, click on the `Use this template` button
-2. Click on the `Create a new repository` drop-down item
-3. Fill in the details of the new repository you'll be creating under your account
-4. Click the `Create repository` button
-5. Browse to your repository and make the needed changes there.
+### Build
 
-## Code of conduct
+```bash
+./gradlew linkDebugExecutableLinuxX64
+```
 
-Please read [our code of conduct](https://github.com/jetbrains#code-of-conduct).
+### Run
 
-## License
+To create a container whose name is `test` from a bundle located at `test-bundle`, use the following command
 
-The [kmp-native-wizard template](https://github.com/Kotlin/kmp-native-wizard/) is licensed under [CC0](https://creativecommons.org/publicdomain/zero/1.0/deed.en).
+```bash
+sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe create --bundle test-bundle test
+```
+
+To start the container
+
+```bash
+sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe start test
+```
+
+To get the status of the container
+
+```bash
+sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe status test
+```
+
+To stop the container
+
+```bash
+sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe stop test
+```
+
+To delete the container
+
+```bash
+sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe delete test
+```
