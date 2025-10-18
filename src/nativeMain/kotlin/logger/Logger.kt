@@ -1,5 +1,6 @@
 package logger
 
+import config.BuildConfig
 import kotlinx.cinterop.*
 import platform.posix.*
 
@@ -52,7 +53,7 @@ object Logger {
 
     /**
      * Detect log level from environment variable KONTAINER_LOG_LEVEL
-     * Default: ERROR for release builds, DEBUG for debug builds
+     * Falls back to build-time default (DEBUG for debug builds, INFO for release builds)
      */
     private fun detectLogLevel(): Level {
         val envVar = getenv("KONTAINER_LOG_LEVEL")?.toKString()
@@ -61,10 +62,8 @@ object Logger {
             Level.fromString(envVar)?.let { return it }
         }
 
-        // Default log level based on build type
-        // In a real implementation, you might want to detect debug vs release build
-        // For now, default to DEBUG for better visibility during development
-        return Level.DEBUG
+        // Default log level from build configuration
+        return Level.fromString(BuildConfig.DEFAULT_LOG_LEVEL) ?: Level.INFO
     }
 
     /**
@@ -99,8 +98,10 @@ object Logger {
     private fun log(level: Level, message: String) {
         if (level.value >= currentLevel.value) {
             val timestamp = getCurrentTimestamp()
-            fprintf(stderr, "[%s] [%s] [%s] %s\n",
-                timestamp, level.label, processContext, message)
+            fprintf(
+                stderr, "[%s] [%s] [%s] %s\n",
+                timestamp, level.label, processContext, message
+            )
         }
     }
 
