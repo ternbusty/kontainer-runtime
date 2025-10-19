@@ -120,7 +120,15 @@ fun create(
                 notifyListener.close()
 
                 val initPid =
-                    runMainProcess(rootPath, spec, containerId, bundlePath, intermediatePid, mainReceiver, interSender, initSender)
+                    runMainProcess(
+                        spec,
+                        containerId,
+                        bundlePath,
+                        intermediatePid,
+                        mainReceiver,
+                        interSender,
+                        initSender,
+                    )
 
                 // Save container state for start command
                 Logger.debug("saving container state")
@@ -157,7 +165,7 @@ fun create(
                 if (pidFile != null) {
                     Logger.debug("writing PID to file: $pidFile")
                     try {
-                        writeText(pidFile, "$initPid\n")
+                        writeText(pidFile, "$initPid")
                         Logger.debug("successfully wrote PID $initPid to $pidFile")
                     } catch (e: Exception) {
                         Logger.error("failed to write PID file: ${e.message ?: "unknown"}")
