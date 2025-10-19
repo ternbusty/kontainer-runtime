@@ -10,14 +10,18 @@ import state.refreshStatus
 /**
  * State command - Displays the state of a container
  *
+ * @param rootPath Root directory for container state
  * @param containerId Container ID
  */
 @OptIn(ExperimentalForeignApi::class)
-fun state(containerId: String) {
+fun state(
+    rootPath: String,
+    containerId: String,
+) {
     // Load container state
     var state =
         try {
-            loadState(containerId)
+            loadState(rootPath, containerId)
         } catch (e: Exception) {
             Logger.error("failed to load container state: ${e.message ?: "unknown"}")
             Logger.error("container may not exist or state file is corrupted")

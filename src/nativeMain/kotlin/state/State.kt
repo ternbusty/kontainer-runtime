@@ -116,18 +116,31 @@ data class State(
     val created: String? = null, // ISO 8601 timestamp (extension, not in OCI spec)
 )
 
-private const val STATE_ROOT = "/run/kontainer"
 private const val STATE_FILE_NAME = "state.json"
 
 /**
  * Get the directory path for a container's state
+ *
+ * @param rootPath Root directory for container state (e.g., /run/kontainer)
+ * @param containerId Container ID
+ * @return Path to container's state directory
  */
-private fun getContainerDir(containerId: String): String = "$STATE_ROOT/$containerId"
+private fun getContainerDir(
+    rootPath: String,
+    containerId: String,
+): String = "$rootPath/$containerId"
 
 /**
  * Get the full path to the state file
+ *
+ * @param rootPath Root directory for container state
+ * @param containerId Container ID
+ * @return Path to state.json file
  */
-private fun getStatePath(containerId: String): String = "${getContainerDir(containerId)}/$STATE_FILE_NAME"
+private fun getStatePath(
+    rootPath: String,
+    containerId: String,
+): String = "${getContainerDir(rootPath, containerId)}/$STATE_FILE_NAME"
 
 /**
  * Get current timestamp in ISO 8601 format
@@ -153,15 +166,16 @@ private fun getCurrentTimestamp(): String =
 /**
  * Save container state to disk
  *
- * Creates /run/kontainer/{container-id}/ directory if it doesn't exist
+ * Creates {rootPath}/{container-id}/ directory if it doesn't exist
  * and writes state.json file.
  *
+ * @param rootPath Root directory for container state (e.g., /run/kontainer)
  * @throws Exception if directory creation or file write fails
  */
 @OptIn(ExperimentalForeignApi::class)
-fun State.save() {
-    val containerDir = getContainerDir(this.id)
-    val statePath = getStatePath(this.id)
+fun State.save(rootPath: String) {
+    val containerDir = getContainerDir(rootPath, this.id)
+    val statePath = getStatePath(rootPath, this.id)
 
     Logger.debug("saving state to $statePath")
 
@@ -187,12 +201,16 @@ fun State.save() {
 /**
  * Check if a container with the given ID already exists
  *
+ * @param rootPath Root directory for container state
  * @param containerId Container ID to check
  * @return true if container exists, false otherwise
  */
 @OptIn(ExperimentalForeignApi::class)
-fun containerExists(containerId: String): Boolean {
-    val statePath = getStatePath(containerId)
+fun containerExists(
+    rootPath: String,
+    containerId: String,
+): Boolean {
+    val statePath = getStatePath(rootPath, containerId)
     val exists = fileExists(statePath)
 
     if (exists) {
@@ -207,15 +225,19 @@ fun containerExists(containerId: String): Boolean {
 /**
  * Load container state from disk
  *
- * Reads state.json from /run/kontainer/{container-id}/
+ * Reads state.json from {rootPath}/{container-id}/
  *
+ * @param rootPath Root directory for container state
  * @param containerId Container ID to load
  * @return State object
  * @throws Exception if file doesn't exist or parsing fails
  */
 @OptIn(ExperimentalForeignApi::class)
-fun loadState(containerId: String): State {
-    val statePath = getStatePath(containerId)
+fun loadState(
+    rootPath: String,
+    containerId: String,
+): State {
+    val statePath = getStatePath(rootPath, containerId)
 
     Logger.debug("loading state from $statePath")
 
@@ -285,14 +307,18 @@ fun deleteNotifySocket(containerId: String) {
 /**
  * Delete container directory and all its contents
  *
- * Recursively removes /run/kontainer/{container-id}/
+ * Recursively removes {rootPath}/{container-id}/
  *
+ * @param rootPath Root directory for container state
  * @param containerId Container ID
  * @throws Exception if directory deletion fails
  */
 @OptIn(ExperimentalForeignApi::class)
-fun deleteContainerDir(containerId: String) {
-    val containerDir = getContainerDir(containerId)
+fun deleteContainerDir(
+    rootPath: String,
+    containerId: String,
+) {
+    val containerDir = getContainerDir(rootPath, containerId)
 
     Logger.debug("deleting container directory: $containerDir")
 

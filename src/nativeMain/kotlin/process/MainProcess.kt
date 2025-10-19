@@ -28,6 +28,7 @@ import utils.writeText
  */
 @OptIn(ExperimentalForeignApi::class)
 fun runMainProcess(
+    rootPath: String,
     spec: Spec,
     containerId: String,
     bundlePath: String,

@@ -9,16 +9,20 @@ import state.*
 /**
  * Start command - Starts a created container
  *
+ * @param rootPath Root directory for container state
  * @param containerId Container ID
  */
 @OptIn(ExperimentalForeignApi::class)
-fun start(containerId: String) {
+fun start(
+    rootPath: String,
+    containerId: String,
+) {
     Logger.info("starting container: $containerId")
 
     // Load container state to verify it exists
     var state =
         try {
-            loadState(containerId)
+            loadState(rootPath, containerId)
         } catch (e: Exception) {
             Logger.error("failed to load container state: ${e.message ?: "unknown"}")
             Logger.error("container may not exist or state file is corrupted")
@@ -47,7 +51,7 @@ fun start(containerId: String) {
 
         // Update state to "running" and save
         val updatedState = state.withStatus(ContainerStatus.RUNNING)
-        updatedState.save()
+        updatedState.save(rootPath)
         Logger.debug("updated container state to 'running'")
 
         Logger.info("container $containerId started successfully")

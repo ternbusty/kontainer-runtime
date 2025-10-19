@@ -11,18 +11,20 @@ import syscall.killProcess
 /**
  * Delete command - Deletes a container
  *
+ * @param rootPath Root directory for container state
  * @param containerId Container ID
  * @param force If true, force deletion even if container is running
  */
 @OptIn(ExperimentalForeignApi::class)
 fun delete(
+    rootPath: String,
     containerId: String,
     force: Boolean = false,
 ) {
     Logger.info("deleting container: $containerId${if (force) " (force)" else ""}")
 
     // Check if container exists
-    if (!containerExists(containerId)) {
+    if (!containerExists(rootPath, containerId)) {
         if (force) {
             // With force flag, non-existent container is not an error
             Logger.debug("container $containerId does not exist, but force flag is set")
@@ -36,7 +38,7 @@ fun delete(
     // Load container state and refresh to get actual status
     var state =
         try {
-            loadState(containerId)
+            loadState(rootPath, containerId)
         } catch (e: Exception) {
             Logger.error("failed to load container state: ${e.message ?: "unknown"}")
             exit(1)
@@ -83,7 +85,7 @@ fun delete(
     // This is independent of bundle, so works even if bundle was moved/deleted
     val config =
         try {
-            loadKontainerConfig(containerId)
+            loadKontainerConfig(rootPath, containerId)
         } catch (e: Exception) {
             Logger.warn("failed to load kontainer config: ${e.message ?: "unknown"}")
             Logger.warn("will skip cgroup cleanup")
@@ -110,7 +112,7 @@ fun delete(
 
     // Delete container directory
     try {
-        deleteContainerDir(containerId)
+        deleteContainerDir(rootPath, containerId)
         Logger.info("container $containerId deleted successfully")
     } catch (e: Exception) {
         Logger.error("failed to delete container directory: ${e.message ?: "unknown"}")
