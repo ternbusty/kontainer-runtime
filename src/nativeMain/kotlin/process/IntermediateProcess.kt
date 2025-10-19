@@ -13,6 +13,7 @@ import namespace.unshareNamespace
 import platform.posix.*
 import spec.Spec
 import syscall.cloneSibling
+import syscall.setDumpable
 
 /**
  * Intermediate process
@@ -44,30 +45,50 @@ private fun intermediateProcessInternal(
         Logger.setContext("intermediate")
         Logger.debug("started, pid=${getpid()}")
 
+        // Log namespace configuration from spec
+        val namespaces = spec.linux?.namespaces
+        Logger.debug("namespaces from spec: ${namespaces?.size ?: 0} entries")
+        namespaces?.forEach { ns ->
+            Logger.debug("  namespace: type=${ns.type}")
+        }
+
         // Setup cgroup BEFORE entering user namespace
         // At this point, intermediate process still has host root privileges (inherited from parent)
         // This allows creation of cgroup directories in /sys/fs/cgroup/
         setupCgroup(getpid(), spec.linux?.cgroupsPath, spec.linux?.resources)
 
         // First, unshare user namespace
-        if (hasNamespace(spec.linux?.namespaces, "user")) {
+        val hasUserNamespace = hasNamespace(spec.linux?.namespaces, "user")
+        Logger.debug("hasUserNamespace: $hasUserNamespace")
+        if (hasUserNamespace) {
             unshareNamespace("user")
+
+            // Make process dumpable so parent can write to uid_map/gid_map
+            // See: https://man7.org/linux/man-pages/man7/user_namespaces.7.html
+            // "The parent process can write to the /proc/PID/uid_map and /proc/PID/gid_map
+            // files only if the child process has the PR_SET_DUMPABLE attribute set"
+            setDumpable(true)
+
+            // Send mapping request to main process
+            mainSender.identifierMappingRequest()
+            Logger.debug("sent mapping request")
+
+            // Wait for mapping completion from main process
+            interReceiver.waitForMappingAck()
+            Logger.debug("received mapping ack")
+
+            // Restore non-dumpable state after mapping is complete
+            setDumpable(false)
+
+            // Set UID/GID to 0 (root within user namespace)
+            if (setuid(0u) != 0 || setgid(0u) != 0) {
+                perror("setuid/setgid")
+                throw Exception("Failed to setuid/setgid")
+            }
+            Logger.debug("set UID/GID to 0 in user namespace")
+        } else {
+            Logger.debug("skipping user namespace setup (no user namespace configured)")
         }
-
-        // Send mapping request to main process
-        mainSender.identifierMappingRequest()
-        Logger.debug("sent mapping request")
-
-        // Wait for mapping completion from main process
-        interReceiver.waitForMappingAck()
-        Logger.debug("received mapping ack")
-
-        // Set UID/GID to 0 (root within user namespace)
-        if (setuid(0u) != 0 || setgid(0u) != 0) {
-            perror("setuid/setgid")
-            throw Exception("Failed to setuid/setgid")
-        }
-        Logger.debug("set UID/GID to 0 in user namespace")
 
         // Unshare additional namespaces (excluding user and pid)
         spec.linux?.namespaces?.let { namespaces ->

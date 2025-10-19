@@ -157,6 +157,27 @@ fun runInitProcess(
 
     Logger.info("Executing: ${processArgs.joinToString(" ")}")
 
+    // Clear all host environment variables
+    // This ensures the container process starts with a clean environment
+    clearenv()
+    Logger.debug("cleared all host environment variables")
+
+    // Set environment variables from spec.process.env
+    processEnv.forEach { envEntry ->
+        val parts = envEntry.split("=", limit = 2)
+        if (parts.size == 2) {
+            val key = parts[0]
+            val value = parts[1]
+            if (setenv(key, value, 1) != 0) {
+                perror("setenv")
+                Logger.warn("failed to set environment variable: $key=$value")
+            }
+        } else {
+            Logger.warn("invalid environment variable format: $envEntry")
+        }
+    }
+    Logger.debug("set ${processEnv.size} environment variables")
+
     memScoped {
         // Convert args to C array (null-terminated)
         val argv = allocArray<CPointerVar<ByteVar>>(processArgs.size + 1)
@@ -165,18 +186,13 @@ fun runInitProcess(
         }
         argv[processArgs.size] = null
 
-        // Convert env to C array (null-terminated)
-        val envp = allocArray<CPointerVar<ByteVar>>(processEnv.size + 1)
-        processEnv.forEachIndexed { i, e ->
-            envp[i] = e.cstr.ptr
-        }
-        envp[processEnv.size] = null
-
         // Execute the process (replaces current process, doesn't return on success)
-        execve(processArgs[0], argv, envp)
+        // Use execvp instead of execve to support PATH lookup for relative paths
+        // execvp searches PATH environment variable and uses the environment we set above
+        execvp(processArgs[0], argv)
 
-        // If we reach here, execve failed
-        perror("execve")
+        // If we reach here, execvp failed
+        perror("execvp")
         Logger.error("Failed to execute ${processArgs[0]}")
         _exit(127)
     }

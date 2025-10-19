@@ -52,6 +52,42 @@ fun prepareRootfs(rootfsPath: String) {
         throw Exception("Rootfs path does not exist: $rootfsPath")
     }
 
+    // Change root mount propagation to slave
+    // This prevents mount/umount events from propagating to/from the host
+    // and is required for pivot_root to work correctly
+    Logger.debug("changing root mount propagation to slave")
+    if (mountFs(
+            source = null,
+            target = "/",
+            fstype = null,
+            flags = (MS_SLAVE or MS_REC).toULong(),
+        ) != 0
+    ) {
+        val errNum = errno
+        perror("mount / MS_SLAVE")
+        Logger.warn("failed to change root mount propagation to slave (errno=$errNum)")
+        // Continue anyway - this is best effort
+    } else {
+        Logger.debug("root mount propagation changed to slave")
+    }
+
+    // Bind mount rootfs to itself to make it a mount point
+    // This is required for pivot_root to work properly
+    Logger.debug("bind mounting rootfs to itself")
+    if (mountFs(
+            source = rootfsPath,
+            target = rootfsPath,
+            fstype = null,
+            flags = (MS_BIND or MS_REC).toULong(),
+        ) != 0
+    ) {
+        val errNum = errno
+        perror("bind mount rootfs")
+        Logger.error("failed to bind mount rootfs to itself (errno=$errNum)")
+        throw Exception("Failed to bind mount rootfs (errno=$errNum)")
+    }
+    Logger.debug("rootfs bind mounted successfully")
+
     // Mount /proc if it exists in rootfs
     val procPath = "$rootfsPath/proc"
     if (access(procPath, F_OK) == 0) {
@@ -191,47 +227,30 @@ fun createDeviceNodes(devPath: String) {
 fun pivotRoot(newRoot: String) {
     Logger.debug("pivoting root to $newRoot")
 
-    // First, bind mount the rootfs to itself to make it a mount point
-    // This is required for pivot_root to work
-    if (mountFs(
-            source = newRoot,
-            target = newRoot,
-            fstype = null,
-            flags = (MS_BIND or MS_REC).toULong(),
-        ) != 0
-    ) {
-        perror("bind mount rootfs")
-        Logger.warn("failed to bind mount rootfs, trying chroot instead")
-        chrootInto(newRoot)
-        return
-    }
-
     // Open newroot directory to get a file descriptor before pivot_root
     // This allows us to fchdir back to it after pivot_root
     val newrootFd = open(newRoot, O_DIRECTORY or O_RDONLY, 0u)
     if (newrootFd < 0) {
+        val errNum = errno
         perror("open newroot")
-        throw Exception("Failed to open $newRoot")
+        Logger.error("failed to open $newRoot (errno=$errNum)")
+        throw Exception("Failed to open $newRoot (errno=$errNum)")
     }
 
     // Perform pivot_root syscall using newroot for both arguments
     // This puts the old root at the same location as new root
     if (pivotRoot(newRoot, newRoot) == -1) {
+        val errNum = errno
         perror("pivot_root")
         close(newrootFd)
-        throw Exception("Failed to pivot_root")
+        Logger.error("failed to pivot_root (errno=$errNum)")
+        throw Exception("Failed to pivot_root (errno=$errNum)")
     }
-
-    // Change to the new root using file descriptor
-    if (fchdir(newrootFd) != 0) {
-        perror("fchdir")
-        close(newrootFd)
-        throw Exception("Failed to fchdir to newroot")
-    }
-    close(newrootFd)
+    Logger.debug("pivot_root syscall completed")
 
     // Make the old root (which is now at /) a slave mount
     // This prevents umount events from propagating to the host
+    // IMPORTANT: This must be done BEFORE fchdir to the new root
     if (mountFs(
             source = null,
             target = "/",
@@ -239,23 +258,42 @@ fun pivotRoot(newRoot: String) {
             flags = (MS_SLAVE or MS_REC).toULong(),
         ) != 0
     ) {
+        val errNum = errno
         perror("make old root slave")
-        Logger.warn("failed to make old root slave")
+        Logger.warn("failed to make old root slave (errno=$errNum)")
+    } else {
+        Logger.debug("made old root slave")
     }
 
     // Unmount the old root with lazy unmount
     // Since we used pivot_root(newroot, newroot), old root is at /
+    // IMPORTANT: This must be done BEFORE fchdir to the new root
     if (umountFs("/", MNT_DETACH) != 0) {
+        val errNum = errno
         perror("umount2 old root")
-        Logger.warn("failed to unmount old root")
+        Logger.warn("failed to unmount old root (errno=$errNum)")
     } else {
         Logger.debug("unmounted old root")
     }
 
+    // Change to the new root using file descriptor
+    if (fchdir(newrootFd) != 0) {
+        val errNum = errno
+        perror("fchdir")
+        close(newrootFd)
+        Logger.error("failed to fchdir to newroot (errno=$errNum)")
+        throw Exception("Failed to fchdir to newroot (errno=$errNum)")
+    }
+    Logger.debug("changed to new root")
+
+    close(newrootFd)
+
     // Change to root directory of new rootfs
     if (chdir("/") != 0) {
+        val errNum = errno
         perror("chdir /")
-        throw Exception("Failed to chdir to /")
+        Logger.error("failed to chdir to / (errno=$errNum)")
+        throw Exception("Failed to chdir to / (errno=$errNum)")
     }
 
     Logger.debug("successfully pivoted root")

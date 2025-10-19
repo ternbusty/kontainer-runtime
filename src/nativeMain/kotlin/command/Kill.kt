@@ -14,11 +14,13 @@ import syscall.parseSignal
  * Sends the specified signal to the container's init process.
  * Only works on containers in "created" or "running" states.
  *
+ * @param rootPath Root directory for container state
  * @param containerId Container ID
  * @param signalStr Signal to send (name like "SIGTERM" or number like "15")
  */
 @OptIn(ExperimentalForeignApi::class)
 fun kill(
+    rootPath: String,
     containerId: String,
     signalStr: String,
 ) {
@@ -27,7 +29,7 @@ fun kill(
     // Load container state
     var state =
         try {
-            loadState(containerId)
+            loadState(rootPath, containerId)
         } catch (e: Exception) {
             Logger.error("failed to load container state: ${e.message ?: "unknown"}")
             Logger.error("container may not exist or state file is corrupted")

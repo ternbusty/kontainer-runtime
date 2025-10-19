@@ -5,6 +5,7 @@ import channel.IntermediateSender
 import channel.MainReceiver
 import kotlinx.cinterop.*
 import logger.Logger
+import namespace.hasNamespace
 import platform.linux._WEXITSTATUS
 import platform.linux._WIFEXITED
 import platform.linux._WIFSIGNALED
@@ -40,67 +41,113 @@ fun runMainProcess(
         Logger.setContext("main")
         Logger.debug("started, intermediate pid=$intermediatePid")
 
-        // Wait for UID/GID mapping request from intermediate process
-        try {
-            mainReceiver.waitForMappingRequest()
-            Logger.debug("received mapping request")
-        } catch (e: Exception) {
-            Logger.error("error waiting for mapping request: ${e.message ?: "unknown"}")
-            _exit(1)
-        }
+        // Check if user namespace is configured
+        // If not, skip UID/GID mapping (privileged mode)
+        val hasUserNamespace = hasNamespace(spec.linux?.namespaces, "user")
+        Logger.debug("user namespace configured: $hasUserNamespace")
 
-        // Get UID/GID mappings from spec
-        val uidMappings = spec.linux?.uidMappings
-        val gidMappings = spec.linux?.gidMappings
-
-        // Build uid_map content
-        val uidMap =
-            if (!uidMappings.isNullOrEmpty()) {
-                uidMappings.joinToString("\n") { mapping ->
-                    "${mapping.containerID} ${mapping.hostID} ${mapping.size}"
-                } + "\n"
-            } else {
-                // Fallback: map container root to current effective UID
-                val hostUid = geteuid()
-                "0 $hostUid 1\n"
+        if (hasUserNamespace) {
+            // Wait for UID/GID mapping request from intermediate process
+            try {
+                mainReceiver.waitForMappingRequest()
+                Logger.debug("received mapping request")
+            } catch (e: Exception) {
+                Logger.error("error waiting for mapping request: ${e.message ?: "unknown"}")
+                _exit(1)
             }
 
-        // Build gid_map content
-        val gidMap =
-            if (!gidMappings.isNullOrEmpty()) {
-                gidMappings.joinToString("\n") { mapping ->
-                    "${mapping.containerID} ${mapping.hostID} ${mapping.size}"
-                } + "\n"
-            } else {
-                // Fallback: map container root to current effective GID
-                val hostGid = getegid()
-                "0 $hostGid 1\n"
+            // Get UID/GID mappings from spec
+            val uidMappings = spec.linux?.uidMappings
+            val gidMappings = spec.linux?.gidMappings
+
+            // Log mappings from spec
+            Logger.debug("uidMappings from spec: ${uidMappings?.size ?: 0} entries")
+            uidMappings?.forEach { mapping ->
+                Logger.debug("  uidMapping: containerID=${mapping.containerID} hostID=${mapping.hostID} size=${mapping.size}")
+            }
+            Logger.debug("gidMappings from spec: ${gidMappings?.size ?: 0} entries")
+            gidMappings?.forEach { mapping ->
+                Logger.debug("  gidMapping: containerID=${mapping.containerID} hostID=${mapping.hostID} size=${mapping.size}")
             }
 
-        // Kernel requires disabling setgroups before writing gid_map (CVE-2014-8989)
-        try {
-            Logger.debug("disabling setgroups for pid $intermediatePid")
-            writeText("/proc/$intermediatePid/setgroups", "deny\n")
+            // Build uid_map content
+            val uidMap =
+                if (!uidMappings.isNullOrEmpty()) {
+                    uidMappings.joinToString("\n") { mapping ->
+                        "${mapping.containerID} ${mapping.hostID} ${mapping.size}"
+                    } + "\n"
+                } else {
+                    // Fallback: map container root to current effective UID
+                    val hostUid = geteuid()
+                    "0 $hostUid 1\n"
+                }
 
-            Logger.debug("writing uid_map for pid $intermediatePid")
-            writeText("/proc/$intermediatePid/uid_map", uidMap)
+            // Build gid_map content
+            val gidMap =
+                if (!gidMappings.isNullOrEmpty()) {
+                    gidMappings.joinToString("\n") { mapping ->
+                        "${mapping.containerID} ${mapping.hostID} ${mapping.size}"
+                    } + "\n"
+                } else {
+                    // Fallback: map container root to current effective GID
+                    val hostGid = getegid()
+                    "0 $hostGid 1\n"
+                }
 
-            Logger.debug("writing gid_map for pid $intermediatePid")
-            writeText("/proc/$intermediatePid/gid_map", gidMap)
+            Logger.debug("constructed uidMap to write: ${uidMap.trim()}")
+            Logger.debug("constructed gidMap to write: ${gidMap.trim()}")
 
-            Logger.debug("successfully wrote UID/GID mappings")
-        } catch (e: Exception) {
-            Logger.error("failed to write UID/GID mappings: ${e.message ?: "unknown"}")
-            _exit(1)
-        }
+            // Check existing uid_map/gid_map before writing
+            try {
+                val existingUidMap = utils.readTextFile("/proc/$intermediatePid/uid_map")
+                Logger.debug("existing uid_map before write: '${existingUidMap.trim()}'")
+            } catch (e: Exception) {
+                Logger.debug("could not read existing uid_map (file may not exist yet or is empty): ${e.message}")
+            }
+            try {
+                val existingGidMap = utils.readTextFile("/proc/$intermediatePid/gid_map")
+                Logger.debug("existing gid_map before write: '${existingGidMap.trim()}'")
+            } catch (e: Exception) {
+                Logger.debug("could not read existing gid_map (file may not exist yet or is empty): ${e.message}")
+            }
 
-        // Notify intermediate process that mapping is written
-        try {
-            interSender.mappingWritten()
-            Logger.debug("sent mapping written ack")
-        } catch (e: Exception) {
-            Logger.error("error sending mapping ack: ${e.message ?: "unknown"}")
-            _exit(1)
+            // Determine if we need to write to setgroups
+            // When running as root (privileged mode), we can skip setgroups write
+            // This is only needed for unprivileged user namespaces (CVE-2014-8989)
+            val isPrivileged = geteuid() == 0u
+            Logger.debug("privileged mode: $isPrivileged (euid=${geteuid()})")
+
+            try {
+                if (!isPrivileged) {
+                    // Kernel requires disabling setgroups before writing gid_map for unprivileged users (CVE-2014-8989)
+                    Logger.debug("disabling setgroups for pid $intermediatePid")
+                    writeText("/proc/$intermediatePid/setgroups", "deny\n")
+                } else {
+                    Logger.debug("skipping setgroups write (running as root)")
+                }
+
+                Logger.debug("writing uid_map for pid $intermediatePid")
+                writeText("/proc/$intermediatePid/uid_map", uidMap)
+
+                Logger.debug("writing gid_map for pid $intermediatePid")
+                writeText("/proc/$intermediatePid/gid_map", gidMap)
+
+                Logger.debug("successfully wrote UID/GID mappings")
+            } catch (e: Exception) {
+                Logger.error("failed to write UID/GID mappings: ${e.message ?: "unknown"}")
+                _exit(1)
+            }
+
+            // Notify intermediate process that mapping is written
+            try {
+                interSender.mappingWritten()
+                Logger.debug("sent mapping written ack")
+            } catch (e: Exception) {
+                Logger.error("error sending mapping ack: ${e.message ?: "unknown"}")
+                _exit(1)
+            }
+        } else {
+            Logger.debug("skipping UID/GID mapping (no user namespace configured)")
         }
 
         // Close intermediate sender (no more messages to send)

@@ -25,18 +25,20 @@ import utils.writeText
 /**
  * Create command - Creates a new container
  *
+ * @param rootPath Root directory for container state
  * @param containerId Container ID
  * @param bundlePath Path to OCI bundle directory (default: current directory)
  * @param pidFile Optional path to write the container's init process PID
  */
 @OptIn(ExperimentalForeignApi::class)
 fun create(
+    rootPath: String,
     containerId: String,
     bundlePath: String = ".",
     pidFile: String? = null,
 ): Unit =
     memScoped {
-        if (containerExists(containerId)) {
+        if (containerExists(rootPath, containerId)) {
             Logger.error("container $containerId already exists")
             exit(1)
         }
@@ -118,7 +120,15 @@ fun create(
                 notifyListener.close()
 
                 val initPid =
-                    runMainProcess(spec, containerId, bundlePath, intermediatePid, mainReceiver, interSender, initSender)
+                    runMainProcess(
+                        spec,
+                        containerId,
+                        bundlePath,
+                        intermediatePid,
+                        mainReceiver,
+                        interSender,
+                        initSender,
+                    )
 
                 // Save container state for start command
                 Logger.debug("saving container state")
@@ -132,7 +142,7 @@ fun create(
                             bundle = bundlePath,
                             annotations = null,
                         )
-                    state.save()
+                    state.save(rootPath)
                 } catch (e: Exception) {
                     Logger.error("failed to save container state: ${e.message ?: "unknown"}")
                     exit(1)
@@ -145,7 +155,7 @@ fun create(
                         KontainerConfig(
                             cgroupPath = spec.linux?.cgroupsPath,
                         )
-                    saveKontainerConfig(kontainerConfig, containerId)
+                    saveKontainerConfig(kontainerConfig, rootPath, containerId)
                 } catch (e: Exception) {
                     Logger.error("failed to save kontainer config: ${e.message ?: "unknown"}")
                     exit(1)
@@ -155,7 +165,7 @@ fun create(
                 if (pidFile != null) {
                     Logger.debug("writing PID to file: $pidFile")
                     try {
-                        writeText(pidFile, "$initPid\n")
+                        writeText(pidFile, "$initPid")
                         Logger.debug("successfully wrote PID $initPid to $pidFile")
                     } catch (e: Exception) {
                         Logger.error("failed to write PID file: ${e.message ?: "unknown"}")

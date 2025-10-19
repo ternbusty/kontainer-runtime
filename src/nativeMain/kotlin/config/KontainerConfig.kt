@@ -17,7 +17,6 @@ import utils.writeJsonFile
  */
 
 private const val KONTAINER_CONFIG_NAME = "kontainer_config.json"
-private const val CONTAINER_ROOT = "/run/kontainer"
 
 @Serializable
 data class KontainerConfig(
@@ -27,14 +26,18 @@ data class KontainerConfig(
 /**
  * Save configuration to the container directory
  *
+ * @param config Configuration to save
+ * @param rootPath Root directory for container state
+ * @param containerId Container ID
  * @throws Exception if save fails
  */
 @OptIn(ExperimentalForeignApi::class)
 fun saveKontainerConfig(
     config: KontainerConfig,
+    rootPath: String,
     containerId: String,
 ) {
-    val containerDir = "$CONTAINER_ROOT/$containerId"
+    val containerDir = "$rootPath/$containerId"
     val configPath = "$containerDir/$KONTAINER_CONFIG_NAME"
 
     Logger.debug("saving kontainer config to $configPath")
@@ -48,13 +51,17 @@ fun saveKontainerConfig(
 /**
  * Load configuration from the container directory
  *
+ * @param rootPath Root directory for container state
  * @param containerId Container ID
  * @return Loaded configuration
  * @throws Exception if load fails or config doesn't exist
  */
 @OptIn(ExperimentalForeignApi::class)
-fun loadKontainerConfig(containerId: String): KontainerConfig {
-    val containerDir = "$CONTAINER_ROOT/$containerId"
+fun loadKontainerConfig(
+    rootPath: String,
+    containerId: String,
+): KontainerConfig {
+    val containerDir = "$rootPath/$containerId"
     val configPath = "$containerDir/$KONTAINER_CONFIG_NAME"
 
     Logger.debug("loading kontainer config from $configPath")

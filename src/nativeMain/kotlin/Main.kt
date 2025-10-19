@@ -1,8 +1,4 @@
-import command.create
-import command.delete
-import command.kill
-import command.start
-import command.state
+import command.*
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.memScoped
 import logger.Logger
@@ -26,8 +22,17 @@ fun main(args: Array<String>): Unit =
     memScoped {
         Logger.setContext("main")
 
+        // Log all command-line arguments for debugging
+        Logger.info("kontainer-runtime invoked with ${args.size} arguments. arguments: ${args.joinToString(" ") { "\"$it\"" }}")
+
         if (args.isEmpty()) {
-            Logger.error("Usage: kontainer-runtime <command> [options] <container-id> [args...]")
+            Logger.error("Usage: kontainer-runtime [global-options] <command> [options] <container-id> [args...]")
+            Logger.error("")
+            Logger.error("Global options:")
+            Logger.error("  --root <path>             Root directory for container state (default: /run/kontainer)")
+            Logger.error("  --log <path>, -l <path>   Log file path (default: stderr)")
+            Logger.error("  --log-format <text|json>  Log format (default: text)")
+            Logger.error("  --debug                   Enable debug logging")
             Logger.error("")
             Logger.error("Commands:")
             Logger.error("  create [--bundle|-b <path>] [--pid-file <path>] <container-id>    Create a new container")
@@ -38,9 +43,81 @@ fun main(args: Array<String>): Unit =
             exit(1)
         }
 
-        when (val command = args[0]) {
+        // Parse global options
+        var rootPath = "/run/kontainer" // Default root path
+        var argIndex = 0
+
+        while (argIndex < args.size) {
+            when (args[argIndex]) {
+                "--root" -> {
+                    if (argIndex + 1 >= args.size) {
+                        Logger.error("--root requires a path argument")
+                        exit(1)
+                    }
+                    rootPath = args[argIndex + 1]
+                    argIndex += 2
+                }
+
+                "--log", "-l" -> {
+                    if (argIndex + 1 >= args.size) {
+                        Logger.error("--log requires a path argument")
+                        exit(1)
+                    }
+                    Logger.setLogFile(args[argIndex + 1])
+                    argIndex += 2
+                }
+
+                "--log-format" -> {
+                    if (argIndex + 1 >= args.size) {
+                        Logger.error("--log-format requires a format argument (text or json)")
+                        exit(1)
+                    }
+                    Logger.setLogFormat(args[argIndex + 1])
+                    argIndex += 2
+                }
+
+                "--debug" -> {
+                    Logger.setLogLevel(logger.Logger.Level.DEBUG)
+                    argIndex++
+                }
+
+                "--systemd-cgroup" -> {
+                    // Accept but ignore for now (future implementation)
+                    argIndex++
+                }
+
+                else -> {
+                    // If it starts with -, it's an unknown global option
+                    // Skip it to be tolerant of future options
+                    if (args[argIndex].startsWith("-")) {
+                        // Check if next arg looks like a value (doesn't start with -)
+                        if (argIndex + 1 < args.size && !args[argIndex + 1].startsWith("-")) {
+                            // Likely an option with a value, skip both
+                            argIndex += 2
+                        } else {
+                            // Option without value, skip just this
+                            argIndex++
+                        }
+                    } else {
+                        // Not a global option, must be a command
+                        break
+                    }
+                }
+            }
+        }
+
+        if (argIndex >= args.size) {
+            Logger.error("no command specified")
+            Logger.error("Usage: kontainer-runtime [global-options] <command> [options] <container-id> [args...]")
+            exit(1)
+        }
+
+        val command = args[argIndex]
+        val commandArgs = args.drop(argIndex + 1)
+
+        when (command) {
             "create" -> {
-                val cmdArgs = args.drop(1)
+                val cmdArgs = commandArgs
 
                 // Parse options
                 var bundlePath = "." // Default to current directory (OCI standard)
@@ -58,6 +135,7 @@ fun main(args: Array<String>): Unit =
                             bundlePath = cmdArgs[i + 1]
                             i += 2
                         }
+
                         "--pid-file" -> {
                             if (i + 1 >= cmdArgs.size) {
                                 Logger.error("--pid-file requires a path argument")
@@ -66,6 +144,7 @@ fun main(args: Array<String>): Unit =
                             pidFile = cmdArgs[i + 1]
                             i += 2
                         }
+
                         else -> {
                             // Assume this is the container ID (last positional argument)
                             if (cmdArgs[i].startsWith("-")) {
@@ -84,48 +163,44 @@ fun main(args: Array<String>): Unit =
                     exit(1)
                 }
 
-                create(containerId!!, bundlePath, pidFile)
+                create(rootPath, containerId!!, bundlePath, pidFile)
             }
 
             "start" -> {
-                val cmdArgs = args.drop(1)
-                if (cmdArgs.isEmpty()) {
+                if (commandArgs.isEmpty()) {
                     Logger.error("Usage: kontainer-runtime start <container-id>")
                     exit(1)
                 }
-                start(cmdArgs[0])
+                start(rootPath, commandArgs[0])
             }
 
             "state" -> {
-                val cmdArgs = args.drop(1)
-                if (cmdArgs.isEmpty()) {
+                if (commandArgs.isEmpty()) {
                     Logger.error("Usage: kontainer-runtime state <container-id>")
                     exit(1)
                 }
-                state(cmdArgs[0])
+                state(rootPath, commandArgs[0])
             }
 
             "kill" -> {
-                val cmdArgs = args.drop(1)
-                if (cmdArgs.size < 2) {
+                if (commandArgs.size < 2) {
                     Logger.error("Usage: kontainer-runtime kill <container-id> <signal>")
                     exit(1)
                 }
-                kill(cmdArgs[0], cmdArgs[1])
+                kill(rootPath, commandArgs[0], commandArgs[1])
             }
 
             "delete" -> {
                 // Parse --force or -f flag
-                val remainingArgs = args.drop(1).toList()
-                val force = remainingArgs.contains("--force") || remainingArgs.contains("-f")
-                val containerArgs = remainingArgs.filter { it != "--force" && it != "-f" }
+                val force = commandArgs.contains("--force") || commandArgs.contains("-f")
+                val containerArgs = commandArgs.filter { it != "--force" && it != "-f" }
 
                 if (containerArgs.isEmpty()) {
                     Logger.error("Usage: kontainer-runtime delete [--force|-f] <container-id>")
                     exit(1)
                 }
 
-                delete(containerArgs[0], force)
+                delete(rootPath, containerArgs[0], force)
             }
 
             else -> {

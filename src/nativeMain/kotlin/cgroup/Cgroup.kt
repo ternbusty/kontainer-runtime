@@ -45,8 +45,10 @@ fun setupCgroup(
     }
 
     memScoped {
-        val path = cgroupPath ?: "kontainer-$pid"
-        val fullPath = "$CGROUP_ROOT/$path"
+        // Normalize cgroup path: remove leading slash if present (for absolute paths from containerd)
+        val normalizedPath =
+            cgroupPath?.removePrefix("/") ?: "kontainer-$pid"
+        val fullPath = "$CGROUP_ROOT/$normalizedPath"
 
         Logger.debug("setting up cgroup at $fullPath")
 
@@ -255,7 +257,9 @@ fun cleanupCgroup(cgroupPath: String?) {
         return
     }
 
-    val fullPath = "$CGROUP_ROOT/$cgroupPath"
+    // Normalize cgroup path: remove leading slash if present
+    val normalizedPath = cgroupPath.removePrefix("/")
+    val fullPath = "$CGROUP_ROOT/$normalizedPath"
     Logger.debug("cleaning up cgroup at $fullPath")
 
     // Check if directory exists
