@@ -13,6 +13,40 @@ import spec.SeccompArg
  */
 
 /**
+ * Translate OCI architecture name to libseccomp architecture name
+ *
+ * OCI spec uses names like "SCMP_ARCH_X86_64" while libseccomp's
+ * seccomp_arch_resolve_name() expects names like "x86_64"
+ */
+private fun translateArchName(ociArchName: String): String =
+    when (ociArchName) {
+        "SCMP_ARCH_NATIVE" -> "native"
+        "SCMP_ARCH_X86" -> "x86"
+        "SCMP_ARCH_X86_64" -> "x86_64"
+        "SCMP_ARCH_X32" -> "x32"
+        "SCMP_ARCH_ARM" -> "arm"
+        "SCMP_ARCH_AARCH64" -> "aarch64"
+        "SCMP_ARCH_MIPS" -> "mips"
+        "SCMP_ARCH_MIPS64" -> "mips64"
+        "SCMP_ARCH_MIPS64N32" -> "mips64n32"
+        "SCMP_ARCH_MIPSEL" -> "mipsel"
+        "SCMP_ARCH_MIPSEL64" -> "mipsel64"
+        "SCMP_ARCH_MIPSEL64N32" -> "mipsel64n32"
+        "SCMP_ARCH_PPC" -> "ppc"
+        "SCMP_ARCH_PPC64" -> "ppc64"
+        "SCMP_ARCH_PPC64LE" -> "ppc64le"
+        "SCMP_ARCH_S390" -> "s390"
+        "SCMP_ARCH_S390X" -> "s390x"
+        "SCMP_ARCH_PARISC" -> "parisc"
+        "SCMP_ARCH_PARISC64" -> "parisc64"
+        "SCMP_ARCH_RISCV64" -> "riscv64"
+        else -> {
+            Logger.error("Unknown OCI architecture name: $ociArchName")
+            throw Exception("Unknown OCI architecture name: $ociArchName")
+        }
+    }
+
+/**
  * Translate OCI spec action string to libseccomp action constant
  */
 @OptIn(ExperimentalForeignApi::class)
@@ -100,12 +134,40 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int? {
             Logger.warn("failed to set SCMP_FLTATR_CTL_NNP")
         }
 
-        // Architecture constants are defined in linux/audit.h and referenced by seccomp.h
-        // Architecture support is complex and requires audit.h constants
-        // For now, only native arch is supported
+        // Handle architecture specifications
+        // When architectures are explicitly specified, we need to:
+        // 1. Remove the default native architecture
+        // 2. Add each specified architecture
         if (seccomp.architectures != null && seccomp.architectures.isNotEmpty()) {
-            Logger.error("explicit architecture specification is not yet supported")
-            throw Exception("Explicit architecture specification in seccomp is not yet supported. Only native architecture is supported.")
+            Logger.debug("processing ${seccomp.architectures.size} architecture(s)")
+
+            // Remove native architecture (added by default)
+            if (seccomp_arch_remove(ctx, SCMP_ARCH_NATIVE.toUInt()) < 0) {
+                perror("seccomp_arch_remove(SCMP_ARCH_NATIVE)")
+                Logger.warn("failed to remove native architecture")
+            } else {
+                Logger.debug("removed default native architecture")
+            }
+
+            // Add each specified architecture
+            seccomp.architectures.forEach { ociArchName ->
+                // Translate OCI arch name to libseccomp arch name
+                val libseccompArchName = translateArchName(ociArchName)
+
+                val archToken = seccomp_arch_resolve_name(libseccompArchName)
+                if (archToken == 0u) {
+                    Logger.error("unknown architecture: $ociArchName (libseccomp name: $libseccompArchName)")
+                    throw Exception("Unknown seccomp architecture: $ociArchName")
+                }
+
+                Logger.debug("adding architecture: $ociArchName -> $libseccompArchName (token=$archToken)")
+                if (seccomp_arch_add(ctx, archToken) < 0) {
+                    perror("seccomp_arch_add")
+                    Logger.error("failed to add architecture: $ociArchName")
+                    throw Exception("Failed to add seccomp architecture: $ociArchName")
+                }
+            }
+            Logger.debug("all architectures added successfully")
         }
 
         // Add syscall rules
