@@ -8,3 +8,11 @@ package = platform.linux
 static inline int _PR_SET_NO_NEW_PRIVS() {
     return PR_SET_NO_NEW_PRIVS;
 }
+
+static inline int _PR_SET_DUMPABLE() {
+    return PR_SET_DUMPABLE;
+}
+
+static inline int _PR_GET_DUMPABLE() {
+    return PR_GET_DUMPABLE;
+}

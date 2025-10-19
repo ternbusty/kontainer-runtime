@@ -2,6 +2,8 @@ package syscall
 
 import kotlinx.cinterop.ExperimentalForeignApi
 import logger.Logger
+import platform.linux._PR_GET_DUMPABLE
+import platform.linux._PR_SET_DUMPABLE
 import platform.linux._PR_SET_NO_NEW_PRIVS
 import platform.linux.__NR_prctl
 import platform.posix.errno
@@ -13,6 +15,71 @@ import platform.posix.syscall
  *
  * See https://man7.org/linux/man-pages/man2/prctl.2.html
  */
+
+/**
+ * Set or get the dumpable attribute for the calling process
+ *
+ * The dumpable attribute determines whether a core dump is produced for the calling
+ * process upon delivery of a signal whose default behavior is to produce a core dump.
+ *
+ * More importantly for containers, the parent process can only write to
+ * /proc/<pid>/uid_map and /proc/<pid>/gid_map if the child process is dumpable.
+ *
+ * This is typically set to true before requesting UID/GID mapping from the parent,
+ * then set back to false after mapping is complete.
+ *
+ * @param dumpable true to make process dumpable, false to make it non-dumpable
+ * @throws Exception if prctl fails
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun setDumpable(dumpable: Boolean) {
+    Logger.debug("setting dumpable to $dumpable")
+
+    val arg = if (dumpable) 1L else 0L
+    val result =
+        syscall(
+            __NR_prctl.toLong(),
+            _PR_SET_DUMPABLE().toLong(),
+            arg,
+            0L,
+            0L,
+            0L,
+        )
+
+    if (result == -1L) {
+        val errNum = errno
+        perror("prctl(PR_SET_DUMPABLE)")
+        throw Exception("Failed to set dumpable: errno=$errNum")
+    }
+
+    Logger.debug("successfully set dumpable to $dumpable")
+}
+
+/**
+ * Get the dumpable attribute for the calling process
+ *
+ * @return true if process is dumpable, false otherwise
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun getDumpable(): Boolean {
+    val result =
+        syscall(
+            __NR_prctl.toLong(),
+            _PR_GET_DUMPABLE().toLong(),
+            0L,
+            0L,
+            0L,
+            0L,
+        )
+
+    if (result == -1L) {
+        val errNum = errno
+        perror("prctl(PR_GET_DUMPABLE)")
+        throw Exception("Failed to get dumpable: errno=$errNum")
+    }
+
+    return result == 1L
+}
 
 /**
  * Set the no_new_privs bit for the calling thread
