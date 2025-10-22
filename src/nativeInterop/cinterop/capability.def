@@ -1,0 +1,18 @@
+headers = linux/capability.h
+headerFilter = linux/capability.h
+package = platform.linux
+
+---
+
+// Define newer capabilities that may not be in older kernel headers
+#ifndef CAP_PERFMON
+#define CAP_PERFMON 38
+#endif
+
+#ifndef CAP_BPF
+#define CAP_BPF 39
+#endif
+
+#ifndef CAP_CHECKPOINT_RESTORE
+#define CAP_CHECKPOINT_RESTORE 40
+#endif
