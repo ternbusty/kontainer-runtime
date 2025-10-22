@@ -31,12 +31,26 @@ data class Process(
     val cwd: String = "/",
     val noNewPrivileges: Boolean? = null,
     val user: User = User(),
+    val capabilities: LinuxCapabilities? = null,
 )
 
 @Serializable
 data class User(
     val uid: UInt = 0u,
     val gid: UInt = 0u,
+)
+
+/**
+ * Linux capabilities configuration
+ * See https://man7.org/linux/man-pages/man7/capabilities.7.html
+ */
+@Serializable
+data class LinuxCapabilities(
+    val bounding: List<String>? = null,
+    val effective: List<String>? = null,
+    val inheritable: List<String>? = null,
+    val permitted: List<String>? = null,
+    val ambient: List<String>? = null,
 )
 
 @Serializable

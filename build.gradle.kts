@@ -78,6 +78,7 @@ kotlin {
             val closerange by creating {}
             val syscall by creating {}
             val prctl by creating {}
+            val capability by creating {}
         }
     }
 

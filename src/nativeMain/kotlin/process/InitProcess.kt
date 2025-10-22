@@ -103,6 +103,13 @@ fun runInitProcess(
             0
         }
 
+    // Apply capability restrictions before dropping privileges
+    // This must be done before setuid/setgid because some capability operations require root
+    spec.process.capabilities?.let { capabilities ->
+        Logger.debug("applying capability restrictions")
+        capability.dropPrivileges(capabilities)
+    }
+
     // Set UID/GID to spec.process.user values before executing container process
     // Note: setgid must be called before setuid (once we drop to non-root, we can't setgid)
     val targetUid = spec.process.user.uid
