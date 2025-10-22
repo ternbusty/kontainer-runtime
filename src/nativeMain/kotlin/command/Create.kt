@@ -21,6 +21,7 @@ import state.containerExists
 import state.createState
 import state.save
 import utils.writeText
+import kotlin.native.runtime.GC
 
 /**
  * Create command - Creates a new container
@@ -30,7 +31,7 @@ import utils.writeText
  * @param bundlePath Path to OCI bundle directory (default: current directory)
  * @param pidFile Optional path to write the container's init process PID
  */
-@OptIn(ExperimentalForeignApi::class)
+@OptIn(ExperimentalForeignApi::class, kotlin.native.runtime.NativeRuntimeApi::class)
 fun create(
     rootPath: String,
     containerId: String,
@@ -88,6 +89,27 @@ fun create(
                 return
             }
 
+        // === GC STRESS TEST: Activate GC threads before fork() ===
+        Logger.warn("=== GC STRESS TEST: Starting pre-fork GC stress ===")
+        Logger.warn("Allocating memory to activate GC threads...")
+
+        // Allocate large amounts of memory to trigger GC
+        val memoryPressure = mutableListOf<ByteArray>()
+        repeat(100) { i ->
+            memoryPressure.add(ByteArray(1024 * 1024)) // 1MB per allocation
+            if (i % 20 == 0) {
+                Logger.warn("Allocated ${i + 1} MB, forcing GC...")
+                GC.collect()
+            }
+        }
+
+        Logger.warn("Forcing final GC.collect() before fork()...")
+        GC.collect()
+        Logger.warn("=== GC threads should now be active ===")
+
+        // Clear references but keep some to maintain memory pressure
+        memoryPressure.clear()
+
         // Fork intermediate process
         when (val intermediatePid = fork()) {
             -1 -> {
@@ -99,6 +121,27 @@ fun create(
 
             0 -> {
                 // Intermediate process
+                // === GC STRESS TEST: Try GC operations after fork() ===
+                Logger.warn("=== GC STRESS TEST: Intermediate process after fork() ===")
+                Logger.warn("PID: ${getpid()}")
+                Logger.warn("Attempting GC.collect() in forked child...")
+
+                // This should potentially hang or deadlock if GC locks were held during fork()
+                try {
+                    GC.collect()
+                    Logger.warn("GC.collect() completed successfully in child process")
+
+                    // Allocate some memory to further stress test the GC
+                    ByteArray(10 * 1024 * 1024) // 10MB
+                    Logger.warn("Allocated 10MB in child process")
+
+                    // Try another GC cycle
+                    GC.collect()
+                    Logger.warn("Second GC.collect() completed successfully")
+                } catch (e: Exception) {
+                    Logger.error("GC operation failed in child: ${e.message}")
+                }
+
                 // Close receivers and senders that this process doesn't need
                 // Keep initReceiver - will be passed to init process
                 mainReceiver.close()
