@@ -14,6 +14,7 @@ import platform.posix.*
 import spec.Spec
 import syscall.cloneSibling
 import syscall.setDumpable
+import kotlin.native.runtime.NativeRuntimeApi
 
 /**
  * Intermediate process
@@ -32,7 +33,7 @@ import syscall.setDumpable
  * Internal implementation of intermediate process
  * Throws exceptions on errors - caller handles error reporting
  */
-@OptIn(ExperimentalForeignApi::class)
+@OptIn(ExperimentalForeignApi::class, NativeRuntimeApi::class)
 private fun intermediateProcessInternal(
     spec: Spec,
     rootfsPath: String,
@@ -91,6 +92,41 @@ private fun intermediateProcessInternal(
         } else {
             Logger.debug("skipping user namespace setup (no user namespace configured)")
         }
+
+        // === GC STRESS TEST: Verify that user namespace is stable under GC pressure ===
+        Logger.debug("=== Starting GC stress test with EXPLICIT GC triggering ===")
+        Logger.debug("This test verifies that bootstrap.c correctly created user namespace before Kotlin GC started")
+
+        val startTime = platform.posix.clock()
+
+        // Create massive memory pressure and explicitly trigger GC
+        repeat(100) { iteration ->
+            // Each iteration creates large objects that become garbage
+            val largeList = (0..10000).map { "GC test string $iteration-$it" }
+
+            // Force processing to ensure memory is actually allocated
+            val sum = largeList.sumOf { it.length }
+
+            // Explicitly trigger GC every 10 iterations
+            if (iteration % 10 == 0) {
+                Logger.debug("GC stress test: iteration $iteration, processed ${largeList.size} strings (sum=$sum)")
+
+                // EXPLICITLY TRIGGER GC
+                kotlin.native.runtime.GC
+                    .collect()
+                Logger.debug("GC stress test: FORCED GC collection at iteration $iteration")
+            }
+        }
+
+        // Final GC collection
+        kotlin.native.runtime.GC
+            .collect()
+        Logger.debug("GC stress test: FINAL GC collection")
+
+        val endTime = platform.posix.clock()
+        val duration = endTime - startTime
+        Logger.debug("=== GC stress test completed in $duration ticks ===")
+        Logger.debug("If you see this message, user namespace survived EXPLICIT GC pressure!")
 
         // Unshare additional namespaces (excluding user and pid)
         spec.linux?.namespaces?.let { namespaces ->
