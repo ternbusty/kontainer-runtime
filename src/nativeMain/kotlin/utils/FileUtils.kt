@@ -145,6 +145,48 @@ fun readTextFile(path: String): String {
 }
 
 /**
+ * Read /proc file contents
+ *
+ * /proc files cannot be seeked and report size as 0, so we read them
+ * using a fixed-size buffer until EOF.
+ *
+ * @param path Path to /proc file to read
+ * @return File contents as String
+ * @throws Exception if read fails
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun readProcFile(path: String): String {
+    val fp = fopen(path, "r")
+    if (fp == null) {
+        val errNum = errno
+        throw Exception("Failed to open $path for reading: errno=$errNum")
+    }
+
+    try {
+        memScoped {
+            val bufferSize = 4096
+            val buffer = allocArray<ByteVar>(bufferSize)
+            val bytesRead = fread(buffer, 1u, (bufferSize - 1).toULong(), fp)
+
+            if (bytesRead == 0UL) {
+                fclose(fp)
+                return ""
+            }
+
+            // Null terminate and convert to String
+            buffer[bytesRead.toInt()] = 0
+            val content = buffer.toKString()
+
+            fclose(fp)
+            return content
+        }
+    } catch (e: Exception) {
+        fclose(fp)
+        throw e
+    }
+}
+
+/**
  * Read and parse a JSON file
  *
  * Generic function that reads a JSON file and decodes it using the provided decoder.
