@@ -1,8 +1,18 @@
+import bootstrap.kontainer_is_init_process
+import channel.InitReceiver
+import channel.IntermediateReceiver
+import channel.MainSender
+import channel.NotifyListener
 import command.*
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.toKString
 import logger.Logger
 import platform.posix.exit
+import platform.posix.getenv
+import platform.posix.getpid
+import process.runIntermediateProcess
+import spec.loadSpec
 
 /**
  * Kontainer Runtime - Container runtime written in Kotlin/Native
@@ -20,7 +30,82 @@ import platform.posix.exit
 @OptIn(ExperimentalForeignApi::class)
 fun main(args: Array<String>): Unit =
     memScoped {
+        // Bootstrap constructor has already run before Kotlin runtime started
+        // Check if this process is the init process (set by C constructor)
+        val isInit = kontainer_is_init_process()
+
         Logger.setContext("main")
+
+        // If this is a process forked by bootstrap constructor (intermediate process)
+        if (isInit != 0) {
+            Logger.debug("running as child process (forked by bootstrap constructor)")
+
+            // Note: bootstrap parent has already sent our PID to Create.kt
+            // We don't need to sync with bootstrap parent here
+
+            // Restore channel FDs from environment variables
+            val mainSenderFdStr = getenv("_KONTAINER_MAIN_SENDER_FD")?.toKString()
+            val interReceiverFdStr = getenv("_KONTAINER_INTER_RECEIVER_FD")?.toKString()
+            val initReceiverFdStr = getenv("_KONTAINER_INIT_RECEIVER_FD")?.toKString()
+            val bundlePath = getenv("_KONTAINER_BUNDLE_PATH")?.toKString()
+            val rootfsPath = getenv("_KONTAINER_ROOTFS_PATH")?.toKString()
+            val notifySocketPath = getenv("_KONTAINER_NOTIFY_SOCKET")?.toKString()
+
+            if (mainSenderFdStr == null || interReceiverFdStr == null ||
+                initReceiverFdStr == null || bundlePath == null ||
+                rootfsPath == null || notifySocketPath == null
+            ) {
+                Logger.error("missing required environment variables for intermediate process")
+                exit(1)
+            }
+
+            val mainSenderFd = mainSenderFdStr!!.toIntOrNull()
+            val interReceiverFd = interReceiverFdStr!!.toIntOrNull()
+            val initReceiverFd = initReceiverFdStr!!.toIntOrNull()
+
+            if (mainSenderFd == null || interReceiverFd == null || initReceiverFd == null) {
+                Logger.error("invalid FD values in environment variables")
+                exit(1)
+            }
+
+            // Load spec from bundle
+            Logger.debug("loading spec from $bundlePath/config.json")
+            val spec =
+                try {
+                    loadSpec("$bundlePath/config.json")
+                } catch (e: Exception) {
+                    Logger.error("failed to load spec: ${e.message ?: "unknown error"}")
+                    exit(1)
+                    return
+                }
+
+            // Recreate channel objects from FDs
+            val mainSender = MainSender(mainSenderFd!!)
+            val interReceiver = IntermediateReceiver(interReceiverFd!!)
+            val initReceiver = InitReceiver(initReceiverFd!!)
+
+            // Recreate notify listener (inherits from parent process)
+            val notifyListener =
+                try {
+                    NotifyListener(notifySocketPath!!)
+                } catch (e: Exception) {
+                    Logger.error("failed to create notify listener: ${e.message ?: "unknown"}")
+                    exit(1)
+                    return
+                }
+
+            val pid = getpid()
+            Logger.info("intermediate process (PID=$pid) started successfully via bootstrap")
+            Logger.debug("bundle=${bundlePath!!}, rootfs=${rootfsPath!!}")
+            Logger.debug("restored channel FDs: main_sender=$mainSenderFd, inter_receiver=$interReceiverFd, init_receiver=$initReceiverFd")
+
+            // Run intermediate process logic
+            runIntermediateProcess(spec, rootfsPath!!, mainSender, interReceiver, initReceiver, notifyListener)
+
+            // Should not reach here (runIntermediateProcess calls _exit)
+            Logger.error("runIntermediateProcess returned unexpectedly")
+            exit(1)
+        }
 
         // Log all command-line arguments for debugging
         Logger.info("kontainer-runtime invoked with ${args.size} arguments. arguments: ${args.joinToString(" ") { "\"$it\"" }}")

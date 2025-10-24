@@ -1,0 +1,5 @@
+headers = bootstrap/bootstrap.h
+headerFilter = bootstrap/**
+compilerOpts.linux = -Isrc/nativeInterop/cinterop
+staticLibraries = libbootstrap.a
+libraryPaths.linux = build/bootstrap

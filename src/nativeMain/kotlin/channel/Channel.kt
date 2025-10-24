@@ -186,6 +186,8 @@ private fun receiveMessageWithFd(socket: Int): Pair<Message, Int> {
 class MainSender(
     private val socket: Int,
 ) {
+    fun fd(): Int = socket
+
     fun identifierMappingRequest() {
         sendMessage(socket, Message.WriteMapping)
     }
@@ -218,6 +220,8 @@ class MainSender(
 class MainReceiver(
     private val socket: Int,
 ) {
+    fun fd(): Int = socket
+
     fun waitForMappingRequest(): Message.WriteMapping =
         when (val msg = receiveMessage(socket)) {
             is Message.WriteMapping -> msg
@@ -269,6 +273,8 @@ fun mainChannel(): Pair<MainSender, MainReceiver> {
 class IntermediateSender(
     private val socket: Int,
 ) {
+    fun fd(): Int = socket
+
     fun mappingWritten() {
         sendMessage(socket, Message.MappingWritten)
     }
@@ -281,6 +287,8 @@ class IntermediateSender(
 class IntermediateReceiver(
     private val socket: Int,
 ) {
+    fun fd(): Int = socket
+
     fun waitForMappingAck() {
         when (val msg = receiveMessage(socket)) {
             is Message.MappingWritten -> return
@@ -304,6 +312,8 @@ fun intermediateChannel(): Pair<IntermediateSender, IntermediateReceiver> {
 class InitSender(
     private val socket: Int,
 ) {
+    fun fd(): Int = socket
+
     fun seccompNotifyDone() {
         sendMessage(socket, Message.SeccompNotifyDone)
     }
@@ -316,6 +326,8 @@ class InitSender(
 class InitReceiver(
     private val socket: Int,
 ) {
+    fun fd(): Int = socket
+
     fun waitForSeccompRequestDone() {
         when (val msg = receiveMessage(socket)) {
             is Message.SeccompNotifyDone -> return

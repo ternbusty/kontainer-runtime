@@ -57,11 +57,13 @@ private fun intermediateProcessInternal(
         // This allows creation of cgroup directories in /sys/fs/cgroup/
         setupCgroup(getpid(), spec.linux?.cgroupsPath, spec.linux?.resources)
 
-        // First, unshare user namespace
+        // Handle user namespace (created by bootstrap.c before Kotlin runtime started)
         val hasUserNamespace = hasNamespace(spec.linux?.namespaces, "user")
         Logger.debug("hasUserNamespace: $hasUserNamespace")
         if (hasUserNamespace) {
-            unshareNamespace("user")
+            // User namespace was already created by bootstrap.c (before Kotlin runtime started)
+            // This avoids the multithreading issue (Kotlin GC creates 3 threads)
+            Logger.debug("user namespace already created by bootstrap.c")
 
             // Make process dumpable so parent can write to uid_map/gid_map
             // See: https://man7.org/linux/man-pages/man7/user_namespaces.7.html

@@ -6,14 +6,10 @@ import channel.intermediateChannel
 import channel.mainChannel
 import config.KontainerConfig
 import config.saveKontainerConfig
-import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.*
 import logger.Logger
-import platform.posix.exit
-import platform.posix.fork
-import platform.posix.getpid
-import platform.posix.perror
-import process.runIntermediateProcess
+import netlink.*
+import platform.posix.*
 import process.runMainProcess
 import spec.loadSpec
 import state.ContainerStatus
@@ -88,28 +84,176 @@ fun create(
                 return
             }
 
-        // Fork intermediate process
+        // Fork intermediate process using bootstrap constructor
+        // This ensures fork happens before Kotlin runtime, avoiding GC deadlock
+
+        // Create sync socketpair for parent-child synchronization
+        val syncFds = IntArray(2)
+        syncFds.usePinned { pinned ->
+            if (socketpair(AF_UNIX, SOCK_STREAM, 0, pinned.addressOf(0)) < 0) {
+                perror("socketpair")
+                Logger.error("Failed to create sync socketpair")
+                notifyListener.close()
+                exit(1)
+            }
+        }
+        Logger.debug("created sync socketpair: parent_fd=${syncFds[0]}, child_fd=${syncFds[1]}")
+
+        // Create init pipe for passing netlink message
+        val initPipe = IntArray(2)
+        initPipe.usePinned { pinned ->
+            if (pipe(pinned.addressOf(0)) < 0) {
+                perror("pipe")
+                Logger.error("Failed to create init pipe")
+                close(syncFds[0])
+                close(syncFds[1])
+                notifyListener.close()
+                exit(1)
+            }
+        }
+        Logger.debug("created init pipe: read=${initPipe[0]}, write=${initPipe[1]}")
+
+        // Prepare netlink message with configuration
+        val netlinkMsg = NetlinkMessage(INIT_MSG)
+        // For now, just send minimal data (clone flags will be ignored by intermediate process)
+        netlinkMsg.addInt32(CLONE_FLAGS_ATTR, 0u)
+        netlinkMsg.addString(CONTAINER_ID_ATTR, containerId)
+        netlinkMsg.addString(BUNDLE_PATH_ATTR, bundlePath)
+        netlinkMsg.addString(ROOTFS_PATH_ATTR, rootfsPath)
+
+        // Check if user namespace is configured in spec
+        val hasUserNamespace = spec.linux?.namespaces?.any { it.type == "user" } ?: false
+        netlinkMsg.addInt32(USER_NS_ATTR, if (hasUserNamespace) 1u else 0u)
+
+        val msgBytes = netlinkMsg.serialize()
+        Logger.debug("prepared netlink message: ${msgBytes.size} bytes")
+
+        // Write netlink message to init pipe
+        msgBytes.usePinned { pinned ->
+            val written = write(initPipe[1], pinned.addressOf(0), msgBytes.size.convert())
+            if (written < 0) {
+                perror("write")
+                Logger.error("Failed to write netlink message to init pipe")
+                close(initPipe[0])
+                close(initPipe[1])
+                close(syncFds[0])
+                close(syncFds[1])
+                notifyListener.close()
+                exit(1)
+            }
+            Logger.debug("wrote $written bytes to init pipe")
+        }
+        close(initPipe[1]) // Close write end
+
+        // Get current executable path (in parent process, before fork)
+        val exePathBuf = allocArray<ByteVar>(4096)
+        val exePathLen = readlink("/proc/self/exe", exePathBuf, 4095u)
+        if (exePathLen < 0) {
+            perror("readlink")
+            Logger.error("Failed to read executable path")
+            close(initPipe[0])
+            close(syncFds[0])
+            close(syncFds[1])
+            notifyListener.close()
+            exit(1)
+        }
+        exePathBuf[exePathLen.toInt()] = 0.toByte() // null terminate
+        Logger.debug("executable path: ${exePathBuf.toKString()}")
+
+        // Fork and exec to trigger bootstrap constructor
         when (val intermediatePid = fork()) {
             -1 -> {
                 perror("fork")
-                Logger.error("Failed to fork intermediate process")
+                Logger.error("Failed to fork")
+                close(initPipe[0])
+                close(syncFds[0])
+                close(syncFds[1])
                 notifyListener.close()
                 exit(1)
             }
 
             0 -> {
-                // Intermediate process
-                // Close receivers and senders that this process doesn't need
-                // Keep initReceiver - will be passed to init process
-                mainReceiver.close()
-                interSender.close()
-                initSender.close()
+                // Child process: exec ourselves with environment variables set
+                // This will trigger bootstrap constructor which will fork intermediate process
 
-                runIntermediateProcess(spec, rootfsPath, mainSender, interReceiver, initReceiver, notifyListener)
+                // Close parent side of sync socketpair
+                close(syncFds[0])
+
+                // Set environment variables
+                val initPipeStr = initPipe[0].toString()
+                val syncPipeStr = syncFds[1].toString()
+
+                // Pass channel FDs to intermediate process
+                val mainSenderFd = mainSender.fd().toString()
+                val interReceiverFd = interReceiver.fd().toString()
+                val initReceiverFd = initReceiver.fd().toString()
+
+                setenv("_KONTAINER_INITPIPE", initPipeStr, 1)
+                setenv("_KONTAINER_SYNCPIPE", syncPipeStr, 1)
+                setenv("_KONTAINER_MAIN_SENDER_FD", mainSenderFd, 1)
+                setenv("_KONTAINER_INTER_RECEIVER_FD", interReceiverFd, 1)
+                setenv("_KONTAINER_INIT_RECEIVER_FD", initReceiverFd, 1)
+                setenv("_KONTAINER_BUNDLE_PATH", bundlePath, 1)
+                setenv("_KONTAINER_ROOTFS_PATH", rootfsPath, 1)
+                setenv("_KONTAINER_NOTIFY_SOCKET", notifySocketPath, 1)
+
+                // Prepare arguments
+                val argv = allocArray<CPointerVar<ByteVar>>(3)
+                argv[0] = exePathBuf
+                argv[1] = "__intermediate__".cstr.ptr
+                argv[2] = null
+
+                // Exec ourselves
+                val exePath = exePathBuf.toKString()
+                execv(exePath, argv)
+
+                // If exec fails, we reach here
+                perror("execv")
+                _exit(1)
             }
 
             else -> {
-                // Main process (parent process)
+                // Parent process: wait for child to exec and bootstrap to fork
+
+                // Close child side of sync socketpair
+                close(syncFds[1])
+                close(initPipe[0])
+
+                Logger.debug("forked child process, PID=$intermediatePid, waiting for bootstrap to complete")
+
+                // Wait for intermediate process PID from bootstrap
+                val receivedPidBytes = ByteArray(4)
+                receivedPidBytes.usePinned { pinned ->
+                    val n = read(syncFds[0], pinned.addressOf(0), 4u)
+                    if (n < 0) {
+                        perror("read")
+                        Logger.error("Failed to read PID from sync pipe")
+                        close(syncFds[0])
+                        notifyListener.close()
+                        exit(1)
+                    }
+                    if (n.toLong() != 4L) {
+                        Logger.error("Incomplete read from sync pipe: got $n bytes")
+                        close(syncFds[0])
+                        notifyListener.close()
+                        exit(1)
+                    }
+                }
+
+                // Decode PID from bytes (little-endian)
+                val actualIntermediatePid =
+                    (receivedPidBytes[0].toInt() and 0xFF) or
+                        ((receivedPidBytes[1].toInt() and 0xFF) shl 8) or
+                        ((receivedPidBytes[2].toInt() and 0xFF) shl 16) or
+                        ((receivedPidBytes[3].toInt() and 0xFF) shl 24)
+
+                Logger.debug("received intermediate PID from bootstrap: $actualIntermediatePid")
+
+                close(syncFds[0])
+
+                // Now actualIntermediatePid is the real intermediate process
+                // We need to wait for it to send us the init PID
+
                 // Close senders and receivers that this process doesn't need
                 // Keep initSender - will be used to send messages to init process
                 mainSender.close()
@@ -124,7 +268,7 @@ fun create(
                         spec,
                         containerId,
                         bundlePath,
-                        intermediatePid,
+                        actualIntermediatePid,
                         mainReceiver,
                         interSender,
                         initSender,
