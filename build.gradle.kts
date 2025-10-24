@@ -53,6 +53,64 @@ val generateBuildConfig by tasks.registering {
     }
 }
 
+// Build C bootstrap library
+val buildBootstrap by tasks.registering(Exec::class) {
+    workingDir = file("src/nativeInterop/cinterop/bootstrap")
+
+    // Create build directory
+    doFirst {
+        file("$workingDir/build").mkdirs()
+        file("build/bootstrap").mkdirs()
+    }
+
+    // Compile netlink.c
+    commandLine(
+        "gcc",
+        "-c",
+        "-fPIC",
+        "-Wall",
+        "-Wextra",
+        "netlink.c",
+        "-o",
+        "build/netlink.o",
+    )
+
+    // Compile bootstrap.c and create static library
+    doLast {
+        exec {
+            workingDir = file("src/nativeInterop/cinterop/bootstrap")
+            commandLine(
+                "gcc",
+                "-c",
+                "-fPIC",
+                "-Wall",
+                "-Wextra",
+                "bootstrap.c",
+                "-o",
+                "build/bootstrap.o",
+            )
+        }
+
+        // Create static library
+        exec {
+            workingDir = file("src/nativeInterop/cinterop/bootstrap")
+            commandLine(
+                "ar",
+                "rcs",
+                "build/libbootstrap.a",
+                "build/netlink.o",
+                "build/bootstrap.o",
+            )
+        }
+
+        // Copy to build/bootstrap for linking
+        copy {
+            from("src/nativeInterop/cinterop/bootstrap/build/libbootstrap.a")
+            into("build/bootstrap")
+        }
+    }
+}
+
 kotlin {
     val hostOs = System.getProperty("os.name")
     val isArm64 = System.getProperty("os.arch") == "aarch64"
@@ -79,6 +137,7 @@ kotlin {
             val syscall by creating {}
             val prctl by creating {}
             val capability by creating {}
+            val bootstrap by creating {}
         }
     }
 
@@ -128,4 +187,9 @@ ktlint {
                 .toPath()
         exclude { it.file.toPath().startsWith(genRoot) }
     }
+}
+
+// Ensure bootstrap C library is built before cinterop
+tasks.named("cinteropBootstrapLinuxX64") {
+    dependsOn(buildBootstrap)
 }
