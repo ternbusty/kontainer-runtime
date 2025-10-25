@@ -1,16 +1,14 @@
 package process
 
 import channel.InitSender
-import channel.IntermediateSender
 import channel.MainReceiver
-import kotlinx.cinterop.*
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.memScoped
 import logger.Logger
 import namespace.hasNamespace
-import platform.linux._WEXITSTATUS
-import platform.linux._WIFEXITED
-import platform.linux._WIFSIGNALED
-import platform.linux._WTERMSIG
-import platform.posix.*
+import platform.posix._exit
+import platform.posix.getegid
+import platform.posix.geteuid
 import seccomp.sendToSeccompListener
 import spec.Spec
 import state.ContainerStatus
@@ -20,26 +18,26 @@ import utils.writeText
 /**
  * Main process - Parent process
  *
+ * This process manages the init process (Stage-2/PID 1).
+ *
  * Responsibilities:
- * - Wait for UID/GID mapping request from intermediate process
+ * - Wait for UID/GID mapping request from init process
  * - Write mappings to /proc/<pid>/uid_map and /proc/<pid>/gid_map
- * - Wait for intermediate process to send init PID
  * - Wait for init process to be ready
- * - Wait for intermediate process to exit
+ * - Handle seccomp notify FD if configured
  */
 @OptIn(ExperimentalForeignApi::class)
 fun runMainProcess(
     spec: Spec,
     containerId: String,
     bundlePath: String,
-    intermediatePid: Int,
+    initPid: Int,
     mainReceiver: MainReceiver,
-    interSender: IntermediateSender,
     initSender: InitSender,
 ): Int =
     memScoped {
         Logger.setContext("main")
-        Logger.debug("started, intermediate pid=$intermediatePid")
+        Logger.debug("started, init pid=$initPid")
 
         // Check if user namespace is configured
         // If not, skip UID/GID mapping (privileged mode)
@@ -47,7 +45,7 @@ fun runMainProcess(
         Logger.debug("user namespace configured: $hasUserNamespace")
 
         if (hasUserNamespace) {
-            // Wait for UID/GID mapping request from intermediate process
+            // Wait for UID/GID mapping request from init process
             try {
                 mainReceiver.waitForMappingRequest()
                 Logger.debug("received mapping request")
@@ -99,13 +97,13 @@ fun runMainProcess(
 
             // Check existing uid_map/gid_map before writing
             try {
-                val existingUidMap = utils.readTextFile("/proc/$intermediatePid/uid_map")
+                val existingUidMap = utils.readTextFile("/proc/$initPid/uid_map")
                 Logger.debug("existing uid_map before write: '${existingUidMap.trim()}'")
             } catch (e: Exception) {
                 Logger.debug("could not read existing uid_map (file may not exist yet or is empty): ${e.message}")
             }
             try {
-                val existingGidMap = utils.readTextFile("/proc/$intermediatePid/gid_map")
+                val existingGidMap = utils.readTextFile("/proc/$initPid/gid_map")
                 Logger.debug("existing gid_map before write: '${existingGidMap.trim()}'")
             } catch (e: Exception) {
                 Logger.debug("could not read existing gid_map (file may not exist yet or is empty): ${e.message}")
@@ -120,17 +118,17 @@ fun runMainProcess(
             try {
                 if (!isPrivileged) {
                     // Kernel requires disabling setgroups before writing gid_map for unprivileged users (CVE-2014-8989)
-                    Logger.debug("disabling setgroups for pid $intermediatePid")
-                    writeText("/proc/$intermediatePid/setgroups", "deny\n")
+                    Logger.debug("disabling setgroups for pid $initPid")
+                    writeText("/proc/$initPid/setgroups", "deny\n")
                 } else {
                     Logger.debug("skipping setgroups write (running as root)")
                 }
 
-                Logger.debug("writing uid_map for pid $intermediatePid")
-                writeText("/proc/$intermediatePid/uid_map", uidMap)
+                Logger.debug("writing uid_map for pid $initPid")
+                writeText("/proc/$initPid/uid_map", uidMap)
 
-                Logger.debug("writing gid_map for pid $intermediatePid")
-                writeText("/proc/$intermediatePid/gid_map", gidMap)
+                Logger.debug("writing gid_map for pid $initPid")
+                writeText("/proc/$initPid/gid_map", gidMap)
 
                 Logger.debug("successfully wrote UID/GID mappings")
             } catch (e: Exception) {
@@ -138,9 +136,9 @@ fun runMainProcess(
                 _exit(1)
             }
 
-            // Notify intermediate process that mapping is written
+            // Notify init process that mapping is written
             try {
-                interSender.mappingWritten()
+                initSender.mappingWritten()
                 Logger.debug("sent mapping written ack")
             } catch (e: Exception) {
                 Logger.error("error sending mapping ack: ${e.message ?: "unknown"}")
@@ -149,20 +147,6 @@ fun runMainProcess(
         } else {
             Logger.debug("skipping UID/GID mapping (no user namespace configured)")
         }
-
-        // Close intermediate sender (no more messages to send)
-        interSender.close()
-
-        // Wait for intermediate process to send init PID
-        val initPid: Int =
-            try {
-                mainReceiver.waitForIntermediateReady()
-            } catch (e: Exception) {
-                Logger.error("error waiting for init pid: ${e.message ?: "unknown"}")
-                _exit(1)
-                -1 // Never reached, but satisfies type checker
-            }
-        Logger.debug("received init pid=$initPid")
 
         // Check if seccomp notify is used in the spec
         val hasSeccompNotify =
@@ -218,40 +202,6 @@ fun runMainProcess(
         mainReceiver.close()
         initSender.close()
 
-        // Wait for intermediate process to exit
-        // By this point, the intermediate process should already have exited successfully.
-        // If intermediate process errors out, the `init_ready` will not be sent.
-        // We check the exit status but only log warnings,
-        // because the process status has already been validated through piping.
-        val st = alloc<IntVar>()
-        if (waitpid(intermediatePid, st.ptr, 0) == -1) {
-            val errNum = errno
-            if (errNum == ECHILD) {
-                // This is safe because intermediate_process and main_process check if the process is
-                // finished by piping instead of exit code.
-                Logger.warn("intermediate process already reaped")
-            } else {
-                perror("waitpid(intermediate)")
-                Logger.error("Failed to wait for intermediate process (errno=$errNum)")
-                _exit(1)
-            }
-        } else {
-            // Check exit status
-            val status = st.value
-            if (_WIFEXITED(status) != 0) {
-                val exitCode = _WEXITSTATUS(status)
-                if (exitCode != 0) {
-                    Logger.warn("intermediate process failed with exit status: $exitCode")
-                } else {
-                    Logger.debug("intermediate process exited successfully")
-                }
-            } else if (_WIFSIGNALED(status) != 0) {
-                val signal = _WTERMSIG(status)
-                Logger.warn("intermediate process killed by signal: $signal")
-            } else {
-                Logger.warn("intermediate process exited abnormally (status=$status)")
-            }
-        }
         Logger.info("container created with init pid=$initPid")
 
         initPid

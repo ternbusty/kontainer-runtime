@@ -1,8 +1,8 @@
 package netlink
 
-import kotlinx.cinterop.*
+import kotlinx.cinterop.ExperimentalForeignApi
 
-// Message types (random values like runc)
+// Message types (random values)
 const val INIT_MSG: UShort = 62000u
 
 // Attribute types
@@ -16,7 +16,6 @@ const val USER_NS_ATTR: UShort = 27288u
 
 /**
  * Netlink message builder for bootstrap data
- * Similar to runc's message_linux.go
  */
 @OptIn(ExperimentalForeignApi::class)
 class NetlinkMessage(

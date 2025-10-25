@@ -7,6 +7,7 @@ import platform.posix.F_OK
 import platform.posix.access
 import spec.LinuxResources
 import utils.createDirectories
+import utils.readProcFile
 import utils.writeText
 
 /**
@@ -278,4 +279,47 @@ fun cleanupCgroup(cgroupPath: String?) {
     } else {
         Logger.debug("removed cgroup directory: $fullPath")
     }
+}
+
+/**
+ * Get list of PIDs in a cgroup
+ *
+ * Reads the cgroup.procs file and returns a list of process IDs.
+ * This is used by the ps command to list processes in a container.
+ *
+ * @param cgroupPath Relative path from /sys/fs/cgroup (e.g., "mycontainer")
+ * @return List of PIDs in the cgroup
+ * @throws Exception if cgroup.procs file cannot be read
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun getCgroupPids(cgroupPath: String): List<Int> {
+    // Normalize cgroup path: remove leading slash if present
+    val normalizedPath = cgroupPath.removePrefix("/")
+    val fullPath = "$CGROUP_ROOT/$normalizedPath"
+    val procsPath = "$fullPath/$CGROUP_PROCS"
+
+    Logger.debug("reading PIDs from $procsPath")
+
+    val content =
+        try {
+            readProcFile(procsPath)
+        } catch (e: Exception) {
+            Logger.error("failed to read cgroup.procs: ${e.message}")
+            throw Exception("Failed to read cgroup.procs file: ${e.message}")
+        }
+
+    // Parse PIDs from content (one PID per line)
+    val pids =
+        content
+            .trim()
+            .split("\n")
+            .filter { it.isNotBlank() }
+            .mapNotNull { line ->
+                line.trim().toIntOrNull()?.also {
+                    Logger.debug("found PID: $it")
+                }
+            }
+
+    Logger.debug("found ${pids.size} PIDs in cgroup")
+    return pids
 }
