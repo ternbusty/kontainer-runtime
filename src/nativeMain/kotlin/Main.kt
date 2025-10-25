@@ -1,6 +1,5 @@
 import bootstrap.kontainer_is_init_process
 import channel.InitReceiver
-import channel.IntermediateReceiver
 import channel.MainSender
 import channel.NotifyListener
 import command.*
@@ -11,14 +10,13 @@ import logger.Logger
 import platform.posix.exit
 import platform.posix.getenv
 import platform.posix.getpid
-import process.runIntermediateProcess
+import process.runInitProcess
 import spec.loadSpec
 
 /**
  * Kontainer Runtime - Container runtime written in Kotlin/Native
  *
  * Minimal container runtime implementation compliant with OCI Runtime Specification
- * Uses a 3-process architecture with 3 channels and notify socket for container lifecycle management
  *
  * Commands:
  *   create [--bundle|-b <path>] [--pid-file <path>] <container-id>  - Create a container
@@ -31,41 +29,40 @@ import spec.loadSpec
 fun main(args: Array<String>): Unit =
     memScoped {
         // Bootstrap constructor has already run before Kotlin runtime started
-        // Check if this process is the init process (set by C constructor)
+        // Check if this process is the init process (Stage-2, set by bootstrap.c)
         val isInit = kontainer_is_init_process()
 
         Logger.setContext("main")
 
-        // If this is a process forked by bootstrap constructor (intermediate process)
-        if (isInit != 0) {
-            Logger.debug("running as child process (forked by bootstrap constructor)")
+        // If this is Stage-2 (init process) forked by bootstrap.c
+        if (isInit != 0 || (args.size == 1 && args[0] == "__init__")) {
+            Logger.debug("running as init process (Stage-2, forked by bootstrap.c)")
 
-            // Note: bootstrap parent has already sent our PID to Create.kt
+            // Note: bootstrap.c Stage-0 has already sent our PID to Create.kt
             // We don't need to sync with bootstrap parent here
 
             // Restore channel FDs from environment variables
             val mainSenderFdStr = getenv("_KONTAINER_MAIN_SENDER_FD")?.toKString()
-            val interReceiverFdStr = getenv("_KONTAINER_INTER_RECEIVER_FD")?.toKString()
             val initReceiverFdStr = getenv("_KONTAINER_INIT_RECEIVER_FD")?.toKString()
             val bundlePath = getenv("_KONTAINER_BUNDLE_PATH")?.toKString()
             val rootfsPath = getenv("_KONTAINER_ROOTFS_PATH")?.toKString()
             val notifySocketPath = getenv("_KONTAINER_NOTIFY_SOCKET")?.toKString()
 
-            if (mainSenderFdStr == null || interReceiverFdStr == null ||
-                initReceiverFdStr == null || bundlePath == null ||
-                rootfsPath == null || notifySocketPath == null
+            if (mainSenderFdStr == null || initReceiverFdStr == null ||
+                bundlePath == null || rootfsPath == null || notifySocketPath == null
             ) {
-                Logger.error("missing required environment variables for intermediate process")
+                Logger.error("missing required environment variables for init process")
                 exit(1)
+                return
             }
 
-            val mainSenderFd = mainSenderFdStr!!.toIntOrNull()
-            val interReceiverFd = interReceiverFdStr!!.toIntOrNull()
-            val initReceiverFd = initReceiverFdStr!!.toIntOrNull()
+            val mainSenderFd = mainSenderFdStr.toIntOrNull()
+            val initReceiverFd = initReceiverFdStr.toIntOrNull()
 
-            if (mainSenderFd == null || interReceiverFd == null || initReceiverFd == null) {
+            if (mainSenderFd == null || initReceiverFd == null) {
                 Logger.error("invalid FD values in environment variables")
                 exit(1)
+                return
             }
 
             // Load spec from bundle
@@ -80,14 +77,13 @@ fun main(args: Array<String>): Unit =
                 }
 
             // Recreate channel objects from FDs
-            val mainSender = MainSender(mainSenderFd!!)
-            val interReceiver = IntermediateReceiver(interReceiverFd!!)
-            val initReceiver = InitReceiver(initReceiverFd!!)
+            val mainSender = MainSender(mainSenderFd)
+            val initReceiver = InitReceiver(initReceiverFd)
 
             // Recreate notify listener (inherits from parent process)
             val notifyListener =
                 try {
-                    NotifyListener(notifySocketPath!!)
+                    NotifyListener(notifySocketPath)
                 } catch (e: Exception) {
                     Logger.error("failed to create notify listener: ${e.message ?: "unknown"}")
                     exit(1)
@@ -95,20 +91,18 @@ fun main(args: Array<String>): Unit =
                 }
 
             val pid = getpid()
-            Logger.info("intermediate process (PID=$pid) started successfully via bootstrap")
-            Logger.debug("bundle=${bundlePath!!}, rootfs=${rootfsPath!!}")
-            Logger.debug("restored channel FDs: main_sender=$mainSenderFd, inter_receiver=$interReceiverFd, init_receiver=$initReceiverFd")
+            Logger.info("init process (Stage-2, PID=$pid) started successfully via bootstrap.c")
+            Logger.debug("bundle=$bundlePath, rootfs=$rootfsPath")
+            Logger.debug("restored channel FDs: main_sender=$mainSenderFd, init_receiver=$initReceiverFd")
 
-            // Run intermediate process logic
-            runIntermediateProcess(spec, rootfsPath!!, mainSender, interReceiver, initReceiver, notifyListener)
+            // Run init process logic (Stage-2 / PID 1)
+            // This will eventually call execve() and replace this process with the container process
+            runInitProcess(spec, rootfsPath, mainSender, initReceiver, notifyListener)
 
-            // Should not reach here (runIntermediateProcess calls _exit)
-            Logger.error("runIntermediateProcess returned unexpectedly")
+            // Should not reach here (runInitProcess calls execve or _exit)
+            Logger.error("runInitProcess returned unexpectedly")
             exit(1)
         }
-
-        // Log all command-line arguments for debugging
-        Logger.info("kontainer-runtime invoked with ${args.size} arguments. arguments: ${args.joinToString(" ") { "\"$it\"" }}")
 
         if (args.isEmpty()) {
             Logger.error("Usage: kontainer-runtime [global-options] <command> [options] <container-id> [args...]")
@@ -125,6 +119,7 @@ fun main(args: Array<String>): Unit =
             Logger.error("  state <container-id>                                               Display container state")
             Logger.error("  kill <container-id> <signal>                                       Send a signal to a container")
             Logger.error("  delete [--force|-f] <container-id>                                 Delete a container")
+            Logger.error("  ps [--format|-f <json|table>] <container-id>                       List processes in a container")
             exit(1)
         }
 
@@ -191,6 +186,9 @@ fun main(args: Array<String>): Unit =
             }
         }
 
+        // Log all command-line arguments for debugging (after global options are parsed)
+        Logger.info("kontainer-runtime invoked with ${args.size} arguments. arguments: ${args.joinToString(" ") { "\"$it\"" }}")
+
         if (argIndex >= args.size) {
             Logger.error("no command specified")
             Logger.error("Usage: kontainer-runtime [global-options] <command> [options] <container-id> [args...]")
@@ -246,9 +244,10 @@ fun main(args: Array<String>): Unit =
                 if (containerId == null) {
                     Logger.error("Usage: kontainer-runtime create [--bundle|-b <path>] [--pid-file <path>] <container-id>")
                     exit(1)
+                    return
                 }
 
-                create(rootPath, containerId!!, bundlePath, pidFile)
+                create(rootPath, containerId, bundlePath, pidFile)
             }
 
             "start" -> {
@@ -288,9 +287,50 @@ fun main(args: Array<String>): Unit =
                 delete(rootPath, containerArgs[0], force)
             }
 
+            "ps" -> {
+                val cmdArgs = commandArgs
+
+                // Parse options
+                var format = "json" // Default to JSON format
+                var containerId: String? = null
+                var i = 0
+
+                while (i < cmdArgs.size) {
+                    when (cmdArgs[i]) {
+                        "--format", "-f" -> {
+                            if (i + 1 >= cmdArgs.size) {
+                                Logger.error("--format requires a format argument (json or table)")
+                                exit(1)
+                            }
+                            format = cmdArgs[i + 1]
+                            i += 2
+                        }
+
+                        else -> {
+                            // Assume this is the container ID
+                            if (cmdArgs[i].startsWith("-")) {
+                                Logger.error("unknown option: ${cmdArgs[i]}")
+                                Logger.error("Usage: kontainer-runtime ps [--format|-f <json|table>] <container-id>")
+                                exit(1)
+                            }
+                            containerId = cmdArgs[i]
+                            i++
+                        }
+                    }
+                }
+
+                if (containerId == null) {
+                    Logger.error("Usage: kontainer-runtime ps [--format|-f <json|table>] <container-id>")
+                    exit(1)
+                    return
+                }
+
+                ps(rootPath, containerId, format)
+            }
+
             else -> {
                 Logger.error("unknown command: $command")
-                Logger.error("available commands: create, start, state, kill, delete")
+                Logger.error("available commands: create, start, state, kill, delete, ps")
                 exit(1)
             }
         }

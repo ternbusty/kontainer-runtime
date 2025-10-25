@@ -181,7 +181,7 @@ private fun receiveMessageWithFd(socket: Int): Pair<Message, Int> {
 }
 
 /**
- * Main Channel - for communication from intermediate/init to main process
+ * Main Channel - for communication from init to main process
  */
 class MainSender(
     private val socket: Int,
@@ -190,10 +190,6 @@ class MainSender(
 
     fun identifierMappingRequest() {
         sendMessage(socket, Message.WriteMapping)
-    }
-
-    fun intermediateReady(pid: Int) {
-        sendMessage(socket, Message.IntermediateReady(pid))
     }
 
     fun initReady() {
@@ -230,14 +226,6 @@ class MainReceiver(
             else -> throw Exception("Unexpected message: $msg, expected WriteMapping")
         }
 
-    fun waitForIntermediateReady(): Int =
-        when (val msg = receiveMessage(socket)) {
-            is Message.IntermediateReady -> msg.pid
-            is Message.ExecFailed -> throw Exception("Exec failed: ${msg.error}")
-            is Message.OtherError -> throw Exception("Error: ${msg.error}")
-            else -> throw Exception("Unexpected message: $msg, expected IntermediateReady")
-        }
-
     fun waitForInitReady() {
         when (val msg = receiveMessage(socket)) {
             is Message.InitReady -> return
@@ -268,9 +256,9 @@ fun mainChannel(): Pair<MainSender, MainReceiver> {
 }
 
 /**
- * Intermediate Channel - for communication from main to intermediate process
+ * Init Channel - for communication from main to init process
  */
-class IntermediateSender(
+class InitSender(
     private val socket: Int,
 ) {
     fun fd(): Int = socket
@@ -278,41 +266,6 @@ class IntermediateSender(
     fun mappingWritten() {
         sendMessage(socket, Message.MappingWritten)
     }
-
-    fun close() {
-        close(socket)
-    }
-}
-
-class IntermediateReceiver(
-    private val socket: Int,
-) {
-    fun fd(): Int = socket
-
-    fun waitForMappingAck() {
-        when (val msg = receiveMessage(socket)) {
-            is Message.MappingWritten -> return
-            else -> throw Exception("Unexpected message: $msg, expected MappingWritten")
-        }
-    }
-
-    fun close() {
-        close(socket)
-    }
-}
-
-fun intermediateChannel(): Pair<IntermediateSender, IntermediateReceiver> {
-    val (sender, receiver) = createSocketPair()
-    return Pair(IntermediateSender(sender), IntermediateReceiver(receiver))
-}
-
-/**
- * Init Channel - for communication from main to init process (reserved for future use like seccomp)
- */
-class InitSender(
-    private val socket: Int,
-) {
-    fun fd(): Int = socket
 
     fun seccompNotifyDone() {
         sendMessage(socket, Message.SeccompNotifyDone)
@@ -327,6 +280,13 @@ class InitReceiver(
     private val socket: Int,
 ) {
     fun fd(): Int = socket
+
+    fun waitForMappingAck() {
+        when (val msg = receiveMessage(socket)) {
+            is Message.MappingWritten -> return
+            else -> throw Exception("Unexpected message: $msg, expected MappingWritten")
+        }
+    }
 
     fun waitForSeccompRequestDone() {
         when (val msg = receiveMessage(socket)) {

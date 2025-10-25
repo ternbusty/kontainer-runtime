@@ -4,15 +4,14 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 /**
- * Messages exchanged between main, intermediate, and init processes
+ * Messages exchanged between main and init processes
+ *
+ * There are only two processes that communicate:
+ * - Main process (parent)
+ * - Init process (PID 1 in container, Stage-2 from bootstrap.c)
  */
 @Serializable
 sealed class Message {
-    @Serializable
-    data class IntermediateReady(
-        val pid: Int,
-    ) : Message()
-
     @Serializable
     object InitReady : Message()
 

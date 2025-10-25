@@ -2,12 +2,12 @@ package command
 
 import channel.NotifyListener
 import channel.initChannel
-import channel.intermediateChannel
 import channel.mainChannel
 import config.KontainerConfig
 import config.saveKontainerConfig
 import kotlinx.cinterop.*
 import logger.Logger
+import namespace.calculateCloneFlags
 import netlink.*
 import platform.posix.*
 import process.runMainProcess
@@ -66,9 +66,9 @@ fun create(
         Logger.debug("rootfs path: $rootfsPath")
         Logger.debug("main: pid=${getpid()}")
 
-        // Create 3 channels for inter-process communication
+        // Create 2 channels for inter-process communication
+        // Main ↔ Init (PID 1)
         val (mainSender, mainReceiver) = mainChannel()
-        val (interSender, interReceiver) = intermediateChannel()
         val (initSender, initReceiver) = initChannel()
 
         // Create notify socket path
@@ -115,15 +115,16 @@ fun create(
 
         // Prepare netlink message with configuration
         val netlinkMsg = NetlinkMessage(INIT_MSG)
-        // For now, just send minimal data (clone flags will be ignored by intermediate process)
-        netlinkMsg.addInt32(CLONE_FLAGS_ATTR, 0u)
+
+        // Calculate clone flags from OCI spec namespaces
+        // These flags will be used by bootstrap.c to unshare namespaces before Kotlin runtime starts
+        val cloneFlags = calculateCloneFlags(spec.linux?.namespaces)
+        netlinkMsg.addInt32(CLONE_FLAGS_ATTR, cloneFlags)
+        Logger.debug("calculated clone_flags: 0x${cloneFlags.toString(16)}")
+
         netlinkMsg.addString(CONTAINER_ID_ATTR, containerId)
         netlinkMsg.addString(BUNDLE_PATH_ATTR, bundlePath)
         netlinkMsg.addString(ROOTFS_PATH_ATTR, rootfsPath)
-
-        // Check if user namespace is configured in spec
-        val hasUserNamespace = spec.linux?.namespaces?.any { it.type == "user" } ?: false
-        netlinkMsg.addInt32(USER_NS_ATTR, if (hasUserNamespace) 1u else 0u)
 
         val msgBytes = netlinkMsg.serialize()
         Logger.debug("prepared netlink message: ${msgBytes.size} bytes")
@@ -174,7 +175,7 @@ fun create(
 
             0 -> {
                 // Child process: exec ourselves with environment variables set
-                // This will trigger bootstrap constructor which will fork intermediate process
+                // This will trigger bootstrap constructor which will fork init process (Stage-2)
 
                 // Close parent side of sync socketpair
                 close(syncFds[0])
@@ -183,15 +184,13 @@ fun create(
                 val initPipeStr = initPipe[0].toString()
                 val syncPipeStr = syncFds[1].toString()
 
-                // Pass channel FDs to intermediate process
+                // Pass channel FDs to init process (Stage-2)
                 val mainSenderFd = mainSender.fd().toString()
-                val interReceiverFd = interReceiver.fd().toString()
                 val initReceiverFd = initReceiver.fd().toString()
 
                 setenv("_KONTAINER_INITPIPE", initPipeStr, 1)
                 setenv("_KONTAINER_SYNCPIPE", syncPipeStr, 1)
                 setenv("_KONTAINER_MAIN_SENDER_FD", mainSenderFd, 1)
-                setenv("_KONTAINER_INTER_RECEIVER_FD", interReceiverFd, 1)
                 setenv("_KONTAINER_INIT_RECEIVER_FD", initReceiverFd, 1)
                 setenv("_KONTAINER_BUNDLE_PATH", bundlePath, 1)
                 setenv("_KONTAINER_ROOTFS_PATH", rootfsPath, 1)
@@ -200,7 +199,7 @@ fun create(
                 // Prepare arguments
                 val argv = allocArray<CPointerVar<ByteVar>>(3)
                 argv[0] = exePathBuf
-                argv[1] = "__intermediate__".cstr.ptr
+                argv[1] = "__init__".cstr.ptr
                 argv[2] = null
 
                 // Exec ourselves
@@ -221,7 +220,7 @@ fun create(
 
                 Logger.debug("forked child process, PID=$intermediatePid, waiting for bootstrap to complete")
 
-                // Wait for intermediate process PID from bootstrap
+                // Wait for init process PID from bootstrap (Stage-2)
                 val receivedPidBytes = ByteArray(4)
                 receivedPidBytes.usePinned { pinned ->
                     val n = read(syncFds[0], pinned.addressOf(0), 4u)
@@ -241,23 +240,19 @@ fun create(
                 }
 
                 // Decode PID from bytes (little-endian)
-                val actualIntermediatePid =
+                val actualInitPid =
                     (receivedPidBytes[0].toInt() and 0xFF) or
                         ((receivedPidBytes[1].toInt() and 0xFF) shl 8) or
                         ((receivedPidBytes[2].toInt() and 0xFF) shl 16) or
                         ((receivedPidBytes[3].toInt() and 0xFF) shl 24)
 
-                Logger.debug("received intermediate PID from bootstrap: $actualIntermediatePid")
+                Logger.debug("received init PID from bootstrap: $actualInitPid")
 
                 close(syncFds[0])
 
-                // Now actualIntermediatePid is the real intermediate process
-                // We need to wait for it to send us the init PID
-
                 // Close senders and receivers that this process doesn't need
-                // Keep initSender - will be used to send messages to init process
+                // Keep mainReceiver and initSender - will be used to communicate with init process
                 mainSender.close()
-                interReceiver.close()
                 initReceiver.close()
 
                 // Close notify listener in main process (only used by init process)
@@ -268,9 +263,8 @@ fun create(
                         spec,
                         containerId,
                         bundlePath,
-                        actualIntermediatePid,
+                        actualInitPid,
                         mainReceiver,
-                        interSender,
                         initSender,
                     )
 
