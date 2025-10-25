@@ -3,7 +3,6 @@ package logger
 import config.BuildConfig
 import kotlinx.cinterop.*
 import platform.posix.*
-import utils.createDirectories
 
 /**
  * Simple structured logger for kontainer-runtime
@@ -76,10 +75,36 @@ object Logger {
         // This helps troubleshoot issues where containerd cleans up log files
         debugLogFile = fopen("/tmp/kontainer-runtime-debug.log", "a")
         if (debugLogFile != null) {
+            // Set permissions to 0666 so both root and regular users can write
+            // This is necessary because umask may create files with restrictive permissions
+            val fd = fileno(debugLogFile)
+            if (fchmod(fd, 0x1B6u) != 0) { // 0x1B6 = 0666 in octal
+                val errNum = errno
+                fprintf(
+                    stderr,
+                    "WARNING: Failed to set permissions on /tmp/kontainer-runtime-debug.log (errno=%d)\n",
+                    errNum,
+                )
+                fflush(stderr)
+            }
+
             // Write a separator to mark new execution
             val timestamp = getCurrentTimestamp()
             fprintf(debugLogFile, "\n=== New execution at %s ===\n", timestamp)
             fflush(debugLogFile)
+        } else {
+            // Log fopen() failure to stderr for debugging
+            val errNum = errno
+            val uid = getuid()
+            val gid = getgid()
+            fprintf(
+                stderr,
+                "WARNING: Failed to open /tmp/kontainer-runtime-debug.log for appending (errno=%d, uid=%u, gid=%u)\n",
+                errNum,
+                uid,
+                gid,
+            )
+            fflush(stderr)
         }
     }
 
@@ -122,14 +147,28 @@ object Logger {
         }
 
         // Extract parent directory from log file path and create it if needed
+        // We use direct POSIX calls here to avoid Logger.debug() calls that would go to stderr
         val lastSlash = path.lastIndexOf('/')
         if (lastSlash > 0) {
             val parentDir = path.substring(0, lastSlash)
-            try {
-                createDirectories(parentDir)
-            } catch (e: Exception) {
-                fprintf(stderr, "[WARN] Failed to create log directory: %s: %s\n", parentDir, e.message ?: "unknown")
-                // Continue anyway, fopen will fail if directory doesn't exist
+
+            // Split path into components and create directories recursively
+            val components = parentDir.trim('/').split('/')
+            var currentPath = if (parentDir.startsWith("/")) "/" else ""
+
+            for (component in components) {
+                if (component.isEmpty()) continue
+
+                currentPath += if (currentPath == "/") component else "/$component"
+
+                if (mkdir(currentPath, 0x1EDu) != 0) { // 0x1ED = 0755 octal
+                    val errNum = errno
+                    if (errNum != EEXIST) {
+                        // Directory creation failed (but not because it exists)
+                        // Don't use Logger here to avoid circular dependency
+                        // Continue anyway, fopen will fail if directory doesn't exist
+                    }
+                }
             }
         }
 
@@ -142,7 +181,7 @@ object Logger {
         }
 
         logFile = file
-        fprintf(stderr, "[INFO] Logging to file: %s\n", path)
+        // Don't log to stderr - it pollutes stdout when used with containerd
     }
 
     /**
@@ -203,17 +242,20 @@ object Logger {
                 Format.TEXT -> {
                     val formattedMessage = "[%s] [%s] [%s] %s\n"
 
-                    // Always log to stderr
-                    fprintf(
-                        stderr,
-                        formattedMessage,
-                        timestamp,
-                        level.label,
-                        processContext,
-                        message,
-                    )
+                    // Log to stderr only if no log file is configured
+                    // This prevents polluting stdout when used with containerd (--log option)
+                    if (logFile == null) {
+                        fprintf(
+                            stderr,
+                            formattedMessage,
+                            timestamp,
+                            level.label,
+                            processContext,
+                            message,
+                        )
+                    }
 
-                    // Also log to file if configured
+                    // Log to file if configured
                     logFile?.let { file ->
                         fprintf(
                             file,
@@ -247,10 +289,13 @@ object Logger {
                         "{\"timestamp\":\"$timestamp\",\"level\":\"${level.label}\"," +
                             "\"context\":\"$processContext\",\"message\":\"$escapedMessage\"}\n"
 
-                    // Log to stderr
-                    fprintf(stderr, "%s", jsonMessage)
+                    // Log to stderr only if no log file is configured
+                    // This prevents polluting stdout when used with containerd (--log option)
+                    if (logFile == null) {
+                        fprintf(stderr, "%s", jsonMessage)
+                    }
 
-                    // Also log to file if configured
+                    // Log to file if configured
                     logFile?.let { file ->
                         fprintf(file, "%s", jsonMessage)
                         fflush(file)
