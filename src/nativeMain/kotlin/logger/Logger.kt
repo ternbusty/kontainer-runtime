@@ -73,21 +73,15 @@ object Logger {
     init {
         // Open debug log file in /tmp for persistent logging
         // This helps troubleshoot issues where containerd cleans up log files
-        debugLogFile = fopen("/tmp/kontainer-runtime-debug.log", "a")
-        if (debugLogFile != null) {
-            // Set permissions to 0666 so both root and regular users can write
-            // This is necessary because umask may create files with restrictive permissions
-            val fd = fileno(debugLogFile)
-            if (fchmod(fd, 0x1B6u) != 0) { // 0x1B6 = 0666 in octal
-                val errNum = errno
-                fprintf(
-                    stderr,
-                    "WARNING: Failed to set permissions on /tmp/kontainer-runtime-debug.log (errno=%d)\n",
-                    errNum,
-                )
-                fflush(stderr)
-            }
 
+        // Temporarily set umask to 0 to ensure the log file is created with 0666 permissions
+        // This allows both root and regular users to write to the file
+        // Note: fchmod() fails with EPERM in user namespaces, so we use umask instead
+        val oldUmask = umask(0u)
+        debugLogFile = fopen("/tmp/kontainer-runtime-debug.log", "a")
+        umask(oldUmask) // Restore original umask
+
+        if (debugLogFile != null) {
             // Write a separator to mark new execution
             val timestamp = getCurrentTimestamp()
             fprintf(debugLogFile, "\n=== New execution at %s ===\n", timestamp)
