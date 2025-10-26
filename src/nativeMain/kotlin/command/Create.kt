@@ -11,6 +11,8 @@ import logger.Logger
 import namespace.calculateCloneFlags
 import namespace.hasNamespace
 import netlink.*
+import platform.linux.PR_SET_CHILD_SUBREAPER
+import platform.linux.prctl
 import platform.posix.*
 import process.runMainProcess
 import spec.loadSpec
@@ -27,7 +29,7 @@ import utils.writeText
  * @param rootPath Root directory for container state
  * @param containerId Container ID
  * @param bundlePath Path to OCI bundle directory (default: current directory)
- * @param pidFile Optional path to write the container's init process PID
+ * @param pidFile Optional path to write the Stage-2 (init process) PID
  */
 @OptIn(ExperimentalForeignApi::class)
 fun create(
@@ -70,7 +72,7 @@ fun create(
         Logger.debug("main: pid=${getpid()}")
 
         // Create 2 channels for inter-process communication
-        // Main ↔ Init (PID 1)
+        // Main ↔ Stage-2 (init / PID 1)
         val (mainSender, mainReceiver) = mainChannel()
         val (initSender, initReceiver) = initChannel()
 
@@ -87,7 +89,7 @@ fun create(
                 return
             }
 
-        // Fork intermediate process using bootstrap constructor
+        // Fork Stage-0 using bootstrap constructor
         // This ensures fork happens before Kotlin runtime, avoiding GC deadlock
 
         // Create sync socketpair for parent-child synchronization
@@ -164,8 +166,17 @@ fun create(
         exePathBuf[exePathLen.toInt()] = 0.toByte() // null terminate
         Logger.debug("executable path: ${exePathBuf.toKString()}")
 
+        // Set this process as a subreaper
+        // This ensures that when Stage-0 and Stage-1 exit, Stage-2 reparents to this process
+        // instead of init (PID 1), allowing us to wait for the container process
+        Logger.debug("setting PR_SET_CHILD_SUBREAPER")
+        if (prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0) {
+            perror("prctl(PR_SET_CHILD_SUBREAPER)")
+            Logger.warn("Failed to set child subreaper, container may not be properly tracked")
+        }
+
         // Fork and exec to trigger bootstrap constructor
-        when (val intermediatePid = fork()) {
+        when (val stage0Pid = fork()) {
             -1 -> {
                 perror("fork")
                 Logger.error("Failed to fork")
@@ -178,7 +189,7 @@ fun create(
 
             0 -> {
                 // Child process: exec ourselves with environment variables set
-                // This will trigger bootstrap constructor which will fork init process (Stage-2)
+                // This will trigger bootstrap constructor which will create Stage-1 and Stage-2
 
                 // Close parent side of sync socketpair
                 close(syncFds[0])
@@ -217,18 +228,18 @@ fun create(
             }
 
             else -> {
-                // Parent process: wait for child to exec and bootstrap to fork
+                // Parent process: wait for Stage-0 to exec and bootstrap to create Stage-1/Stage-2
 
                 // Close child side of sync socketpair
                 close(syncFds[1])
                 close(initPipe[0])
 
-                Logger.debug("forked child process, PID=$intermediatePid, waiting for bootstrap to complete")
+                Logger.debug("forked Stage-0, PID=$stage0Pid, waiting for bootstrap to complete")
 
-                // Setup cgroup for intermediate process (Stage-0) BEFORE syncing with child
+                // Setup cgroup for Stage-0 BEFORE syncing with child
                 // Stage-0 → Stage-1 → Stage-2 are all automatically included in the cgroup (parent-child relationship)
                 try {
-                    setupCgroup(intermediatePid, spec.linux?.cgroupsPath, spec.linux?.resources)
+                    setupCgroup(stage0Pid, spec.linux?.cgroupsPath, spec.linux?.resources)
                 } catch (e: Exception) {
                     Logger.error("failed to setup cgroup: ${e.message ?: "unknown"}")
                     close(syncFds[0])
@@ -236,9 +247,9 @@ fun create(
                     exit(1)
                 }
 
-                // Apply rlimits to intermediate process (Stage-0) BEFORE entering user namespace
+                // Apply rlimits to Stage-0 BEFORE entering user namespace
                 // Rlimits are inherited: Stage-0 → Stage-1 → Stage-2
-                applyRlimits(intermediatePid, spec.process.rlimits)
+                applyRlimits(stage0Pid, spec.process.rlimits)
 
                 // Handle UID/GID mapping if user namespace is configured
                 // This must be done BEFORE receiving Stage-2 PID, as Stage-1 waits for mapping completion
@@ -383,7 +394,7 @@ fun create(
                     Logger.debug("sent mapping ack to Stage-0")
                 }
 
-                // Wait for init process PID from bootstrap (Stage-2)
+                // Wait for Stage-2 PID from bootstrap
                 val receivedPidBytes = ByteArray(4)
                 receivedPidBytes.usePinned { pinned ->
                     val n = read(syncFds[0], pinned.addressOf(0), 4u)
@@ -403,22 +414,22 @@ fun create(
                 }
 
                 // Decode PID from bytes (little-endian)
-                val actualInitPid =
+                val stage2Pid =
                     (receivedPidBytes[0].toInt() and 0xFF) or
                         ((receivedPidBytes[1].toInt() and 0xFF) shl 8) or
                         ((receivedPidBytes[2].toInt() and 0xFF) shl 16) or
                         ((receivedPidBytes[3].toInt() and 0xFF) shl 24)
 
-                Logger.debug("received init PID from bootstrap: $actualInitPid")
+                Logger.debug("received Stage-2 PID from bootstrap: $stage2Pid")
 
                 close(syncFds[0])
 
                 // Close senders and receivers that this process doesn't need
-                // Keep mainReceiver and initSender - will be used to communicate with init process
+                // Keep mainReceiver and initSender - will be used to communicate with Stage-2
                 mainSender.close()
                 initReceiver.close()
 
-                // Close notify listener in main process (only used by init process)
+                // Close notify listener in main process (only used by Stage-2)
                 notifyListener.close()
 
                 val initPid =
@@ -426,7 +437,7 @@ fun create(
                         spec,
                         containerId,
                         bundlePath,
-                        actualInitPid,
+                        stage2Pid,
                         mainReceiver,
                         initSender,
                     )
