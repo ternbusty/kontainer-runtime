@@ -112,6 +112,19 @@ private fun initProcessInternal(
             Logger.debug("changed directory to $cwd")
         }
 
+        // Set hostname and domainname (within UTS namespace)
+        // This must be done BEFORE dropping privileges (setuid/setgid) because
+        // sethostname() requires CAP_SYS_ADMIN capability
+        // See: runc/libcontainer/standard_init_linux.go:120-129
+        spec.hostname?.let { hostname ->
+            if (sethostname(hostname, hostname.length.toULong()) != 0) {
+                perror("sethostname")
+                Logger.warn("failed to set hostname to $hostname")
+            } else {
+                Logger.debug("set hostname to $hostname")
+            }
+        }
+
         // Prepare environment and FD handling
         val processArgs = spec.process.args
         val processEnv = spec.process.env?.toMutableList() ?: mutableListOf()
@@ -199,21 +212,11 @@ private fun initProcessInternal(
         // 3. Set umask (default 0o022 or spec.process.umask)
         // This is critical for readonly container security
 
-        // Set hostname and domainname (within UTS namespace)
-        spec.hostname?.let { hostname ->
-            if (sethostname(hostname, hostname.length.toULong()) != 0) {
-                perror("sethostname")
-                Logger.warn("failed to set hostname")
-            } else {
-                Logger.debug("set hostname to $hostname")
-            }
-        }
-
         // TODO: Apply AppArmor profile and SELinux label
         // See: runc/libcontainer/standard_init_linux.go:114-124
 
         // Initialize seccomp filter
-        // This must be done after capabilities and hostname, but before closing channels
+        // This must be done after capabilities, but before closing channels
         // With no_new_privileges, seccomp is unprivileged; without it, requires CAP_SYS_ADMIN
         spec.linux?.seccomp?.let { seccomp ->
             Logger.debug("initializing seccomp filter")
