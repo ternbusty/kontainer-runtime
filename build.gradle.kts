@@ -169,7 +169,6 @@ kotlin {
             val socket by creating {}
             val sched by creating {}
             val closerange by creating {}
-            val prctl by creating {}
             val capability by creating {}
             val bootstrap by creating {}
             val prlimit by creating {}
