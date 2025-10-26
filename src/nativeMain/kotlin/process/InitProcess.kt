@@ -64,8 +64,8 @@ private fun initProcessInternal(
         // - This process runs as PID 1 in the new PID namespace
         Logger.debug("all namespaces already unshared by Stage-1, UID/GID mapping already done")
 
-        // Cgroup setup is done by main process (MainProcess.kt) before syncing with this init process
-        // - Parent process (main) sets up cgroup for init PID before init continues
+        // Cgroup setup is already done in Create.kt for intermediate process (Stage-0)
+        // - Stage-0 → Stage-1 → Stage-2 are all automatically included in the cgroup
         // - Parent has necessary privileges (runs in host namespace)
         // - Prevents race conditions and cgroup escape
 
