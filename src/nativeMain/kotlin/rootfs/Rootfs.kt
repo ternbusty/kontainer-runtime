@@ -1,6 +1,6 @@
 package rootfs
 
-import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.*
 import logger.Logger
 import platform.posix.*
 import syscall.mount
@@ -396,4 +396,59 @@ fun chrootInto(newRoot: String) {
     }
 
     Logger.debug("successfully chrooted")
+}
+
+/**
+ * Set root filesystem as readonly
+ * This is called after pivot_root to make the container's root readonly
+ * See: runc/libcontainer/rootfs_linux.go:setReadonly()
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun setRootfsReadonly() {
+    Logger.debug("setting rootfs as readonly")
+
+    // Try MS_BIND | MS_REMOUNT | MS_RDONLY
+    var flags = (MS_BIND or MS_REMOUNT or MS_RDONLY).toULong()
+
+    if (mountFs(
+            source = null,
+            target = "/",
+            fstype = null,
+            flags = flags,
+        ) == 0
+    ) {
+        Logger.debug("rootfs set as readonly")
+        return
+    }
+
+    // If failed, get current mount flags and retry
+    // This is necessary because some filesystems require their existing flags
+    // to be preserved during remount
+    memScoped {
+        val st = alloc<platform.linux.statfs>()
+        if (platform.linux.statfs("/", st.ptr) != 0) {
+            val errNum = errno
+            perror("statfs /")
+            Logger.error("failed to statfs / (errno=$errNum)")
+            throw Exception("Failed to statfs / (errno=$errNum)")
+        }
+
+        // Add existing flags from statfs
+        flags = flags or st.f_flags.toULong()
+
+        if (mountFs(
+                source = null,
+                target = "/",
+                fstype = null,
+                flags = flags,
+            ) != 0
+        ) {
+            val errNum = errno
+            perror("remount / readonly")
+            Logger.error("failed to remount / as readonly (errno=$errNum)")
+            throw Exception("Failed to remount / as readonly (errno=$errNum)")
+        }
+
+        Logger.debug("rootfs set as readonly (with existing flags)")
+    }
 }

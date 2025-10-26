@@ -9,6 +9,7 @@ import namespace.hasNamespace
 import platform.posix.*
 import rootfs.pivotRoot
 import rootfs.prepareRootfs
+import rootfs.setRootfsReadonly
 import seccomp.initializeSeccomp
 import spec.Spec
 import syscall.closeRange
@@ -125,6 +126,12 @@ private fun initProcessInternal(
             }
         }
 
+        // Finalize rootfs (set readonly, umask)
+        // This must be done BEFORE dropping privileges (setuid/setgid)
+        // because remounting requires CAP_SYS_ADMIN
+        // See: runc/libcontainer/standard_init_linux.go:114-118
+        finalizeRootfs(spec)
+
         // Prepare environment and FD handling
         val processArgs = spec.process.args
         val processEnv = spec.process.env?.toMutableList() ?: mutableListOf()
@@ -205,12 +212,6 @@ private fun initProcessInternal(
             Logger.debug("applying effective/permitted/inheritable/ambient capabilities")
             capability.applyCapabilities(capabilities)
         }
-
-        // TODO: Finalize rootfs (finalizeRootfs)
-        // 1. Remount tmpfs and /dev as readonly (if spec specifies MS_RDONLY)
-        // 2. Set rootfs (/) as readonly if spec.root.readonly == true
-        // 3. Set umask (default 0o022 or spec.process.umask)
-        // This is critical for readonly container security
 
         // TODO: Apply AppArmor profile and SELinux label
         // See: runc/libcontainer/standard_init_linux.go:114-124
@@ -336,4 +337,24 @@ private fun syncSeccompNotifyFd(
         initReceiver.waitForSeccompRequestDone()
         Logger.debug("seccomp notify FD handled by main process")
     }
+}
+
+/**
+ * Finalize rootfs setup
+ * - Set rootfs as readonly if specified
+ * - Set umask
+ * See: runc/libcontainer/rootfs_linux.go:finalizeRootfs()
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun finalizeRootfs(spec: Spec) {
+    // Set rootfs (/) as readonly if spec.root.readonly == true
+    if (spec.root.readonly) {
+        Logger.debug("finalizing rootfs as readonly")
+        setRootfsReadonly()
+    }
+
+    // Set umask (default 0o022)
+    val umaskValue = spec.process.umask ?: 0x12u // 0x12 = 0o022 (octal)
+    umask(umaskValue)
+    Logger.debug("set umask to ${umaskValue.toString(8)}")
 }

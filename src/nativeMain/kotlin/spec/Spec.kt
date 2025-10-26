@@ -33,6 +33,7 @@ data class Process(
     val user: User = User(),
     val capabilities: LinuxCapabilities? = null,
     val rlimits: List<POSIXRlimit>? = null,
+    val umask: UInt? = null,
 )
 
 @Serializable
