@@ -211,27 +211,68 @@ private fun setAmbientCapabilities(caps: Set<Capability>) {
 }
 
 /**
- * Drop privileges by setting capabilities to the specified values
- * This is the main function to apply OCI capability configuration
+ * Set PR_SET_KEEPCAPS to preserve capabilities across setuid
+ * This must be called BEFORE setuid/setgid
  */
 @OptIn(ExperimentalForeignApi::class)
-fun dropPrivileges(capabilities: LinuxCapabilities) {
-    Logger.debug("applying capability restrictions")
+fun setKeepCaps() {
+    Logger.debug("setting PR_SET_KEEPCAPS")
+    if (prctl(PR_SET_KEEPCAPS, 1, 0, 0, 0) != 0) {
+        perror("prctl(PR_SET_KEEPCAPS, 1)")
+        throw Exception("Failed to set PR_SET_KEEPCAPS: ${strerror(errno)?.toKString()}")
+    }
+}
 
-    // Parse capability sets from OCI spec
+/**
+ * Clear PR_SET_KEEPCAPS after setuid
+ * This should be called AFTER setuid/setgid
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun clearKeepCaps() {
+    Logger.debug("clearing PR_SET_KEEPCAPS")
+    if (prctl(PR_SET_KEEPCAPS, 0, 0, 0, 0) != 0) {
+        perror("prctl(PR_SET_KEEPCAPS, 0)")
+        throw Exception("Failed to clear PR_SET_KEEPCAPS: ${strerror(errno)?.toKString()}")
+    }
+}
+
+/**
+ * Apply bounding set capabilities
+ * This must be called BEFORE setuid/setgid (while still root)
+ * The bounding set limits which capabilities can be acquired
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun applyBoundingSet(capabilities: LinuxCapabilities) {
+    Logger.debug("applying bounding set capabilities")
+
+    // Parse bounding set from OCI spec
     val boundingCaps = parseCapabilities(capabilities.bounding)
-    val effectiveCaps = parseCapabilities(capabilities.effective)
-    val inheritableCaps = parseCapabilities(capabilities.inheritable)
-    val permittedCaps = parseCapabilities(capabilities.permitted)
-    val ambientCaps = parseCapabilities(capabilities.ambient)
 
-    // 1. Drop bounding capabilities
+    // Drop capabilities in bounding set before changing user
     if (capabilities.bounding != null) {
         Logger.debug("setting bounding capabilities: ${boundingCaps.map { it.capName }}")
         dropBoundingCapabilities(boundingCaps)
     }
 
-    // 2. Set effective, permitted, and inheritable capabilities
+    Logger.debug("bounding set applied successfully")
+}
+
+/**
+ * Apply effective, permitted, inheritable, and ambient capabilities
+ * This must be called AFTER setuid/setgid (as non-root user)
+ * Requires PR_SET_KEEPCAPS to be set before setuid
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun applyCapabilities(capabilities: LinuxCapabilities) {
+    Logger.debug("applying capability sets")
+
+    // Parse capability sets from OCI spec
+    val effectiveCaps = parseCapabilities(capabilities.effective)
+    val inheritableCaps = parseCapabilities(capabilities.inheritable)
+    val permittedCaps = parseCapabilities(capabilities.permitted)
+    val ambientCaps = parseCapabilities(capabilities.ambient)
+
+    // Set effective, permitted, and inheritable capabilities
     val effectiveMask = capabilitiesToMask(effectiveCaps).toUInt()
     val permittedMask = capabilitiesToMask(permittedCaps).toUInt()
     val inheritableMask = capabilitiesToMask(inheritableCaps).toUInt()
@@ -242,7 +283,7 @@ fun dropPrivileges(capabilities: LinuxCapabilities) {
 
     setCapabilities(effectiveMask, permittedMask, inheritableMask)
 
-    // 3. Set ambient capabilities (if specified)
+    // Set ambient capabilities (if specified)
     if (capabilities.ambient != null) {
         Logger.debug("setting ambient capabilities: ${ambientCaps.map { it.capName }}")
         setAmbientCapabilities(ambientCaps)

@@ -161,11 +161,20 @@ private fun initProcessInternal(
                 0
             }
 
-        // Apply capability restrictions before dropping privileges
-        // This must be done before setuid/setgid because some capability operations require root
+        // Apply capability restrictions following runc's order:
+        // 1. Apply bounding set (root privilege required)
+        // 2. Set PR_SET_KEEPCAPS to preserve capabilities across setuid
+        // 3. setgroups/setgid/setuid
+        // 4. Clear PR_SET_KEEPCAPS
+        // 5. Apply effective/permitted/inheritable/ambient capabilities (as non-root user)
         spec.process.capabilities?.let { capabilities ->
-            Logger.debug("applying capability restrictions")
-            capability.dropPrivileges(capabilities)
+            // Step 1: Apply bounding set before changing user (root privilege required)
+            Logger.debug("applying bounding set capabilities")
+            capability.applyBoundingSet(capabilities)
+
+            // Step 2: Set PR_SET_KEEPCAPS to preserve capabilities while we change users
+            Logger.debug("setting PR_SET_KEEPCAPS")
+            capability.setKeepCaps()
         }
 
         // Set additional groups (supplementary groups) before dropping privileges
@@ -194,6 +203,17 @@ private fun initProcessInternal(
             throw Exception("Failed to set UID to $targetUid")
         }
         Logger.debug("set UID=$targetUid GID=$targetGid for container process")
+
+        // Apply remaining capabilities after setuid
+        spec.process.capabilities?.let { capabilities ->
+            // Step 4: Clear PR_SET_KEEPCAPS
+            Logger.debug("clearing PR_SET_KEEPCAPS")
+            capability.clearKeepCaps()
+
+            // Step 5: Apply effective/permitted/inheritable/ambient capabilities
+            Logger.debug("applying effective/permitted/inheritable/ambient capabilities")
+            capability.applyCapabilities(capabilities)
+        }
 
         // Initialize seccomp filter if no_new_privileges IS set
         // With no_new_privileges, seccomp becomes unprivileged operation.
