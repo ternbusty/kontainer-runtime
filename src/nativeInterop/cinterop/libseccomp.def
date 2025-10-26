@@ -1,0 +1,15 @@
+headers = seccomp.h
+headerFilter = seccomp.h
+package = libseccomp
+compilerOpts = -I/usr/include -I/usr/include/x86_64-linux-gnu
+linkerOpts = -L/usr/lib/x86_64-linux-gnu -lseccomp
+
+---
+
+static inline uint32_t _SCMP_ACT_ERRNO(uint32_t x) {
+    return SCMP_ACT_ERRNO(x);
+}
+
+static inline uint32_t _SCMP_ACT_TRACE(uint32_t x) {
+    return SCMP_ACT_TRACE(x);
+}
