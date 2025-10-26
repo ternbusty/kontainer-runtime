@@ -90,35 +90,10 @@ private fun initProcessInternal(
         // This ensures proper session handling before Kotlin runtime starts
         Logger.debug("session already created by bootstrap.c (sid=${getsid(0)})")
 
-        // Set no_new_privileges if specified in the spec
-        // This prevents the process from gaining new privileges through execve
-        // (e.g., via setuid/setgid binaries or file capabilities)
-        // Note: Failure is not fatal
-        if (spec.process.noNewPrivileges == true) {
-            setNoNewPrivileges()
-        }
-
-        // Initialize seccomp filter early if no_new_privileges is NOT set
-        // Without no_new_privileges, seccomp is a privileged operation (requires CAP_SYS_ADMIN).
-        // We must do this before dropping capabilities/UID/GID.
-        if (spec.process.noNewPrivileges != true) {
-            spec.linux?.seccomp?.let { seccomp ->
-                Logger.debug("initializing seccomp filter (privileged path)")
-                val notifyFd = initializeSeccomp(seccomp)
-                Logger.info("seccomp filter initialized successfully")
-                syncSeccompNotifyFd(notifyFd, mainSender, initReceiver)
-            }
-        }
-
-        // Set hostname (within UTS namespace)
-        spec.hostname?.let { hostname ->
-            if (sethostname(hostname, hostname.length.toULong()) != 0) {
-                perror("sethostname")
-                Logger.warn("failed to set hostname")
-            } else {
-                Logger.debug("set hostname to $hostname")
-            }
-        }
+        // TODO: Setup network interfaces (setupNetwork)
+        // Call setupNetwork() here to bring up loopback interface
+        // This is needed for localhost (127.0.0.1) to work in the container
+        // See: runc/libcontainer/standard_init_linux.go:80
 
         // Prepare rootfs
         if (hasNamespace(spec.linux?.namespaces, "mount")) {
@@ -137,12 +112,7 @@ private fun initProcessInternal(
             Logger.debug("changed directory to $cwd")
         }
 
-        // Verify container operation
-        Logger.info("=== Container is ready ===")
-        Logger.debug("PID: ${getpid()}")
-        Logger.debug("CWD: $cwd")
-
-        // Execute container process
+        // Prepare environment and FD handling
         val processArgs = spec.process.args
         val processEnv = spec.process.env?.toMutableList() ?: mutableListOf()
 
@@ -161,7 +131,15 @@ private fun initProcessInternal(
                 0
             }
 
-        // Apply capability restrictions following runc's order:
+        // Set no_new_privileges if specified in the spec
+        // This prevents the process from gaining new privileges through execve
+        // (e.g., via setuid/setgid binaries or file capabilities)
+        // Must be set before applying capabilities
+        if (spec.process.noNewPrivileges == true) {
+            setNoNewPrivileges()
+        }
+
+        // Apply capability restrictions
         // 1. Apply bounding set (root privilege required)
         // 2. Set PR_SET_KEEPCAPS to preserve capabilities across setuid
         // 3. setgroups/setgid/setuid
@@ -215,17 +193,33 @@ private fun initProcessInternal(
             capability.applyCapabilities(capabilities)
         }
 
-        // Initialize seccomp filter if no_new_privileges IS set
-        // With no_new_privileges, seccomp becomes unprivileged operation.
-        // We do this after dropping privileges but before closing channels
-        // so we can send the notify FD to main process if needed.
-        if (spec.process.noNewPrivileges == true) {
-            spec.linux?.seccomp?.let { seccomp ->
-                Logger.debug("initializing seccomp filter (unprivileged path)")
-                val notifyFd = initializeSeccomp(seccomp)
-                Logger.info("seccomp filter initialized successfully")
-                syncSeccompNotifyFd(notifyFd, mainSender, initReceiver)
+        // TODO: Finalize rootfs (finalizeRootfs)
+        // 1. Remount tmpfs and /dev as readonly (if spec specifies MS_RDONLY)
+        // 2. Set rootfs (/) as readonly if spec.root.readonly == true
+        // 3. Set umask (default 0o022 or spec.process.umask)
+        // This is critical for readonly container security
+
+        // Set hostname and domainname (within UTS namespace)
+        spec.hostname?.let { hostname ->
+            if (sethostname(hostname, hostname.length.toULong()) != 0) {
+                perror("sethostname")
+                Logger.warn("failed to set hostname")
+            } else {
+                Logger.debug("set hostname to $hostname")
             }
+        }
+
+        // TODO: Apply AppArmor profile and SELinux label
+        // See: runc/libcontainer/standard_init_linux.go:114-124
+
+        // Initialize seccomp filter
+        // This must be done after capabilities and hostname, but before closing channels
+        // With no_new_privileges, seccomp is unprivileged; without it, requires CAP_SYS_ADMIN
+        spec.linux?.seccomp?.let { seccomp ->
+            Logger.debug("initializing seccomp filter")
+            val notifyFd = initializeSeccomp(seccomp)
+            Logger.info("seccomp filter initialized successfully")
+            syncSeccompNotifyFd(notifyFd, mainSender, initReceiver)
         }
 
         // Send init ready signal to main process
