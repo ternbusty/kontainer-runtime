@@ -148,51 +148,68 @@ fun prepareRootfs(rootfsPath: String) {
 
         // Mount /sys/fs/cgroup if cgroup v2 is available
         // This allows the container to read its cgroup information
-        // We bind mount the host's /sys/fs/cgroup instead of creating a new one
-        // because user namespaces don't have permission to create new cgroup filesystems
-        val cgroupPath = "$rootfsPath/sys/fs/cgroup"
+        // We bind mount the container's specific cgroup path instead of the whole /sys/fs/cgroup
+        // This emulates cgroup namespace behavior and allows the container to see its own cgroup
+        // See: runc/libcontainer/rootfs_linux.go:mountCgroupV2()
+        val cgroupMountPath = "$rootfsPath/sys/fs/cgroup"
         if (access("/sys/fs/cgroup/cgroup.controllers", F_OK) == 0) {
             // Host has cgroup v2
-            Logger.debug("bind mounting /sys/fs/cgroup (cgroup v2)")
+            Logger.debug("setting up /sys/fs/cgroup (cgroup v2)")
 
-            // Create directory if it doesn't exist
-            if (access(cgroupPath, F_OK) != 0) {
-                if (mkdir(cgroupPath, 0x1EDu) != 0) { // 0755
-                    val errNum = errno
-                    Logger.warn("failed to create /sys/fs/cgroup directory (errno=$errNum)")
-                }
-            }
+            // Get container's cgroup path from /proc/self/cgroup
+            val containerCgroupPath = getContainerCgroupPath()
+            if (containerCgroupPath != null) {
+                // Build full path: /sys/fs/cgroup + container's cgroup path
+                val cgroupSourcePath = "/sys/fs/cgroup$containerCgroupPath"
+                Logger.debug("container cgroup source path: $cgroupSourcePath")
 
-            // Step 1: Bind mount host's /sys/fs/cgroup
-            if (mountFs(
-                    source = "/sys/fs/cgroup",
-                    target = cgroupPath,
-                    fstype = null,
-                    flags = (MS_BIND or MS_REC).toULong(),
-                ) != 0
-            ) {
-                val errNum = errno
-                perror("bind mount /sys/fs/cgroup")
-                Logger.warn("failed to bind mount /sys/fs/cgroup (errno=$errNum)")
-                // Continue anyway - cgroup is not critical for container execution
-            } else {
-                Logger.debug("bind mounted /sys/fs/cgroup")
-
-                // Step 2: Remount as readonly
-                if (mountFs(
-                        source = null,
-                        target = cgroupPath,
-                        fstype = null,
-                        flags = (MS_BIND or MS_REMOUNT or MS_RDONLY or MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong(),
-                    ) != 0
-                ) {
-                    val errNum = errno
-                    perror("remount /sys/fs/cgroup readonly")
-                    Logger.warn("failed to remount /sys/fs/cgroup readonly (errno=$errNum)")
-                    // Continue anyway - readonly remount is best effort
+                // Check if the cgroup path exists
+                if (access(cgroupSourcePath, F_OK) != 0) {
+                    Logger.warn("container cgroup path does not exist: $cgroupSourcePath")
                 } else {
-                    Logger.debug("remounted /sys/fs/cgroup as readonly")
+                    // Create directory if it doesn't exist
+                    if (access(cgroupMountPath, F_OK) != 0) {
+                        if (mkdir(cgroupMountPath, 0x1EDu) != 0) { // 0755
+                            val errNum = errno
+                            Logger.warn("failed to create /sys/fs/cgroup directory (errno=$errNum)")
+                        }
+                    }
+
+                    // Step 1: Bind mount container's cgroup path to /sys/fs/cgroup
+                    // This makes the container see its own cgroup as the root
+                    if (mountFs(
+                            source = cgroupSourcePath,
+                            target = cgroupMountPath,
+                            fstype = null,
+                            flags = (MS_BIND or MS_REC).toULong(),
+                        ) != 0
+                    ) {
+                        val errNum = errno
+                        perror("bind mount $cgroupSourcePath")
+                        Logger.warn("failed to bind mount container cgroup (errno=$errNum)")
+                        // Continue anyway - cgroup is not critical for container execution
+                    } else {
+                        Logger.debug("bind mounted container cgroup to /sys/fs/cgroup")
+
+                        // Step 2: Remount as readonly
+                        if (mountFs(
+                                source = null,
+                                target = cgroupMountPath,
+                                fstype = null,
+                                flags = (MS_BIND or MS_REMOUNT or MS_RDONLY or MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong(),
+                            ) != 0
+                        ) {
+                            val errNum = errno
+                            perror("remount /sys/fs/cgroup readonly")
+                            Logger.warn("failed to remount /sys/fs/cgroup readonly (errno=$errNum)")
+                            // Continue anyway - readonly remount is best effort
+                        } else {
+                            Logger.debug("remounted /sys/fs/cgroup as readonly")
+                        }
+                    }
                 }
+            } else {
+                Logger.warn("could not determine container cgroup path, skipping /sys/fs/cgroup mount")
             }
         } else {
             Logger.debug("cgroup v2 not available on host, skipping /sys/fs/cgroup mount")
@@ -451,4 +468,43 @@ fun setRootfsReadonly() {
 
         Logger.debug("rootfs set as readonly (with existing flags)")
     }
+}
+
+/**
+ * Get container's cgroup v2 path from /proc/self/cgroup
+ * Returns the cgroup path (e.g., "/default/test-container") or null if not found
+ * See: runc/libcontainer/cgroups/utils.go
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun getContainerCgroupPath(): String? {
+    // Read /proc/self/cgroup
+    val fd = fopen("/proc/self/cgroup", "r")
+    if (fd == null) {
+        Logger.warn("failed to open /proc/self/cgroup")
+        return null
+    }
+
+    try {
+        memScoped {
+            val buffer = allocArray<ByteVar>(512)
+            while (fgets(buffer, 512, fd) != null) {
+                val line = buffer.toKString().trim()
+
+                // cgroup v2 format: "0::/path/to/cgroup"
+                // Look for line starting with "0::"
+                if (line.startsWith("0::")) {
+                    val cgroupPath = line.substring(3) // Remove "0::" prefix
+                    if (cgroupPath.isNotEmpty()) {
+                        Logger.debug("found container cgroup path: $cgroupPath")
+                        return cgroupPath
+                    }
+                }
+            }
+        }
+    } finally {
+        fclose(fd)
+    }
+
+    Logger.warn("cgroup v2 path not found in /proc/self/cgroup")
+    return null
 }
