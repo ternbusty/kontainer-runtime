@@ -6,7 +6,7 @@ plugins {
     id("org.jlleitschuh.gradle.ktlint") version "13.1.0"
 }
 
-group = "me.user"
+group = "com.ternbusty"
 version = "1.0-SNAPSHOT"
 val kotestVersion = "6.0.4"
 
@@ -131,13 +131,11 @@ kotlin {
         compilations.getByName("main").cinterops {
             val libseccomp by creating {}
             val socket by creating {}
-            val wait by creating {}
             val sched by creating {}
             val closerange by creating {}
-            val syscall by creating {}
-            val prctl by creating {}
             val capability by creating {}
             val bootstrap by creating {}
+            val prlimit by creating {}
         }
     }
 

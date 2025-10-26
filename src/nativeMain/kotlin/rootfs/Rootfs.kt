@@ -1,6 +1,6 @@
 package rootfs
 
-import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.*
 import logger.Logger
 import platform.posix.*
 import syscall.mount
@@ -12,6 +12,7 @@ const val MS_RDONLY = 1
 const val MS_NOSUID = 2
 const val MS_NODEV = 4
 const val MS_NOEXEC = 8
+const val MS_REMOUNT = 32
 const val MS_BIND = 4096
 const val MS_REC = 16384
 const val MS_SLAVE = 524288 // 1 << 19
@@ -124,7 +125,7 @@ fun prepareRootfs(rootfsPath: String) {
         }
         Logger.debug("mounted /dev")
 
-        // Create essential device nodes
+        // Create essential device nodes and mount /dev/shm
         createDeviceNodes(devPath)
     }
 
@@ -144,6 +145,75 @@ fun prepareRootfs(rootfsPath: String) {
             throw Exception("Failed to mount /sys (errno=$errNum)")
         }
         Logger.debug("mounted /sys")
+
+        // Mount /sys/fs/cgroup if cgroup v2 is available
+        // This allows the container to read its cgroup information
+        // We bind mount the container's specific cgroup path instead of the whole /sys/fs/cgroup
+        // This emulates cgroup namespace behavior and allows the container to see its own cgroup
+        // See: runc/libcontainer/rootfs_linux.go:mountCgroupV2()
+        val cgroupMountPath = "$rootfsPath/sys/fs/cgroup"
+        if (access("/sys/fs/cgroup/cgroup.controllers", F_OK) == 0) {
+            // Host has cgroup v2
+            Logger.debug("setting up /sys/fs/cgroup (cgroup v2)")
+
+            // Get container's cgroup path from /proc/self/cgroup
+            val containerCgroupPath = getContainerCgroupPath()
+            if (containerCgroupPath != null) {
+                // Build full path: /sys/fs/cgroup + container's cgroup path
+                val cgroupSourcePath = "/sys/fs/cgroup$containerCgroupPath"
+                Logger.debug("container cgroup source path: $cgroupSourcePath")
+
+                // Check if the cgroup path exists
+                if (access(cgroupSourcePath, F_OK) != 0) {
+                    Logger.warn("container cgroup path does not exist: $cgroupSourcePath")
+                } else {
+                    // Create directory if it doesn't exist
+                    if (access(cgroupMountPath, F_OK) != 0) {
+                        if (mkdir(cgroupMountPath, 0x1EDu) != 0) { // 0755
+                            val errNum = errno
+                            Logger.warn("failed to create /sys/fs/cgroup directory (errno=$errNum)")
+                        }
+                    }
+
+                    // Step 1: Bind mount container's cgroup path to /sys/fs/cgroup
+                    // This makes the container see its own cgroup as the root
+                    if (mountFs(
+                            source = cgroupSourcePath,
+                            target = cgroupMountPath,
+                            fstype = null,
+                            flags = (MS_BIND or MS_REC).toULong(),
+                        ) != 0
+                    ) {
+                        val errNum = errno
+                        perror("bind mount $cgroupSourcePath")
+                        Logger.warn("failed to bind mount container cgroup (errno=$errNum)")
+                        // Continue anyway - cgroup is not critical for container execution
+                    } else {
+                        Logger.debug("bind mounted container cgroup to /sys/fs/cgroup")
+
+                        // Step 2: Remount as readonly
+                        if (mountFs(
+                                source = null,
+                                target = cgroupMountPath,
+                                fstype = null,
+                                flags = (MS_BIND or MS_REMOUNT or MS_RDONLY or MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong(),
+                            ) != 0
+                        ) {
+                            val errNum = errno
+                            perror("remount /sys/fs/cgroup readonly")
+                            Logger.warn("failed to remount /sys/fs/cgroup readonly (errno=$errNum)")
+                            // Continue anyway - readonly remount is best effort
+                        } else {
+                            Logger.debug("remounted /sys/fs/cgroup as readonly")
+                        }
+                    }
+                }
+            } else {
+                Logger.warn("could not determine container cgroup path, skipping /sys/fs/cgroup mount")
+            }
+        } else {
+            Logger.debug("cgroup v2 not available on host, skipping /sys/fs/cgroup mount")
+        }
     }
 }
 
@@ -218,6 +288,32 @@ fun createDeviceNodes(devPath: String) {
     createDeviceNode("$devPath/random", "random")
     createDeviceNode("$devPath/urandom", "urandom")
     Logger.debug("finished creating device nodes in $devPath")
+
+    // Mount /dev/shm for shared memory (POSIX shm_open, etc.)
+    // See: runc/libcontainer/SPEC.md
+    val shmPath = "$devPath/shm"
+    if (access(shmPath, F_OK) != 0) {
+        // Create /dev/shm directory if it doesn't exist
+        if (mkdir(shmPath, 0x1FFu) != 0) { // 0x1FF = 0777 octal
+            val errNum = errno
+            Logger.warn("failed to create /dev/shm directory (errno=$errNum)")
+        }
+    }
+    if (mountFs(
+            source = "shm",
+            target = shmPath,
+            fstype = "tmpfs",
+            flags = (MS_NOSUID or MS_NOEXEC or MS_NODEV).toULong(),
+            data = "mode=1777,size=65536k",
+        ) != 0
+    ) {
+        val errNum = errno
+        perror("mount /dev/shm")
+        Logger.warn("failed to mount /dev/shm (errno=$errNum)")
+        // Continue anyway - shm is not critical for all containers
+    } else {
+        Logger.debug("mounted /dev/shm")
+    }
 }
 
 /**
@@ -317,4 +413,98 @@ fun chrootInto(newRoot: String) {
     }
 
     Logger.debug("successfully chrooted")
+}
+
+/**
+ * Set root filesystem as readonly
+ * This is called after pivot_root to make the container's root readonly
+ * See: runc/libcontainer/rootfs_linux.go:setReadonly()
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun setRootfsReadonly() {
+    Logger.debug("setting rootfs as readonly")
+
+    // Try MS_BIND | MS_REMOUNT | MS_RDONLY
+    var flags = (MS_BIND or MS_REMOUNT or MS_RDONLY).toULong()
+
+    if (mountFs(
+            source = null,
+            target = "/",
+            fstype = null,
+            flags = flags,
+        ) == 0
+    ) {
+        Logger.debug("rootfs set as readonly")
+        return
+    }
+
+    // If failed, get current mount flags and retry
+    // This is necessary because some filesystems require their existing flags
+    // to be preserved during remount
+    memScoped {
+        val st = alloc<platform.linux.statfs>()
+        if (platform.linux.statfs("/", st.ptr) != 0) {
+            val errNum = errno
+            perror("statfs /")
+            Logger.error("failed to statfs / (errno=$errNum)")
+            throw Exception("Failed to statfs / (errno=$errNum)")
+        }
+
+        // Add existing flags from statfs
+        flags = flags or st.f_flags.toULong()
+
+        if (mountFs(
+                source = null,
+                target = "/",
+                fstype = null,
+                flags = flags,
+            ) != 0
+        ) {
+            val errNum = errno
+            perror("remount / readonly")
+            Logger.error("failed to remount / as readonly (errno=$errNum)")
+            throw Exception("Failed to remount / as readonly (errno=$errNum)")
+        }
+
+        Logger.debug("rootfs set as readonly (with existing flags)")
+    }
+}
+
+/**
+ * Get container's cgroup v2 path from /proc/self/cgroup
+ * Returns the cgroup path (e.g., "/default/test-container") or null if not found
+ * See: runc/libcontainer/cgroups/utils.go
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun getContainerCgroupPath(): String? {
+    // Read /proc/self/cgroup
+    val fd = fopen("/proc/self/cgroup", "r")
+    if (fd == null) {
+        Logger.warn("failed to open /proc/self/cgroup")
+        return null
+    }
+
+    try {
+        memScoped {
+            val buffer = allocArray<ByteVar>(512)
+            while (fgets(buffer, 512, fd) != null) {
+                val line = buffer.toKString().trim()
+
+                // cgroup v2 format: "0::/path/to/cgroup"
+                // Look for line starting with "0::"
+                if (line.startsWith("0::")) {
+                    val cgroupPath = line.substring(3) // Remove "0::" prefix
+                    if (cgroupPath.isNotEmpty()) {
+                        Logger.debug("found container cgroup path: $cgroupPath")
+                        return cgroupPath
+                    }
+                }
+            }
+        }
+    } finally {
+        fclose(fd)
+    }
+
+    Logger.warn("cgroup v2 path not found in /proc/self/cgroup")
+    return null
 }

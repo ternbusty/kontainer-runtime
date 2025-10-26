@@ -32,12 +32,26 @@ data class Process(
     val noNewPrivileges: Boolean? = null,
     val user: User = User(),
     val capabilities: LinuxCapabilities? = null,
+    val rlimits: List<POSIXRlimit>? = null,
+    val umask: UInt? = null,
 )
 
 @Serializable
 data class User(
     val uid: UInt = 0u,
     val gid: UInt = 0u,
+    val additionalGids: List<UInt>? = null,
+)
+
+/**
+ * POSIX resource limits (rlimit)
+ * See https://man7.org/linux/man-pages/man2/getrlimit.2.html
+ */
+@Serializable
+data class POSIXRlimit(
+    val type: String, // e.g., "RLIMIT_NOFILE", "RLIMIT_NPROC"
+    val hard: ULong,
+    val soft: ULong,
 )
 
 /**

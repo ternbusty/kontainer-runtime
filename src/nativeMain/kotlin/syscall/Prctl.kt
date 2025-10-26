@@ -2,9 +2,9 @@ package syscall
 
 import kotlinx.cinterop.ExperimentalForeignApi
 import logger.Logger
-import platform.linux._PR_GET_DUMPABLE
-import platform.linux._PR_SET_DUMPABLE
-import platform.linux._PR_SET_NO_NEW_PRIVS
+import platform.linux.PR_GET_DUMPABLE
+import platform.linux.PR_SET_DUMPABLE
+import platform.linux.PR_SET_NO_NEW_PRIVS
 import platform.linux.__NR_prctl
 import platform.posix.errno
 import platform.posix.perror
@@ -39,7 +39,7 @@ fun setDumpable(dumpable: Boolean) {
     val result =
         syscall(
             __NR_prctl.toLong(),
-            _PR_SET_DUMPABLE().toLong(),
+            PR_SET_DUMPABLE.toLong(),
             arg,
             0L,
             0L,
@@ -65,7 +65,7 @@ fun getDumpable(): Boolean {
     val result =
         syscall(
             __NR_prctl.toLong(),
-            _PR_GET_DUMPABLE().toLong(),
+            PR_GET_DUMPABLE.toLong(),
             0L,
             0L,
             0L,
@@ -104,7 +104,7 @@ fun setNoNewPrivileges() {
     val result =
         syscall(
             __NR_prctl.toLong(),
-            _PR_SET_NO_NEW_PRIVS().toLong(),
+            PR_SET_NO_NEW_PRIVS.toLong(),
             1L, // arg2: 1 to set no_new_privs
             0L, // arg3: unused
             0L, // arg4: unused
