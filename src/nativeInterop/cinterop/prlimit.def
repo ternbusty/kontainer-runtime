@@ -1,0 +1,13 @@
+headers = sys/types.h sys/resource.h
+headerFilter = sys/resource.h
+package = platform.linux
+compilerOpts = -D_GNU_SOURCE
+
+---
+
+// prlimit() system call wrapper
+// See https://man7.org/linux/man-pages/man2/prlimit.2.html
+
+static inline int prlimit_wrapper(pid_t pid, int resource, const struct rlimit *new_limit, struct rlimit *old_limit) {
+    return prlimit(pid, resource, new_limit, old_limit);
+}

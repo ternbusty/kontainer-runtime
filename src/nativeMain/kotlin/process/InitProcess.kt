@@ -1,6 +1,5 @@
 package process
 
-import cgroup.setupCgroup
 import channel.InitReceiver
 import channel.MainSender
 import channel.NotifyListener
@@ -13,7 +12,7 @@ import rootfs.prepareRootfs
 import seccomp.initializeSeccomp
 import spec.Spec
 import syscall.closeRange
-import syscall.setDumpable
+import syscall.setAdditionalGroups
 import syscall.setNoNewPrivileges
 
 /**
@@ -51,56 +50,41 @@ private fun initProcessInternal(
         // All namespaces (user, mount, network, uts, ipc, pid) are unshared by bootstrap.c Stage-1
         // before the Kotlin runtime starts.
         //
-        // Stage-0 (bootstrap-parent): Forks Stage-1 and forwards Stage-2 PID to Create.kt
-        // Stage-1: Unshares ALL namespaces (single-threaded) → forks Stage-2 → exits
+        // Stage-0 (bootstrap-parent): Forks Stage-1 and handles UID/GID mapping protocol
+        // Stage-1: Unshares user namespace → requests mapping → waits for ack → becomes root in user NS
+        //          → unshares other namespaces → forks Stage-2 → exits
         // Stage-2: Starts Kotlin runtime (this process) → becomes container init via execve
         //
         // This design ensures:
+        // - User namespace is created FIRST (before other namespaces) to avoid SELinux bugs
+        // - UID/GID mapping is completed in Stage-1 (before other namespaces)
         // - All namespace unshare operations happen in single-threaded Stage-1
         // - Kotlin/Native GC threads (created after Stage-2 starts) don't interfere
         // - No multithreading issues (Linux kernel restrictions on unshare)
         // - This process runs as PID 1 in the new PID namespace
-        Logger.debug("all namespaces already unshared by Stage-1, running as PID 1")
+        Logger.debug("all namespaces already unshared by Stage-1, UID/GID mapping already done")
 
-        // Setup cgroup BEFORE entering user namespace
-        // At this point, we still have host root privileges (inherited from parent)
-        // This allows creation of cgroup directories in /sys/fs/cgroup/
-        setupCgroup(getpid(), spec.linux?.cgroupsPath, spec.linux?.resources)
+        // Cgroup setup is done by main process (MainProcess.kt) before syncing with this init process
+        // - Parent process (main) sets up cgroup for init PID before init continues
+        // - Parent has necessary privileges (runs in host namespace)
+        // - Prevents race conditions and cgroup escape
 
-        // Handle user namespace (created by bootstrap.c before Kotlin runtime started)
-        val hasUserNamespace = hasNamespace(spec.linux?.namespaces, "user")
-        Logger.debug("hasUserNamespace: $hasUserNamespace")
-        if (hasUserNamespace) {
-            // User namespace was already created by bootstrap.c (before Kotlin runtime started)
-            // This avoids the multithreading issue (Kotlin GC creates 3 threads)
-            Logger.debug("user namespace already created by bootstrap.c")
-
-            // Make process dumpable so parent can write to uid_map/gid_map
-            // See: https://man7.org/linux/man-pages/man7/user_namespaces.7.html
-            // "The parent process can write to the /proc/PID/uid_map and /proc/PID/gid_map
-            // files only if the child process has the PR_SET_DUMPABLE attribute set"
-            setDumpable(true)
-
-            // Send mapping request to main process
-            mainSender.identifierMappingRequest()
-            Logger.debug("sent mapping request")
-
-            // Wait for mapping completion from main process
-            initReceiver.waitForMappingAck()
-            Logger.debug("received mapping ack")
-
-            // Restore non-dumpable state after mapping is complete
-            setDumpable(false)
-
-            // Set UID/GID to 0 (root within user namespace)
-            if (setuid(0u) != 0 || setgid(0u) != 0) {
-                perror("setuid/setgid")
-                throw Exception("Failed to setuid/setgid")
-            }
-            Logger.debug("set UID/GID to 0 in user namespace")
-        } else {
-            Logger.debug("skipping user namespace setup (no user namespace configured)")
-        }
+        // User namespace mapping is already done by Stage-1
+        // Stage-1 performed the following steps:
+        // 1. unshare(CLONE_NEWUSER)
+        // 2. prctl(PR_SET_DUMPABLE, 1)
+        // 3. Sent mapping request to Stage-0
+        // 4. Stage-0 forwarded to Create.kt
+        // 5. Create.kt wrote uid_map/gid_map for Stage-1 process
+        // 6. Create.kt sent ack to Stage-0
+        // 7. Stage-0 forwarded ack to Stage-1
+        // 8. prctl(PR_SET_DUMPABLE, 0)
+        // 9. setuid(0) and setgid(0) in Stage-1
+        // 10. unshare other namespaces
+        //
+        // At this point, we are already root (UID 0, GID 0) in the user namespace
+        // We inherited this from Stage-1 when it forked Stage-2
+        Logger.debug("user namespace mapping already done by Stage-1, we are root in user NS")
 
         // Session creation (setsid) is already done by bootstrap.c Stage-2
         // This ensures proper session handling before Kotlin runtime starts
@@ -182,6 +166,16 @@ private fun initProcessInternal(
         spec.process.capabilities?.let { capabilities ->
             Logger.debug("applying capability restrictions")
             capability.dropPrivileges(capabilities)
+        }
+
+        // Set additional groups (supplementary groups) before dropping privileges
+        // This must be done before setgid/setuid
+        // Note: /proc/self/setgroups may be "deny" in unprivileged user namespace (Linux 3.19+)
+        spec.process.user.additionalGids?.let { additionalGids ->
+            if (additionalGids.isNotEmpty()) {
+                Logger.debug("setting ${additionalGids.size} additional groups")
+                setAdditionalGroups(additionalGids)
+            }
         }
 
         // Set UID/GID to spec.process.user values before executing container process

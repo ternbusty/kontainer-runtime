@@ -44,12 +44,12 @@ fun main(args: Array<String>): Unit =
             // Restore channel FDs from environment variables
             val mainSenderFdStr = getenv("_KONTAINER_MAIN_SENDER_FD")?.toKString()
             val initReceiverFdStr = getenv("_KONTAINER_INIT_RECEIVER_FD")?.toKString()
+            val notifyListenerFdStr = getenv("_KONTAINER_NOTIFY_LISTENER_FD")?.toKString()
             val bundlePath = getenv("_KONTAINER_BUNDLE_PATH")?.toKString()
             val rootfsPath = getenv("_KONTAINER_ROOTFS_PATH")?.toKString()
-            val notifySocketPath = getenv("_KONTAINER_NOTIFY_SOCKET")?.toKString()
 
-            if (mainSenderFdStr == null || initReceiverFdStr == null ||
-                bundlePath == null || rootfsPath == null || notifySocketPath == null
+            if (mainSenderFdStr == null || initReceiverFdStr == null || notifyListenerFdStr == null ||
+                bundlePath == null || rootfsPath == null
             ) {
                 Logger.error("missing required environment variables for init process")
                 exit(1)
@@ -58,8 +58,9 @@ fun main(args: Array<String>): Unit =
 
             val mainSenderFd = mainSenderFdStr.toIntOrNull()
             val initReceiverFd = initReceiverFdStr.toIntOrNull()
+            val notifyListenerFd = notifyListenerFdStr.toIntOrNull()
 
-            if (mainSenderFd == null || initReceiverFd == null) {
+            if (mainSenderFd == null || initReceiverFd == null || notifyListenerFd == null) {
                 Logger.error("invalid FD values in environment variables")
                 exit(1)
                 return
@@ -76,24 +77,15 @@ fun main(args: Array<String>): Unit =
                     return
                 }
 
-            // Recreate channel objects from FDs
+            // Recreate channel objects from FDs (inherited from parent process)
             val mainSender = MainSender(mainSenderFd)
             val initReceiver = InitReceiver(initReceiverFd)
-
-            // Recreate notify listener (inherits from parent process)
-            val notifyListener =
-                try {
-                    NotifyListener(notifySocketPath)
-                } catch (e: Exception) {
-                    Logger.error("failed to create notify listener: ${e.message ?: "unknown"}")
-                    exit(1)
-                    return
-                }
+            val notifyListener = NotifyListener(notifyListenerFd)
 
             val pid = getpid()
             Logger.info("init process (Stage-2, PID=$pid) started successfully via bootstrap.c")
             Logger.debug("bundle=$bundlePath, rootfs=$rootfsPath")
-            Logger.debug("restored channel FDs: main_sender=$mainSenderFd, init_receiver=$initReceiverFd")
+            Logger.debug("restored FDs: main_sender=$mainSenderFd, init_receiver=$initReceiverFd, notify_listener=$notifyListenerFd")
 
             // Run init process logic (Stage-2 / PID 1)
             // This will eventually call execve() and replace this process with the container process

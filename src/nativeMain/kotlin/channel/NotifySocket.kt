@@ -16,12 +16,13 @@ const val NOTIFY_FILE = "notify.sock"
  * Waits for start signal from the main process
  */
 @OptIn(ExperimentalForeignApi::class)
-class NotifyListener(
-    socketPath: String,
-) {
+class NotifyListener {
     private val socket: Int
 
-    init {
+    /**
+     * Constructor for creating a new socket (used by Create.kt)
+     */
+    constructor(socketPath: String) {
         Logger.debug("NotifyListener: creating socket at $socketPath")
 
         memScoped {
@@ -70,6 +71,19 @@ class NotifyListener(
             Logger.debug("NotifyListener: listening on $socketPath (fd=$socket)")
         }
     }
+
+    /**
+     * Constructor for reusing an existing socket FD (used by init process after fork)
+     */
+    constructor(fd: Int) {
+        Logger.debug("NotifyListener: reusing existing socket fd=$fd")
+        socket = fd
+    }
+
+    /**
+     * Get the socket FD (for passing to child process)
+     */
+    fun fd(): Int = socket
 
     /**
      * Wait for container start signal

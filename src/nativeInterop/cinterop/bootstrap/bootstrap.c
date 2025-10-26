@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+#include <sys/prctl.h>
 #include <sched.h>
 
 // Clone flags (in case not defined)
@@ -78,6 +79,8 @@ static pid_t clone_with_parent(jmp_buf *env, int jmpval) {
 
 // Synchronization protocol
 enum sync_t {
+    SYNC_USERMAP_PLS = 0x40,    /* Stage-1 requests UID/GID mapping */
+    SYNC_USERMAP_ACK = 0x41,    /* Stage-0 confirms mapping is complete */
     SYNC_GRANDCHILD = 0x44,     /* Stage-2 is ready to run */
     SYNC_CHILD_FINISH = 0x45,   /* Stage-2 has finished setup */
 };
@@ -190,13 +193,15 @@ void kontainer_bootstrap(void) {
         // This must be done while process is still single-threaded to avoid multithreading issues
         // See: https://man7.org/linux/man-pages/man2/unshare.2.html
         //
-        // 1. Unshare user namespace first (affects privileges)
-        // 2. Unshare other namespaces (mount, network, uts, ipc)
-        // 3. Unshare PID namespace last (requires fork to enter)
+        // 1. Unshare user namespace FIRST
+        // 2. Request UID/GID mapping from parent (wait for completion)
+        // 3. Become root in user namespace (setuid/setgid 0)
+        // 4. Unshare other namespaces (mount, network, uts, ipc)
+        // 5. Unshare PID namespace LAST
 
         fprintf(stderr, "[stage-1] Clone flags: 0x%x\n", config.clone_flags);
 
-        // Step 1: Unshare user namespace first
+        // Step 1: Unshare user namespace FIRST (if configured)
         if (config.clone_flags & CLONE_NEWUSER) {
             fprintf(stderr, "[stage-1] Unsharing user namespace (CLONE_NEWUSER)\n");
             if (unshare(CLONE_NEWUSER) < 0) {
@@ -205,9 +210,57 @@ void kontainer_bootstrap(void) {
                 _exit(1);
             }
             fprintf(stderr, "[stage-1] Successfully unshared user namespace\n");
+
+            // Step 2: Make process dumpable so parent can write to uid_map/gid_map
+            // See: man 7 user_namespaces
+            fprintf(stderr, "[stage-1] Setting dumpable to allow uid/gid mapping\n");
+            if (prctl(PR_SET_DUMPABLE, 1, 0, 0, 0) < 0) {
+                fprintf(stderr, "[stage-1] Failed to set dumpable: %s\n", strerror(errno));
+                _exit(1);
+            }
+
+            // Step 3: Request UID/GID mapping from Stage-0
+            fprintf(stderr, "[stage-1] Requesting UID/GID mapping from Stage-0\n");
+            enum sync_t s = SYNC_USERMAP_PLS;
+            if (write(sync_pipe[1], &s, sizeof(s)) != sizeof(s)) {
+                fprintf(stderr, "[stage-1] Failed to send mapping request: %s\n", strerror(errno));
+                _exit(1);
+            }
+
+            // Step 4: Wait for mapping completion from Stage-0
+            fprintf(stderr, "[stage-1] Waiting for mapping ack from Stage-0\n");
+            if (read(sync_pipe[1], &s, sizeof(s)) != sizeof(s)) {
+                fprintf(stderr, "[stage-1] Failed to read mapping ack: %s\n", strerror(errno));
+                _exit(1);
+            }
+            if (s != SYNC_USERMAP_ACK) {
+                fprintf(stderr, "[stage-1] Expected SYNC_USERMAP_ACK, got %u\n", s);
+                _exit(1);
+            }
+            fprintf(stderr, "[stage-1] Received mapping ack from Stage-0\n");
+
+            // Step 5: Restore non-dumpable state
+            fprintf(stderr, "[stage-1] Restoring non-dumpable state\n");
+            if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) < 0) {
+                fprintf(stderr, "[stage-1] Failed to restore dumpable: %s\n", strerror(errno));
+                _exit(1);
+            }
+
+            // Step 6: Become root in the user namespace
+            fprintf(stderr, "[stage-1] Becoming root in user namespace (setuid/setgid 0)\n");
+            if (setuid(0) < 0) {
+                fprintf(stderr, "[stage-1] Failed to setuid(0): %s\n", strerror(errno));
+                _exit(1);
+            }
+            if (setgid(0) < 0) {
+                fprintf(stderr, "[stage-1] Failed to setgid(0): %s\n", strerror(errno));
+                _exit(1);
+            }
+            fprintf(stderr, "[stage-1] Successfully became root in user namespace\n");
         }
 
-        // Step 2: Unshare other namespaces (mount, network, uts, ipc)
+        // Step 7: Unshare other namespaces (mount, network, uts, ipc)
+        // These must be done AFTER user namespace mapping is complete
         if (config.clone_flags & CLONE_NEWNS) {
             fprintf(stderr, "[stage-1] Unsharing mount namespace (CLONE_NEWNS)\n");
             if (unshare(CLONE_NEWNS) < 0) {
@@ -244,7 +297,7 @@ void kontainer_bootstrap(void) {
             }
         }
 
-        // Step 3: Unshare PID namespace last
+        // Step 8: Unshare PID namespace LAST
         // Note: unshare(CLONE_NEWPID) doesn't move the current process into the new PID namespace.
         // Only child processes created AFTER unshare will be in the new PID namespace.
         if (config.clone_flags & CLONE_NEWPID) {
@@ -362,6 +415,76 @@ void kontainer_bootstrap(void) {
     close(sync_grandchild_pipe[0]); // Close stage-2 read side, we only write
 
     fprintf(stderr, "[stage-0:bootstrap-parent] Forked stage-1, PID=%d\n", stage1_pid);
+
+    // Handle UID/GID mapping if user namespace is configured
+    // This is the critical path for user namespace setup:
+    // 1. Stage-1 creates user namespace and requests mapping
+    // 2. Stage-0 forwards the request to Create.kt
+    // 3. Create.kt writes uid_map/gid_map
+    // 4. Create.kt sends ack to Stage-0
+    // 5. Stage-0 forwards ack to Stage-1
+    // 6. Stage-1 continues with other namespaces
+    if (config.clone_flags & CLONE_NEWUSER) {
+        fprintf(stderr, "[stage-0:bootstrap-parent] User namespace configured, handling mapping\n");
+
+        // Wait for mapping request from Stage-1
+        enum sync_t s;
+        fprintf(stderr, "[stage-0:bootstrap-parent] Waiting for mapping request from Stage-1\n");
+        ssize_t n = read(sync_pipe[0], &s, sizeof(s));
+        if (n != sizeof(s)) {
+            fprintf(stderr, "[stage-0:bootstrap-parent] Failed to read mapping request: %s\n", strerror(errno));
+            nl_free(&config);
+            exit(1);
+        }
+        if (s != SYNC_USERMAP_PLS) {
+            fprintf(stderr, "[stage-0:bootstrap-parent] Expected SYNC_USERMAP_PLS, got %u\n", s);
+            nl_free(&config);
+            exit(1);
+        }
+        fprintf(stderr, "[stage-0:bootstrap-parent] Received mapping request from Stage-1\n");
+
+        // Forward mapping request to Create.kt (with Stage-1 PID)
+        fprintf(stderr, "[stage-0:bootstrap-parent] Forwarding mapping request to Create.kt\n");
+        s = SYNC_USERMAP_PLS;
+        if (write(create_sync_fd, &s, sizeof(s)) != sizeof(s)) {
+            fprintf(stderr, "[stage-0:bootstrap-parent] Failed to forward mapping request: %s\n", strerror(errno));
+            nl_free(&config);
+            exit(1);
+        }
+
+        // Send Stage-1 PID to Create.kt so it can write to /proc/<stage1_pid>/uid_map
+        fprintf(stderr, "[stage-0:bootstrap-parent] Sending Stage-1 PID=%d to Create.kt\n", stage1_pid);
+        if (write(create_sync_fd, &stage1_pid, sizeof(stage1_pid)) != sizeof(stage1_pid)) {
+            fprintf(stderr, "[stage-0:bootstrap-parent] Failed to send Stage-1 PID: %s\n", strerror(errno));
+            nl_free(&config);
+            exit(1);
+        }
+
+        // Wait for mapping ack from Create.kt
+        fprintf(stderr, "[stage-0:bootstrap-parent] Waiting for mapping ack from Create.kt\n");
+        n = read(create_sync_fd, &s, sizeof(s));
+        if (n != sizeof(s)) {
+            fprintf(stderr, "[stage-0:bootstrap-parent] Failed to read mapping ack: %s\n", strerror(errno));
+            nl_free(&config);
+            exit(1);
+        }
+        if (s != SYNC_USERMAP_ACK) {
+            fprintf(stderr, "[stage-0:bootstrap-parent] Expected SYNC_USERMAP_ACK, got %u\n", s);
+            nl_free(&config);
+            exit(1);
+        }
+        fprintf(stderr, "[stage-0:bootstrap-parent] Received mapping ack from Create.kt\n");
+
+        // Forward ack to Stage-1
+        fprintf(stderr, "[stage-0:bootstrap-parent] Forwarding mapping ack to Stage-1\n");
+        s = SYNC_USERMAP_ACK;
+        if (write(sync_pipe[0], &s, sizeof(s)) != sizeof(s)) {
+            fprintf(stderr, "[stage-0:bootstrap-parent] Failed to forward mapping ack: %s\n", strerror(errno));
+            nl_free(&config);
+            exit(1);
+        }
+        fprintf(stderr, "[stage-0:bootstrap-parent] Successfully completed UID/GID mapping protocol\n");
+    }
 
     // Receive stage-2 PID from stage-1
     pid_t stage2_pid;
