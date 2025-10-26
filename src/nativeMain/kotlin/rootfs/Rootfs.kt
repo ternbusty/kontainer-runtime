@@ -125,7 +125,7 @@ fun prepareRootfs(rootfsPath: String) {
         }
         Logger.debug("mounted /dev")
 
-        // Create essential device nodes
+        // Create essential device nodes and mount /dev/shm
         createDeviceNodes(devPath)
     }
 
@@ -271,6 +271,32 @@ fun createDeviceNodes(devPath: String) {
     createDeviceNode("$devPath/random", "random")
     createDeviceNode("$devPath/urandom", "urandom")
     Logger.debug("finished creating device nodes in $devPath")
+
+    // Mount /dev/shm for shared memory (POSIX shm_open, etc.)
+    // See: runc/libcontainer/SPEC.md
+    val shmPath = "$devPath/shm"
+    if (access(shmPath, F_OK) != 0) {
+        // Create /dev/shm directory if it doesn't exist
+        if (mkdir(shmPath, 0x1FFu) != 0) { // 0x1FF = 0777 octal
+            val errNum = errno
+            Logger.warn("failed to create /dev/shm directory (errno=$errNum)")
+        }
+    }
+    if (mountFs(
+            source = "shm",
+            target = shmPath,
+            fstype = "tmpfs",
+            flags = (MS_NOSUID or MS_NOEXEC or MS_NODEV).toULong(),
+            data = "mode=1777,size=65536k",
+        ) != 0
+    ) {
+        val errNum = errno
+        perror("mount /dev/shm")
+        Logger.warn("failed to mount /dev/shm (errno=$errNum)")
+        // Continue anyway - shm is not critical for all containers
+    } else {
+        Logger.debug("mounted /dev/shm")
+    }
 }
 
 /**
