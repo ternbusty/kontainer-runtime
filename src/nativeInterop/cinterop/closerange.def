@@ -5,7 +5,7 @@ compilerOpts = -D_GNU_SOURCE
 ---
 
 static inline long _SYS_close_range() {
-    return 436;  // syscall number for close_range on x86_64 Linux
+    return 436;  // syscall number for close_range on x86_64 and arm64 Linux
 }
 
 // close_range flags (from linux/close_range.h)

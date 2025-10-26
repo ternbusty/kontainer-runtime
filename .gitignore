@@ -31,6 +31,9 @@ bin/
 ### Kotlin Native
 *.klib
 
+### Generated files
+src/nativeInterop/cinterop/libseccomp.def
+
 ### NetBeans ###
 /nbproject/private/
 /nbbuild/

@@ -6,7 +6,7 @@ plugins {
     id("org.jlleitschuh.gradle.ktlint") version "13.1.0"
 }
 
-group = "me.user"
+group = "com.ternbusty"
 version = "1.0-SNAPSHOT"
 val kotestVersion = "6.0.4"
 
@@ -48,6 +48,41 @@ val generateBuildConfig by tasks.registering {
             object BuildConfig {
                 const val DEFAULT_LOG_LEVEL = "$defaultLogLevel"
             }
+            """.trimIndent(),
+        )
+    }
+}
+
+// Generate libseccomp.def with architecture-specific paths
+val generateLibseccompDef by tasks.registering {
+    val isArm64 = System.getProperty("os.arch") == "aarch64"
+    val archTriple = if (isArm64) "aarch64-linux-gnu" else "x86_64-linux-gnu"
+
+    // Track architecture as input
+    inputs.property("architecture", archTriple)
+
+    val outputDir = file("src/nativeInterop/cinterop")
+    val outputFile = file("$outputDir/libseccomp.def")
+    outputs.file(outputFile)
+
+    doLast {
+        outputFile.writeText(
+            """
+headers = seccomp.h
+headerFilter = seccomp.h
+package = libseccomp
+compilerOpts = -I/usr/include -I/usr/include/$archTriple
+linkerOpts = -L/usr/lib/$archTriple -lseccomp
+
+---
+
+static inline uint32_t _SCMP_ACT_ERRNO(uint32_t x) {
+    return SCMP_ACT_ERRNO(x);
+}
+
+static inline uint32_t _SCMP_ACT_TRACE(uint32_t x) {
+    return SCMP_ACT_TRACE(x);
+}
             """.trimIndent(),
         )
     }
@@ -117,6 +152,7 @@ kotlin {
     val nativeTarget =
         when {
             hostOs == "Linux" && !isArm64 -> linuxX64()
+            hostOs == "Linux" && isArm64 -> linuxArm64()
             else -> throw GradleException("Host OS is not supported in Kotlin/Native.")
         }
 
@@ -131,13 +167,12 @@ kotlin {
         compilations.getByName("main").cinterops {
             val libseccomp by creating {}
             val socket by creating {}
-            val wait by creating {}
             val sched by creating {}
             val closerange by creating {}
-            val syscall by creating {}
             val prctl by creating {}
             val capability by creating {}
             val bootstrap by creating {}
+            val prlimit by creating {}
         }
     }
 
@@ -160,6 +195,11 @@ kotlin {
         compilations["main"].compileTaskProvider.configure {
             dependsOn(generateBuildConfig)
         }
+    }
+
+    // Ensure libseccomp.def is generated before cinterop tasks
+    tasks.matching { it.name.contains("cinteropLibseccomp") }.configureEach {
+        dependsOn(generateLibseccompDef)
     }
 }
 
