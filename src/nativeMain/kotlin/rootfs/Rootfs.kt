@@ -12,6 +12,7 @@ const val MS_RDONLY = 1
 const val MS_NOSUID = 2
 const val MS_NODEV = 4
 const val MS_NOEXEC = 8
+const val MS_REMOUNT = 32
 const val MS_BIND = 4096
 const val MS_REC = 16384
 const val MS_SLAVE = 524288 // 1 << 19
@@ -144,6 +145,58 @@ fun prepareRootfs(rootfsPath: String) {
             throw Exception("Failed to mount /sys (errno=$errNum)")
         }
         Logger.debug("mounted /sys")
+
+        // Mount /sys/fs/cgroup if cgroup v2 is available
+        // This allows the container to read its cgroup information
+        // We bind mount the host's /sys/fs/cgroup instead of creating a new one
+        // because user namespaces don't have permission to create new cgroup filesystems
+        val cgroupPath = "$rootfsPath/sys/fs/cgroup"
+        if (access("/sys/fs/cgroup/cgroup.controllers", F_OK) == 0) {
+            // Host has cgroup v2
+            Logger.debug("bind mounting /sys/fs/cgroup (cgroup v2)")
+
+            // Create directory if it doesn't exist
+            if (access(cgroupPath, F_OK) != 0) {
+                if (mkdir(cgroupPath, 0x1EDu) != 0) { // 0755
+                    val errNum = errno
+                    Logger.warn("failed to create /sys/fs/cgroup directory (errno=$errNum)")
+                }
+            }
+
+            // Step 1: Bind mount host's /sys/fs/cgroup
+            if (mountFs(
+                    source = "/sys/fs/cgroup",
+                    target = cgroupPath,
+                    fstype = null,
+                    flags = (MS_BIND or MS_REC).toULong(),
+                ) != 0
+            ) {
+                val errNum = errno
+                perror("bind mount /sys/fs/cgroup")
+                Logger.warn("failed to bind mount /sys/fs/cgroup (errno=$errNum)")
+                // Continue anyway - cgroup is not critical for container execution
+            } else {
+                Logger.debug("bind mounted /sys/fs/cgroup")
+
+                // Step 2: Remount as readonly
+                if (mountFs(
+                        source = null,
+                        target = cgroupPath,
+                        fstype = null,
+                        flags = (MS_BIND or MS_REMOUNT or MS_RDONLY or MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong(),
+                    ) != 0
+                ) {
+                    val errNum = errno
+                    perror("remount /sys/fs/cgroup readonly")
+                    Logger.warn("failed to remount /sys/fs/cgroup readonly (errno=$errNum)")
+                    // Continue anyway - readonly remount is best effort
+                } else {
+                    Logger.debug("remounted /sys/fs/cgroup as readonly")
+                }
+            }
+        } else {
+            Logger.debug("cgroup v2 not available on host, skipping /sys/fs/cgroup mount")
+        }
     }
 }
 
