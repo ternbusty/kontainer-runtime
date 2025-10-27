@@ -30,13 +30,13 @@ sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe start test
 To get the status of the container
 
 ```bash
-sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe status test
+sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe state test
 ```
 
 To stop the container
 
 ```bash
-sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe stop test
+sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe kill test SIGKILL
 ```
 
 To delete the container
