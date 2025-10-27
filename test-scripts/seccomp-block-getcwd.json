@@ -11,7 +11,7 @@
         "getcwd"
       ],
       "action": "SCMP_ACT_ERRNO",
-      "comment": "Kill process if getcwd syscall is called to demonstrate seccomp is working"
+      "comment": "Block getcwd syscall"
     }
   ]
 }
