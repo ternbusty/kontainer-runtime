@@ -63,42 +63,26 @@ val buildBootstrap by tasks.registering(Exec::class) {
         file("build/bootstrap").mkdirs()
     }
 
-    // Compile netlink.c
+    // Compile bootstrap.c
     commandLine(
         "gcc",
         "-c",
         "-fPIC",
         "-Wall",
         "-Wextra",
-        "netlink.c",
+        "bootstrap.c",
         "-o",
-        "build/netlink.o",
+        "build/bootstrap.o",
     )
 
-    // Compile bootstrap.c and create static library
+    // Create static library and copy to build/bootstrap for linking
     doLast {
-        exec {
-            workingDir = file("src/nativeInterop/cinterop/bootstrap")
-            commandLine(
-                "gcc",
-                "-c",
-                "-fPIC",
-                "-Wall",
-                "-Wextra",
-                "bootstrap.c",
-                "-o",
-                "build/bootstrap.o",
-            )
-        }
-
-        // Create static library
         exec {
             workingDir = file("src/nativeInterop/cinterop/bootstrap")
             commandLine(
                 "ar",
                 "rcs",
                 "build/libbootstrap.a",
-                "build/netlink.o",
                 "build/bootstrap.o",
             )
         }
