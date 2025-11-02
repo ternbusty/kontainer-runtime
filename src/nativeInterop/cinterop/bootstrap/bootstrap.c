@@ -31,7 +31,7 @@
 #endif
 
 // Environment variable names
-#define ENV_INITPIPE "_KONTAINER_INITPIPE"
+#define ENV_IS_BOOTSTRAP "_KONTAINER_IS_BOOTSTRAP"
 #define ENV_IS_INIT "_KONTAINER_IS_INIT"
 #define ENV_SYNCPIPE "_KONTAINER_SYNCPIPE"
 #define ENV_CLONE_FLAGS "_KONTAINER_CLONE_FLAGS"
@@ -80,18 +80,14 @@ static unsigned int getenv_uint_hex(const char *name) {
  */
 __attribute__((constructor))
 void kontainer_bootstrap(void) {
-    int pipenum;
     int sync_fd;
     int sync_pipe[2];
     pid_t stage2_pid = -1;
     enum sync_t s;
     unsigned int clone_flags;
 
-    // Check for init pipe file descriptor
-    pipenum = getenv_int(ENV_INITPIPE);
-
-    // If no init pipe, this is a normal execution (e.g., running tests)
-    if (pipenum < 0) {
+    // Check if bootstrap mode is enabled
+    if (!getenv(ENV_IS_BOOTSTRAP)) {
         return;
     }
 

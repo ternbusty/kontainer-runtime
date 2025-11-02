@@ -107,29 +107,10 @@ fun create(
         }
         Logger.debug("created sync socketpair: parent_fd=${syncFds[0]}, child_fd=${syncFds[1]}")
 
-        // Create init pipe (used as a flag to trigger bootstrap mode)
-        // bootstrap.c checks _KONTAINER_INITPIPE environment variable to determine if it should run
-        val initPipe = IntArray(2)
-        initPipe.usePinned { pinned ->
-            if (pipe(pinned.addressOf(0)) < 0) {
-                perror("pipe")
-                Logger.error("Failed to create init pipe")
-                close(syncFds[0])
-                close(syncFds[1])
-                notifyListener.close()
-                exit(1)
-            }
-        }
-        Logger.debug("created init pipe: read=${initPipe[0]}, write=${initPipe[1]}")
-
         // Calculate clone flags from OCI spec namespaces
         // These flags will be passed to bootstrap.c via environment variable
         val cloneFlags = calculateCloneFlags(spec.linux?.namespaces)
         Logger.debug("calculated clone_flags: 0x${cloneFlags.toString(16)}")
-
-        // Close write end of init pipe (no longer used for netlink messages)
-        // Init pipe is kept only as a flag to trigger bootstrap mode
-        close(initPipe[1])
 
         // Get current executable path (in parent process, before fork)
         val exePathBuf = allocArray<ByteVar>(4096)
@@ -137,7 +118,6 @@ fun create(
         if (exePathLen < 0) {
             perror("readlink")
             Logger.error("Failed to read executable path")
-            close(initPipe[0])
             close(syncFds[0])
             close(syncFds[1])
             notifyListener.close()
@@ -160,7 +140,6 @@ fun create(
             -1 -> {
                 perror("fork")
                 Logger.error("Failed to fork")
-                close(initPipe[0])
                 close(syncFds[0])
                 close(syncFds[1])
                 notifyListener.close()
@@ -175,7 +154,6 @@ fun create(
                 close(syncFds[0])
 
                 // Set environment variables
-                val initPipeStr = initPipe[0].toString()
                 val syncPipeStr = syncFds[1].toString()
 
                 // Pass channel FDs to init process (Stage-2)
@@ -186,7 +164,8 @@ fun create(
                 // Set clone flags as hex string (e.g., "10000000" for CLONE_NEWUSER)
                 val cloneFlagsHex = cloneFlags.toUInt().toString(16)
                 setenv("_KONTAINER_CLONE_FLAGS", cloneFlagsHex, 1)
-                setenv("_KONTAINER_INITPIPE", initPipeStr, 1)
+                // Enable bootstrap mode
+                setenv("_KONTAINER_IS_BOOTSTRAP", "1", 1)
                 setenv("_KONTAINER_SYNCPIPE", syncPipeStr, 1)
                 setenv("_KONTAINER_MAIN_SENDER_FD", mainSenderFd, 1)
                 setenv("_KONTAINER_INIT_RECEIVER_FD", initReceiverFd, 1)
@@ -216,7 +195,6 @@ fun create(
 
                 // Close child side of sync socketpair
                 close(syncFds[1])
-                close(initPipe[0])
 
                 Logger.debug("forked Stage-1, PID=$stage1Pid, waiting for bootstrap to complete")
 
