@@ -3,8 +3,8 @@ package config
 import kotlinx.cinterop.*
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import logger.Logger
+import utils.JsonCodec
 import utils.readJsonFile
 import utils.writeJsonFile
 
@@ -42,7 +42,7 @@ fun saveKontainerConfig(
 
     Logger.debug("saving kontainer config to $configPath")
 
-    val jsonString = ConfigCodec.encode(config)
+    val jsonString = JsonCodec.PrettyPrint.encode(config)
     writeJsonFile(configPath, jsonString)
 
     Logger.debug("saved kontainer config")
@@ -66,35 +66,7 @@ fun loadKontainerConfig(
 
     Logger.debug("loading kontainer config from $configPath")
 
-    return readJsonFile(configPath, ConfigCodec::decode)
-}
-
-/**
- * JSON codec for KontainerConfig serialization/deserialization
- *
- * Provides centralized JSON configuration for encoding and decoding internal config.
- */
-object ConfigCodec {
-    private val json =
-        Json {
-            prettyPrint = true
-            encodeDefaults = false
-            ignoreUnknownKeys = true
-        }
-
-    /**
-     * Encode config to JSON string
-     *
-     * @param config KontainerConfig to encode
-     * @return JSON string
-     */
-    fun encode(config: KontainerConfig): String = json.encodeToString(config)
-
-    /**
-     * Decode JSON string to KontainerConfig
-     *
-     * @param text JSON string
-     * @return KontainerConfig object
-     */
-    fun decode(text: String): KontainerConfig = json.decodeFromString(text)
+    return readJsonFile(configPath) { json ->
+        JsonCodec.PrettyPrint.decode<KontainerConfig>(json)
+    }
 }

@@ -5,7 +5,7 @@ import logger.Logger
 import platform.linux.*
 import platform.posix.*
 import state.State
-import state.StateCodec
+import utils.JsonCodec
 
 /**
  * SeccompListener handles sending seccomp notify FD to external listener
@@ -72,7 +72,7 @@ fun sendToSeccompListener(
         Logger.debug("connected to seccomp listener")
 
         // Send container state as JSON (compact format for network transmission)
-        val stateJson = StateCodec.encode(state, pretty = false) + "\n"
+        val stateJson = JsonCodec.Compact.encode(state) + "\n"
         val stateBytes = stateJson.encodeToByteArray()
 
         memScoped {

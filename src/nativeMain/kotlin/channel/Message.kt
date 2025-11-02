@@ -1,7 +1,6 @@
 package channel
 
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 
 /**
  * Messages exchanged between main and init processes
@@ -36,19 +35,4 @@ sealed class Message {
     data class OtherError(
         val error: String,
     ) : Message()
-}
-
-/**
- * JSON encoder/decoder for Message
- */
-object MessageCodec {
-    private val json =
-        Json {
-            ignoreUnknownKeys = true
-            isLenient = true
-        }
-
-    fun encode(message: Message): String = json.encodeToString(message)
-
-    fun decode(text: String): Message = json.decodeFromString(text)
 }

@@ -3,9 +3,9 @@ package command
 import kotlinx.cinterop.ExperimentalForeignApi
 import logger.Logger
 import platform.posix.exit
-import state.StateCodec
 import state.loadState
 import state.refreshStatus
+import utils.JsonCodec
 
 /**
  * State command - Displays the state of a container
@@ -35,7 +35,7 @@ fun state(
 
     // Output state as JSON to stdout (OCI Runtime Spec requirement)
     try {
-        println(StateCodec.encode(state))
+        println(JsonCodec.PrettyPrint.encode(state))
     } catch (e: Exception) {
         Logger.error("failed to serialize state: ${e.message ?: "unknown"}")
         exit(1)

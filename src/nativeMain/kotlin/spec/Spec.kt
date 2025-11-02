@@ -2,7 +2,7 @@ package spec
 
 import kotlinx.cinterop.*
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
+import utils.JsonCodec
 import utils.readJsonFile
 
 /**
@@ -175,18 +175,10 @@ data class Linux(
  */
 @OptIn(ExperimentalForeignApi::class)
 fun loadSpec(configPath: String): Spec {
-    // JSON parser with lenient settings for OCI spec
-    val jsonParser =
-        Json {
-            ignoreUnknownKeys = true
-            isLenient = true
-            coerceInputValues = true
-        }
-
     // Read and parse JSON file
     val spec =
         readJsonFile(configPath) { json ->
-            jsonParser.decodeFromString<Spec>(json)
+            JsonCodec.Spec.decode<Spec>(json)
         }
 
     // Validate process.args is not empty (kotlinx.serialization doesn't check this)

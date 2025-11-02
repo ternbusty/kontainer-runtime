@@ -3,6 +3,7 @@ package channel
 import kotlinx.cinterop.*
 import platform.linux.*
 import platform.posix.*
+import utils.JsonCodec
 
 /*
  * Each of the main, intermediate, and init process will have a uni-directional
@@ -32,7 +33,7 @@ private fun sendMessage(
     socket: Int,
     message: Message,
 ) {
-    val json = MessageCodec.encode(message)
+    val json = JsonCodec.Message.encode(message)
     val bytes = json.encodeToByteArray()
 
     memScoped {
@@ -63,7 +64,7 @@ private fun receiveMessage(socket: Int): Message {
 
         buffer[received.toInt()] = 0
         val json = buffer.toKString()
-        return MessageCodec.decode(json)
+        return JsonCodec.Message.decode<Message>(json)
     }
 }
 
@@ -76,7 +77,7 @@ private fun sendMessageWithFd(
     message: Message,
     fd: Int,
 ) {
-    val json = MessageCodec.encode(message)
+    val json = JsonCodec.Message.encode(message)
     val bytes = json.encodeToByteArray()
 
     memScoped {
@@ -159,7 +160,7 @@ private fun receiveMessageWithFd(socket: Int): Pair<Message, Int> {
         // Extract message data
         buffer[received.toInt()] = 0
         val json = buffer.toKString()
-        val message = MessageCodec.decode(json)
+        val message = JsonCodec.Message.decode<Message>(json)
 
         // Extract file descriptor from control message
         var receivedFd = -1
