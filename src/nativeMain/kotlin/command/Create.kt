@@ -1,26 +1,17 @@
 package command
 
-import cgroup.setupCgroup
 import channel.NotifyListener
 import channel.initChannel
 import channel.mainChannel
-import config.KontainerConfig
-import config.saveKontainerConfig
 import kotlinx.cinterop.*
 import logger.Logger
 import namespace.calculateCloneFlags
-import namespace.hasNamespace
 import platform.linux.PR_SET_CHILD_SUBREAPER
 import platform.linux.prctl
 import platform.posix.*
 import process.runMainProcess
 import spec.loadSpec
-import state.ContainerStatus
 import state.containerExists
-import state.createState
-import state.save
-import syscall.applyRlimits
-import utils.writeText
 
 /**
  * Create command - Creates a new container
@@ -198,256 +189,20 @@ fun create(
 
                 Logger.debug("forked Stage-1, PID=$stage1Pid, waiting for bootstrap to complete")
 
-                // Setup cgroup for Stage-1 BEFORE syncing with child
-                // Stage-1 → Stage-2 are both included in the cgroup (inherited through fork)
-                try {
-                    setupCgroup(stage1Pid, spec.linux?.cgroupsPath, spec.linux?.resources)
-                } catch (e: Exception) {
-                    Logger.error("failed to setup cgroup: ${e.message ?: "unknown"}")
-                    close(syncFds[0])
-                    notifyListener.close()
-                    exit(1)
-                }
-
-                // Apply rlimits to Stage-1 BEFORE entering user namespace
-                // Rlimits are inherited: Stage-1 → Stage-2
-                applyRlimits(stage1Pid, spec.process.rlimits)
-
-                // Handle UID/GID mapping if user namespace is configured
-                // This must be done BEFORE receiving Stage-2 PID, as Stage-1 waits for mapping completion
-                // before forking Stage-2
-                val hasUserNamespace = hasNamespace(spec.linux?.namespaces, "user")
-                if (hasUserNamespace) {
-                    Logger.debug("user namespace configured, handling UID/GID mapping")
-
-                    // Wait for mapping request from Stage-1
-                    // Note: enum sync_t is 4 bytes (int) in C
-                    val requestBytes = ByteArray(4)
-                    requestBytes.usePinned { pinned ->
-                        val n = read(syncFds[0], pinned.addressOf(0), 4u)
-                        if (n != 4L) {
-                            perror("read")
-                            Logger.error("Failed to read mapping request from Stage-1 (received $n bytes)")
-                            close(syncFds[0])
-                            notifyListener.close()
-                            exit(1)
-                        }
-                        val requestValue =
-                            (requestBytes[0].toInt() and 0xFF) or
-                                ((requestBytes[1].toInt() and 0xFF) shl 8) or
-                                ((requestBytes[2].toInt() and 0xFF) shl 16) or
-                                ((requestBytes[3].toInt() and 0xFF) shl 24)
-                        if (requestValue != 0x40) { // SYNC_USERMAP_PLS = 0x40
-                            Logger.error("Invalid mapping request: expected 0x40, got 0x${requestValue.toString(16)}")
-                            close(syncFds[0])
-                            notifyListener.close()
-                            exit(1)
-                        }
-                    }
-                    Logger.debug("received mapping request from Stage-1")
-
-                    // UID/GID mapping protocol:
-                    // 1. Stage-1 sends SYNC_USERMAP_PLS (mapping request)
-                    // 2. Stage-1 sends its own PID (4 bytes, int32)
-                    // 3. Create.kt writes to /proc/<stage1_pid>/uid_map and gid_map
-                    // 4. Create.kt sends SYNC_USERMAP_ACK (mapping acknowledgment)
-                    // (see bootstrap.c:147-172 for the Stage-1 side)
-
-                    // Read Stage-1 PID from bootstrap
-                    val bootstrapPidBytes = ByteArray(4)
-                    bootstrapPidBytes.usePinned { pinned ->
-                        val n = read(syncFds[0], pinned.addressOf(0), 4u)
-                        if (n != 4L) {
-                            perror("read")
-                            Logger.error("Failed to read bootstrap PID from Stage-1 (received $n bytes)")
-                            close(syncFds[0])
-                            notifyListener.close()
-                            exit(1)
-                        }
-                    }
-                    val bootstrapPid =
-                        (bootstrapPidBytes[0].toInt() and 0xFF) or
-                            ((bootstrapPidBytes[1].toInt() and 0xFF) shl 8) or
-                            ((bootstrapPidBytes[2].toInt() and 0xFF) shl 16) or
-                            ((bootstrapPidBytes[3].toInt() and 0xFF) shl 24)
-                    Logger.debug("received bootstrap PID from Stage-1: $bootstrapPid")
-
-                    // Get UID/GID mappings from spec
-                    val uidMappings = spec.linux?.uidMappings
-                    val gidMappings = spec.linux?.gidMappings
-
-                    // Build uid_map content
-                    val uidMap =
-                        if (!uidMappings.isNullOrEmpty()) {
-                            uidMappings.joinToString("\n") { mapping ->
-                                "${mapping.containerID} ${mapping.hostID} ${mapping.size}"
-                            } + "\n"
-                        } else {
-                            // Fallback: map container root to current effective UID
-                            val hostUid = geteuid()
-                            "0 $hostUid 1\n"
-                        }
-
-                    // Build gid_map content
-                    val gidMap =
-                        if (!gidMappings.isNullOrEmpty()) {
-                            gidMappings.joinToString("\n") { mapping ->
-                                "${mapping.containerID} ${mapping.hostID} ${mapping.size}"
-                            } + "\n"
-                        } else {
-                            // Fallback: map container root to current effective GID
-                            val hostGid = getegid()
-                            "0 $hostGid 1\n"
-                        }
-
-                    Logger.debug("constructed uidMap: ${uidMap.trim()}")
-                    Logger.debug("constructed gidMap: ${gidMap.trim()}")
-
-                    // Determine if we need to write to setgroups
-                    val isPrivileged = geteuid() == 0u
-                    Logger.debug("privileged mode: $isPrivileged (euid=${geteuid()})")
-
-                    try {
-                        if (!isPrivileged) {
-                            // Disable setgroups for unprivileged user namespaces (CVE-2014-8989)
-                            Logger.debug("disabling setgroups for pid $bootstrapPid")
-                            writeText("/proc/$bootstrapPid/setgroups", "deny\n")
-                        } else {
-                            Logger.debug("skipping setgroups write (running as root)")
-                        }
-
-                        Logger.debug("writing uid_map for pid $bootstrapPid")
-                        writeText("/proc/$bootstrapPid/uid_map", uidMap)
-
-                        Logger.debug("writing gid_map for pid $bootstrapPid")
-                        writeText("/proc/$bootstrapPid/gid_map", gidMap)
-
-                        Logger.debug("successfully wrote UID/GID mappings")
-                    } catch (e: Exception) {
-                        Logger.error("failed to write UID/GID mappings: ${e.message ?: "unknown"}")
-                        close(syncFds[0])
-                        notifyListener.close()
-                        exit(1)
-                    }
-
-                    // Send mapping ack to Stage-1
-                    // Note: enum sync_t is 4 bytes (int) in C
-                    val ackValue = 0x41 // SYNC_USERMAP_ACK = 0x41
-                    val ackBytes =
-                        byteArrayOf(
-                            (ackValue and 0xFF).toByte(),
-                            ((ackValue shr 8) and 0xFF).toByte(),
-                            ((ackValue shr 16) and 0xFF).toByte(),
-                            ((ackValue shr 24) and 0xFF).toByte(),
-                        )
-                    ackBytes.usePinned { pinned ->
-                        val n = write(syncFds[0], pinned.addressOf(0), 4u)
-                        if (n != 4L) {
-                            perror("write")
-                            Logger.error("Failed to send mapping ack to Stage-1")
-                            close(syncFds[0])
-                            notifyListener.close()
-                            exit(1)
-                        }
-                    }
-                    Logger.debug("sent mapping ack to Stage-1")
-                }
-
-                // Wait for Stage-2 PID from bootstrap
-                val receivedPidBytes = ByteArray(4)
-                receivedPidBytes.usePinned { pinned ->
-                    val n = read(syncFds[0], pinned.addressOf(0), 4u)
-                    if (n < 0) {
-                        perror("read")
-                        Logger.error("Failed to read PID from sync pipe")
-                        close(syncFds[0])
-                        notifyListener.close()
-                        exit(1)
-                    }
-                    if (n.toLong() != 4L) {
-                        Logger.error("Incomplete read from sync pipe: got $n bytes")
-                        close(syncFds[0])
-                        notifyListener.close()
-                        exit(1)
-                    }
-                }
-
-                // Decode PID from bytes (little-endian)
-                val stage2Pid =
-                    (receivedPidBytes[0].toInt() and 0xFF) or
-                        ((receivedPidBytes[1].toInt() and 0xFF) shl 8) or
-                        ((receivedPidBytes[2].toInt() and 0xFF) shl 16) or
-                        ((receivedPidBytes[3].toInt() and 0xFF) shl 24)
-
-                Logger.debug("received Stage-2 PID from bootstrap: $stage2Pid")
-
-                close(syncFds[0])
-
-                // Close senders and receivers that this process doesn't need
-                // Keep mainReceiver and initSender - will be used to communicate with Stage-2
-                mainSender.close()
-                initReceiver.close()
-
-                // Close notify listener in main process (only used by Stage-2)
-                notifyListener.close()
-
-                val initPid =
-                    runMainProcess(
-                        spec,
-                        containerId,
-                        bundlePath,
-                        stage2Pid,
-                        mainReceiver,
-                        initSender,
-                    )
-
-                // Save container state for start command
-                Logger.debug("saving container state")
-                try {
-                    val state =
-                        createState(
-                            ociVersion = spec.ociVersion,
-                            containerId = containerId,
-                            status = ContainerStatus.CREATED,
-                            pid = initPid,
-                            bundle = bundlePath,
-                            annotations = null,
-                        )
-                    state.save(rootPath)
-                } catch (e: Exception) {
-                    Logger.error("failed to save container state: ${e.message ?: "unknown"}")
-                    exit(1)
-                }
-
-                // Save internal configuration (independent of bundle)
-                Logger.debug("saving kontainer config")
-                try {
-                    val kontainerConfig =
-                        KontainerConfig(
-                            cgroupPath = spec.linux?.cgroupsPath,
-                        )
-                    saveKontainerConfig(kontainerConfig, rootPath, containerId)
-                } catch (e: Exception) {
-                    Logger.error("failed to save kontainer config: ${e.message ?: "unknown"}")
-                    exit(1)
-                }
-
-                // Write PID to file if --pid-file was specified
-                if (pidFile != null) {
-                    Logger.debug("writing PID to file: $pidFile")
-                    try {
-                        writeText(pidFile, "$initPid")
-                        Logger.debug("successfully wrote PID $initPid to $pidFile")
-                    } catch (e: Exception) {
-                        Logger.error("failed to write PID file: ${e.message ?: "unknown"}")
-                        exit(1)
-                    }
-                }
-
-                Logger.info("container $containerId created with init PID $initPid")
-                Logger.info("run 'kontainer-runtime start $containerId' to start the container")
-
-                exit(0)
+                runMainProcess(
+                    stage1Pid = stage1Pid,
+                    syncFd = syncFds[0],
+                    spec = spec,
+                    containerId = containerId,
+                    bundlePath = bundlePath,
+                    rootPath = rootPath,
+                    pidFile = pidFile,
+                    notifyListener = notifyListener,
+                    mainSender = mainSender,
+                    mainReceiver = mainReceiver,
+                    initSender = initSender,
+                    initReceiver = initReceiver,
+                )
             }
         }
     }
