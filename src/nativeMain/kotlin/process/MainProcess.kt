@@ -9,7 +9,6 @@ import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.usePinned
 import logger.Logger
-import namespace.hasNamespace
 import platform.posix.*
 import seccomp.sendToSeccompListener
 import spec.LinuxIdMapping
@@ -66,7 +65,7 @@ private fun runMainProcessInternal(
         // Handle UID/GID mapping if user namespace is configured
         // This must be done BEFORE receiving Stage-2 PID, as Stage-1 waits for mapping completion
         // before forking Stage-2
-        val hasUserNamespace = hasNamespace(spec.linux?.namespaces, "user")
+        val hasUserNamespace = spec.hasNamespace("user")
         if (hasUserNamespace) {
             Logger.debug("user namespace configured, handling UID/GID mapping")
 

@@ -16,7 +16,12 @@ data class Spec(
     val process: Process,
     val hostname: String? = null,
     val linux: Linux? = null,
-)
+) {
+    /**
+     * Check if a namespace type exists in the spec
+     */
+    fun hasNamespace(type: String): Boolean = linux?.namespaces?.any { it.type == type } ?: false
+}
 
 @Serializable
 data class Root(

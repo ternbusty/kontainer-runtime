@@ -5,7 +5,6 @@ import channel.MainSender
 import channel.NotifyListener
 import kotlinx.cinterop.*
 import logger.Logger
-import namespace.hasNamespace
 import platform.posix.*
 import rootfs.pivotRoot
 import rootfs.prepareRootfs
@@ -96,7 +95,7 @@ private fun initProcessInternal(
         // See: runc/libcontainer/standard_init_linux.go:80
 
         // Prepare rootfs
-        if (hasNamespace(spec.linux?.namespaces, "mount")) {
+        if (spec.hasNamespace("mount")) {
             prepareRootfs(rootfsPath)
             pivotRoot(rootfsPath)
         } else {
