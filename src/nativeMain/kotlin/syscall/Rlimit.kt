@@ -39,10 +39,9 @@ private fun rlimitTypeToResource(type: String): Int? =
  * Apply rlimits to a process using prlimit()
  *
  * This function sets resource limits for the specified process.
- * This is called by Create.kt for the intermediate process (Stage-0) BEFORE
- * entering the user namespace, because we lose permissions to raise limits
- * once we enter a user namespace. Rlimits are inherited by child processes
- * (Stage-0 → Stage-1 → Stage-2).
+ * This is called by MainProcess.kt for Stage-1 BEFORE entering the user
+ * namespace, because we lose permissions to raise limits once we enter a
+ * user namespace. Rlimits are inherited by child processes (Stage-1 → Stage-2).
  *
  * @param pid Process ID to apply rlimits to
  * @param rlimits List of rlimits from OCI spec

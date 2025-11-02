@@ -106,13 +106,13 @@ void kontainer_bootstrap(void) {
     clone_flags = getenv_uint_hex(ENV_CLONE_FLAGS);
     fprintf(stderr, "[stage-1] Clone flags: 0x%x\n", clone_flags);
 
-    // Get sync pipe FD from environment variable (passed from Create.kt)
+    // Get sync pipe FD from environment variable (passed from Main Process)
     sync_fd = getenv_int(ENV_SYNCPIPE);
     if (sync_fd < 0) {
         fprintf(stderr, "[stage-1] Missing %s environment variable\n", ENV_SYNCPIPE);
         exit(1);
     }
-    fprintf(stderr, "[stage-1] Using sync FD from Create.kt: %d\n", sync_fd);
+    fprintf(stderr, "[stage-1] Using sync FD from Main Process: %d\n", sync_fd);
 
     // Create socketpair for Stage-1 <-> Stage-2 communication
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sync_pipe) < 0) {
@@ -130,7 +130,7 @@ void kontainer_bootstrap(void) {
         }
         fprintf(stderr, "[stage-1] Successfully unshared user namespace\n");
 
-        // Step 2: Make process dumpable so Create.kt can write to uid_map/gid_map
+        // Step 2: Make process dumpable so Main Process can write to uid_map/gid_map
         // See: man 7 user_namespaces
         fprintf(stderr, "[stage-1] Setting dumpable to allow uid/gid mapping\n");
         if (prctl(PR_SET_DUMPABLE, 1, 0, 0, 0) < 0) {
@@ -138,24 +138,24 @@ void kontainer_bootstrap(void) {
             exit(1);
         }
 
-        // Step 3: Request UID/GID mapping from Create.kt
-        fprintf(stderr, "[stage-1] Requesting UID/GID mapping from Create.kt\n");
+        // Step 3: Request UID/GID mapping from Main Process
+        fprintf(stderr, "[stage-1] Requesting UID/GID mapping from Main Process\n");
         s = SYNC_USERMAP_PLS;
         if (write(sync_fd, &s, sizeof(s)) != sizeof(s)) {
             fprintf(stderr, "[stage-1] Failed to send mapping request: %s\n", strerror(errno));
             exit(1);
         }
 
-        // Send our PID so Create.kt can write to /proc/<pid>/uid_map
+        // Send our PID so Main Process can write to /proc/<pid>/uid_map
         pid_t my_pid = getpid();
-        fprintf(stderr, "[stage-1] Sending my PID=%d to Create.kt\n", my_pid);
+        fprintf(stderr, "[stage-1] Sending my PID=%d to Main Process\n", my_pid);
         if (write(sync_fd, &my_pid, sizeof(my_pid)) != sizeof(my_pid)) {
             fprintf(stderr, "[stage-1] Failed to send PID: %s\n", strerror(errno));
             exit(1);
         }
 
-        // Step 4: Wait for mapping completion from Create.kt
-        fprintf(stderr, "[stage-1] Waiting for mapping ack from Create.kt\n");
+        // Step 4: Wait for mapping completion from Main Process
+        fprintf(stderr, "[stage-1] Waiting for mapping ack from Main Process\n");
         if (read(sync_fd, &s, sizeof(s)) != sizeof(s)) {
             fprintf(stderr, "[stage-1] Failed to read mapping ack: %s\n", strerror(errno));
             exit(1);
@@ -164,7 +164,7 @@ void kontainer_bootstrap(void) {
             fprintf(stderr, "[stage-1] Expected SYNC_USERMAP_ACK, got %u\n", s);
             exit(1);
         }
-        fprintf(stderr, "[stage-1] Received mapping ack from Create.kt\n");
+        fprintf(stderr, "[stage-1] Received mapping ack from Main Process\n");
 
         // Step 5: Restore non-dumpable state
         fprintf(stderr, "[stage-1] Restoring non-dumpable state\n");
@@ -251,7 +251,7 @@ void kontainer_bootstrap(void) {
     if (stage2_pid == 0) {
         // Stage-2: child process
         close(sync_pipe[1]); // Close write end, we only read
-        close(sync_fd);      // Close sync pipe to Create.kt
+        close(sync_fd);      // Close sync pipe to Main Process
 
         fprintf(stderr, "[stage-2] Started, PID=%d\n", getpid());
 
@@ -304,10 +304,10 @@ void kontainer_bootstrap(void) {
 
     fprintf(stderr, "[stage-1] Forked stage-2, PID=%d\n", stage2_pid);
 
-    // Send Stage-2 PID to Create.kt
-    fprintf(stderr, "[stage-1] Sending stage-2 PID to Create.kt\n");
+    // Send Stage-2 PID to Main Process
+    fprintf(stderr, "[stage-1] Sending stage-2 PID to Main Process\n");
     if (write(sync_fd, &stage2_pid, sizeof(stage2_pid)) != sizeof(stage2_pid)) {
-        fprintf(stderr, "[stage-1] Failed to send stage-2 PID to Create.kt\n");
+        fprintf(stderr, "[stage-1] Failed to send stage-2 PID to Main Process\n");
         exit(1);
     }
 

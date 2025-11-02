@@ -38,7 +38,7 @@ fun main(args: Array<String>): Unit =
         if (isInit != 0 || (args.size == 1 && args[0] == "__init__")) {
             Logger.debug("running as init process (Stage-2, forked by bootstrap.c)")
 
-            // Note: bootstrap.c Stage-0 has already sent our PID to Create.kt
+            // Note: bootstrap.c Stage-1 has already sent our PID to Main Process
             // We don't need to sync with bootstrap parent here
 
             // Restore channel FDs from environment variables

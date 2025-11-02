@@ -81,9 +81,9 @@ private fun runMainProcessInternal(
             // UID/GID mapping protocol:
             // 1. Stage-1 sends SYNC_USERMAP_PLS (mapping request)
             // 2. Stage-1 sends its own PID (4 bytes, int32)
-            // 3. Create.kt writes to /proc/<stage1_pid>/uid_map and gid_map
-            // 4. Create.kt sends SYNC_USERMAP_ACK (mapping acknowledgment)
-            // (see bootstrap.c:147-172 for the Stage-1 side)
+            // 3. Main Process writes to /proc/<stage1_pid>/uid_map and gid_map
+            // 4. Main Process sends SYNC_USERMAP_ACK (mapping acknowledgment)
+            // (see bootstrap.c:141-167 for the Stage-1 side)
 
             // Read Stage-1 PID from bootstrap
             val bootstrapPid = readInt32(syncFd, "Failed to read bootstrap PID from Stage-1")
