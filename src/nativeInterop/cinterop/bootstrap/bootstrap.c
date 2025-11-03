@@ -59,6 +59,45 @@ static int getenv_int(const char *name) {
 }
 
 /**
+ * Parse hexadecimal string to unsigned int
+ * Supports both "0x" prefix and plain hex strings
+ * Returns 0 on NULL or invalid input
+ */
+static unsigned int parse_hex(const char *str) {
+    unsigned int result = 0;
+
+    if (!str) {
+        return 0;
+    }
+
+    // Skip "0x" or "0X" prefix if present
+    if (str[0] == '0' && (str[1] == 'x' || str[1] == 'X')) {
+        str += 2;
+    }
+
+    while (*str) {
+        char c = *str;
+        unsigned int digit;
+
+        if (c >= '0' && c <= '9') {
+            digit = c - '0';
+        } else if (c >= 'a' && c <= 'f') {
+            digit = c - 'a' + 10;
+        } else if (c >= 'A' && c <= 'F') {
+            digit = c - 'A' + 10;
+        } else {
+            // Invalid character, stop parsing
+            break;
+        }
+
+        result = (result << 4) | digit;
+        str++;
+    }
+
+    return result;
+}
+
+/**
  * Get unsigned integer value from environment variable (for hex values)
  * Returns 0 if not found or invalid
  */
@@ -67,7 +106,7 @@ static unsigned int getenv_uint_hex(const char *name) {
     if (!val) {
         return 0;
     }
-    return (unsigned int)strtoul(val, NULL, 16);
+    return parse_hex(val);
 }
 
 /**
