@@ -253,6 +253,8 @@ fun main(args: Array<String>): Unit =
             exit(1)
         }
 
+        Logger.info("kontainer-runtime invoked with ${args.size} arguments. arguments: ${args.joinToString(" ") { "\"$it\"" }}")
+
         try {
             parser.parse(args)
         } catch (e: IllegalStateException) {
@@ -266,7 +268,4 @@ fun main(args: Array<String>): Unit =
         if (debug) {
             Logger.setLogLevel(logger.Logger.Level.DEBUG)
         }
-
-        // Log all command-line arguments for debugging
-        Logger.info("kontainer-runtime invoked with ${args.size} arguments. arguments: ${args.joinToString(" ") { "\"$it\"" }}")
     }

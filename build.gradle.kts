@@ -1,14 +1,13 @@
 plugins {
-    kotlin("multiplatform") version "2.2.20"
-    kotlin("plugin.serialization") version "2.2.20"
-    id("io.kotest") version "6.0.4"
-    id("com.google.devtools.ksp") version "2.2.20-2.0.4"
-    id("org.jlleitschuh.gradle.ktlint") version "13.1.0"
+    alias(libs.plugins.kotlinMultiplatform)
+    alias(libs.plugins.kotlinSerialization)
+    alias(libs.plugins.kotest)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.ktlint)
 }
 
 group = "com.ternbusty"
 version = "1.0-SNAPSHOT"
-val kotestVersion = "6.0.4"
 
 repositories {
     mavenCentral()
@@ -133,8 +132,8 @@ kotlin {
             kotlin.srcDir(buildConfigDir)
         }
         nativeTest.dependencies {
-            implementation("io.kotest:kotest-assertions-core:$kotestVersion")
-            implementation("io.kotest:kotest-framework-engine:$kotestVersion")
+            implementation(libs.kotestAssertionsCore)
+            implementation(libs.kotestFrameworkEngine)
         }
     }
 
