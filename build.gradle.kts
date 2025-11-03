@@ -127,6 +127,7 @@ kotlin {
         nativeMain {
             dependencies {
                 implementation(libs.kotlinxSerializationJson)
+                implementation(libs.kotlinxCli)
             }
             // Add generated BuildConfig to source set using Provider
             kotlin.srcDir(buildConfigDir)

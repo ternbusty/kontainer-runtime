@@ -1,9 +1,12 @@
 [versions]
 kotlin = "2.1.0"
-kotlinxSerialization = "1.8.0"
+kotlinxSerializationVersion = "1.8.0"
+kotlinxCliVersion = "0.3.6"
+kotestVersion = "6.0.4"
 
 [libraries]
-kotlinxSerializationJson = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+kotlinxSerializationJson = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationVersion" }
+kotlinxCli = { module = "org.jetbrains.kotlinx:kotlinx-cli", version.ref = "kotlinxCliVersion" }
 
 [plugins]
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
