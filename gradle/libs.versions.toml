@@ -1,10 +1,20 @@
 [versions]
-kotlin = "2.1.0"
+kotlin = "2.2.20"
 kotlinxSerialization = "1.8.0"
+kotlinxCli = "0.3.6"
+kotest = "6.0.4"
+ksp = "2.2.20-2.0.4"
+ktlint = "13.1.0"
 
 [libraries]
 kotlinxSerializationJson = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+kotlinxCli = { module = "org.jetbrains.kotlinx:kotlinx-cli", version.ref = "kotlinxCli" }
+kotestAssertionsCore = { module = "io.kotest:kotest-assertions-core", version.ref = "kotest" }
+kotestFrameworkEngine = { module = "io.kotest:kotest-framework-engine", version.ref = "kotest" }
 
 [plugins]
 kotlinMultiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
-kotlinxSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+kotlinSerialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+kotest = { id = "io.kotest", version.ref = "kotest" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlint" }

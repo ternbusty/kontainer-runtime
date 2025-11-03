@@ -1,14 +1,13 @@
 plugins {
-    kotlin("multiplatform") version "2.2.20"
-    kotlin("plugin.serialization") version "2.2.20"
-    id("io.kotest") version "6.0.4"
-    id("com.google.devtools.ksp") version "2.2.20-2.0.4"
-    id("org.jlleitschuh.gradle.ktlint") version "13.1.0"
+    alias(libs.plugins.kotlinMultiplatform)
+    alias(libs.plugins.kotlinSerialization)
+    alias(libs.plugins.kotest)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.ktlint)
 }
 
 group = "com.ternbusty"
 version = "1.0-SNAPSHOT"
-val kotestVersion = "6.0.4"
 
 repositories {
     mavenCentral()
@@ -63,42 +62,26 @@ val buildBootstrap by tasks.registering(Exec::class) {
         file("build/bootstrap").mkdirs()
     }
 
-    // Compile netlink.c
+    // Compile bootstrap.c
     commandLine(
         "gcc",
         "-c",
         "-fPIC",
         "-Wall",
         "-Wextra",
-        "netlink.c",
+        "bootstrap.c",
         "-o",
-        "build/netlink.o",
+        "build/bootstrap.o",
     )
 
-    // Compile bootstrap.c and create static library
+    // Create static library and copy to build/bootstrap for linking
     doLast {
-        exec {
-            workingDir = file("src/nativeInterop/cinterop/bootstrap")
-            commandLine(
-                "gcc",
-                "-c",
-                "-fPIC",
-                "-Wall",
-                "-Wextra",
-                "bootstrap.c",
-                "-o",
-                "build/bootstrap.o",
-            )
-        }
-
-        // Create static library
         exec {
             workingDir = file("src/nativeInterop/cinterop/bootstrap")
             commandLine(
                 "ar",
                 "rcs",
                 "build/libbootstrap.a",
-                "build/netlink.o",
                 "build/bootstrap.o",
             )
         }
@@ -143,13 +126,14 @@ kotlin {
         nativeMain {
             dependencies {
                 implementation(libs.kotlinxSerializationJson)
+                implementation(libs.kotlinxCli)
             }
             // Add generated BuildConfig to source set using Provider
             kotlin.srcDir(buildConfigDir)
         }
         nativeTest.dependencies {
-            implementation("io.kotest:kotest-assertions-core:$kotestVersion")
-            implementation("io.kotest:kotest-framework-engine:$kotestVersion")
+            implementation(libs.kotestAssertionsCore)
+            implementation(libs.kotestFrameworkEngine)
         }
     }
 

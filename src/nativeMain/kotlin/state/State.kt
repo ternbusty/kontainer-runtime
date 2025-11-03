@@ -9,9 +9,9 @@ import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
-import kotlinx.serialization.json.Json
 import logger.Logger
 import platform.posix.*
+import utils.JsonCodec
 import utils.createDirectories
 import utils.fileExists
 import utils.readJsonFile
@@ -185,7 +185,7 @@ fun State.save(rootPath: String) {
     // Serialize state to JSON
     val json =
         try {
-            StateCodec.encode(this)
+            JsonCodec.PrettyPrint.encode(this)
         } catch (e: Exception) {
             Logger.error("failed to serialize state: ${e.message ?: "unknown"}")
             throw Exception("Failed to serialize state: ${e.message}")
@@ -243,7 +243,9 @@ fun loadState(
 
     val state =
         try {
-            readJsonFile(statePath, StateCodec::decode)
+            readJsonFile(statePath) { json ->
+                JsonCodec.PrettyPrint.decode<State>(json)
+            }
         } catch (e: Exception) {
             Logger.error("failed to load state: ${e.message ?: "unknown"}")
             throw Exception("Failed to load state file (container may not exist): ${e.message}")
@@ -475,52 +477,4 @@ fun State.refreshStatus(): State {
     } else {
         this
     }
-}
-
-/**
- * JSON codec for State serialization/deserialization
- *
- * Provides common JSON configuration for encoding and decoding container state.
- */
-object StateCodec {
-    // For pretty-printed output (state command, save to disk)
-    private val prettyJson =
-        Json {
-            prettyPrint = true
-            encodeDefaults = false
-            ignoreUnknownKeys = true
-        }
-
-    // For compact output (seccomp listener, network transmission)
-    private val compactJson =
-        Json {
-            prettyPrint = false
-            encodeDefaults = false
-            ignoreUnknownKeys = true
-        }
-
-    /**
-     * Encode state to JSON string
-     *
-     * @param state State to encode
-     * @param pretty If true, use pretty-printed format (default). If false, use compact format.
-     * @return JSON string
-     */
-    fun encode(
-        state: State,
-        pretty: Boolean = true,
-    ): String =
-        if (pretty) {
-            prettyJson.encodeToString(state)
-        } else {
-            compactJson.encodeToString(state)
-        }
-
-    /**
-     * Decode JSON string to State
-     *
-     * @param text JSON string
-     * @return State object
-     */
-    fun decode(text: String): State = prettyJson.decodeFromString(text)
 }

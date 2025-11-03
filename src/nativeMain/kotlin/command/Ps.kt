@@ -3,10 +3,10 @@ package command
 import cgroup.getCgroupPids
 import config.loadKontainerConfig
 import kotlinx.cinterop.*
-import kotlinx.serialization.json.Json
 import logger.Logger
 import platform.posix.*
 import state.loadState
+import utils.JsonCodec
 
 /**
  * Ps command - List processes running in a container
@@ -91,8 +91,7 @@ fun ps(
  * Outputs a simple JSON array of PIDs: [123, 456, 789]
  */
 private fun outputJson(pids: List<Int>) {
-    val json = Json { prettyPrint = false }
-    val jsonString = json.encodeToString(pids)
+    val jsonString = JsonCodec.Compact.encode(pids)
     println(jsonString)
     Logger.debug("output JSON: $jsonString")
 }

@@ -6,6 +6,7 @@ import command.*
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.toKString
+import kotlinx.cli.*
 import logger.Logger
 import platform.posix.exit
 import platform.posix.getenv
@@ -25,7 +26,7 @@ import spec.loadSpec
  *   kill <container-id> <signal>                                     - Send a signal to a container
  *   delete [--force|-f] <container-id>                               - Delete a container
  */
-@OptIn(ExperimentalForeignApi::class)
+@OptIn(ExperimentalForeignApi::class, ExperimentalCli::class)
 fun main(args: Array<String>): Unit =
     memScoped {
         // Bootstrap constructor has already run before Kotlin runtime started
@@ -38,7 +39,7 @@ fun main(args: Array<String>): Unit =
         if (isInit != 0 || (args.size == 1 && args[0] == "__init__")) {
             Logger.debug("running as init process (Stage-2, forked by bootstrap.c)")
 
-            // Note: bootstrap.c Stage-0 has already sent our PID to Create.kt
+            // Note: bootstrap.c Stage-1 has already sent our PID to Main Process
             // We don't need to sync with bootstrap parent here
 
             // Restore channel FDs from environment variables
@@ -96,234 +97,175 @@ fun main(args: Array<String>): Unit =
             exit(1)
         }
 
-        if (args.isEmpty()) {
-            Logger.error("Usage: kontainer-runtime [global-options] <command> [options] <container-id> [args...]")
-            Logger.error("")
-            Logger.error("Global options:")
-            Logger.error("  --root <path>             Root directory for container state (default: /run/kontainer)")
-            Logger.error("  --log <path>, -l <path>   Log file path (default: stderr)")
-            Logger.error("  --log-format <text|json>  Log format (default: text)")
-            Logger.error("  --debug                   Enable debug logging")
-            Logger.error("")
-            Logger.error("Commands:")
-            Logger.error("  create [--bundle|-b <path>] [--pid-file <path>] <container-id>    Create a new container")
-            Logger.error("  start <container-id>                                               Start a created container")
-            Logger.error("  state <container-id>                                               Display container state")
-            Logger.error("  kill <container-id> <signal>                                       Send a signal to a container")
-            Logger.error("  delete [--force|-f] <container-id>                                 Delete a container")
-            Logger.error("  ps [--format|-f <json|table>] <container-id>                       List processes in a container")
-            exit(1)
-        }
+        val parser = ArgParser("kontainer-runtime")
 
-        // Parse global options
-        var rootPath = "/run/kontainer" // Default root path
-        var argIndex = 0
+        // Global options
+        val rootPath by parser
+            .option(
+                ArgType.String,
+                fullName = "root",
+                description = "Root directory for container state",
+            ).default("/run/kontainer")
 
-        while (argIndex < args.size) {
-            when (args[argIndex]) {
-                "--root" -> {
-                    if (argIndex + 1 >= args.size) {
-                        Logger.error("--root requires a path argument")
-                        exit(1)
-                    }
-                    rootPath = args[argIndex + 1]
-                    argIndex += 2
-                }
+        val logFile by parser.option(
+            ArgType.String,
+            shortName = "l",
+            fullName = "log",
+            description = "Log file path",
+        )
 
-                "--log", "-l" -> {
-                    if (argIndex + 1 >= args.size) {
-                        Logger.error("--log requires a path argument")
-                        exit(1)
-                    }
-                    Logger.setLogFile(args[argIndex + 1])
-                    argIndex += 2
-                }
+        val logFormat by parser.option(
+            ArgType.String,
+            fullName = "log-format",
+            description = "Log format (text or json)",
+        )
 
-                "--log-format" -> {
-                    if (argIndex + 1 >= args.size) {
-                        Logger.error("--log-format requires a format argument (text or json)")
-                        exit(1)
-                    }
-                    Logger.setLogFormat(args[argIndex + 1])
-                    argIndex += 2
-                }
+        val debug by parser
+            .option(
+                ArgType.Boolean,
+                fullName = "debug",
+                description = "Enable debug logging",
+            ).default(false)
 
-                "--debug" -> {
-                    Logger.setLogLevel(logger.Logger.Level.DEBUG)
-                    argIndex++
-                }
+        class CreateCommand : Subcommand("create", "Create a new container") {
+            val bundle by option(
+                ArgType.String,
+                shortName = "b",
+                fullName = "bundle",
+                description = "Bundle path",
+            ).default(".")
 
-                "--systemd-cgroup" -> {
-                    // Accept but ignore for now (future implementation)
-                    argIndex++
-                }
+            val pidFile by option(
+                ArgType.String,
+                fullName = "pid-file",
+                description = "PID file path",
+            )
 
-                else -> {
-                    // If it starts with -, it's an unknown global option
-                    // Skip it to be tolerant of future options
-                    if (args[argIndex].startsWith("-")) {
-                        // Check if next arg looks like a value (doesn't start with -)
-                        if (argIndex + 1 < args.size && !args[argIndex + 1].startsWith("-")) {
-                            // Likely an option with a value, skip both
-                            argIndex += 2
-                        } else {
-                            // Option without value, skip just this
-                            argIndex++
-                        }
-                    } else {
-                        // Not a global option, must be a command
-                        break
-                    }
-                }
+            val containerId by argument(
+                ArgType.String,
+                description = "Container ID",
+            )
+
+            override fun execute() {
+                create(rootPath, containerId, bundle, pidFile)
             }
         }
 
-        // Log all command-line arguments for debugging (after global options are parsed)
-        Logger.info("kontainer-runtime invoked with ${args.size} arguments. arguments: ${args.joinToString(" ") { "\"$it\"" }}")
+        class StartCommand : Subcommand("start", "Start a created container") {
+            val containerId by argument(
+                ArgType.String,
+                description = "Container ID",
+            )
 
-        if (argIndex >= args.size) {
-            Logger.error("no command specified")
-            Logger.error("Usage: kontainer-runtime [global-options] <command> [options] <container-id> [args...]")
-            exit(1)
+            override fun execute() {
+                start(rootPath, containerId)
+            }
         }
 
-        val command = args[argIndex]
-        val commandArgs = args.drop(argIndex + 1)
+        class StateCommand : Subcommand("state", "Display container state") {
+            val containerId by argument(
+                ArgType.String,
+                description = "Container ID",
+            )
 
-        when (command) {
-            "create" -> {
-                val cmdArgs = commandArgs
-
-                // Parse options
-                var bundlePath = "." // Default to current directory (OCI standard)
-                var pidFile: String? = null
-                var containerId: String? = null
-                var i = 0
-
-                while (i < cmdArgs.size) {
-                    when (cmdArgs[i]) {
-                        "--bundle", "-b" -> {
-                            if (i + 1 >= cmdArgs.size) {
-                                Logger.error("--bundle requires a path argument")
-                                exit(1)
-                            }
-                            bundlePath = cmdArgs[i + 1]
-                            i += 2
-                        }
-
-                        "--pid-file" -> {
-                            if (i + 1 >= cmdArgs.size) {
-                                Logger.error("--pid-file requires a path argument")
-                                exit(1)
-                            }
-                            pidFile = cmdArgs[i + 1]
-                            i += 2
-                        }
-
-                        else -> {
-                            // Assume this is the container ID (last positional argument)
-                            if (cmdArgs[i].startsWith("-")) {
-                                Logger.error("unknown option: ${cmdArgs[i]}")
-                                Logger.error("Usage: kontainer-runtime create [--bundle|-b <path>] [--pid-file <path>] <container-id>")
-                                exit(1)
-                            }
-                            containerId = cmdArgs[i]
-                            i++
-                        }
-                    }
-                }
-
-                if (containerId == null) {
-                    Logger.error("Usage: kontainer-runtime create [--bundle|-b <path>] [--pid-file <path>] <container-id>")
-                    exit(1)
-                    return
-                }
-
-                create(rootPath, containerId, bundlePath, pidFile)
+            override fun execute() {
+                state(rootPath, containerId)
             }
+        }
 
-            "start" -> {
-                if (commandArgs.isEmpty()) {
-                    Logger.error("Usage: kontainer-runtime start <container-id>")
-                    exit(1)
-                }
-                start(rootPath, commandArgs[0])
+        class KillCommand : Subcommand("kill", "Send a signal to a container") {
+            val containerId by argument(
+                ArgType.String,
+                description = "Container ID",
+            )
+
+            val signal by argument(
+                ArgType.String,
+                description = "Signal to send",
+            )
+
+            override fun execute() {
+                kill(rootPath, containerId, signal)
             }
+        }
 
-            "state" -> {
-                if (commandArgs.isEmpty()) {
-                    Logger.error("Usage: kontainer-runtime state <container-id>")
-                    exit(1)
-                }
-                state(rootPath, commandArgs[0])
+        class DeleteCommand : Subcommand("delete", "Delete a container") {
+            val force by option(
+                ArgType.Boolean,
+                shortName = "f",
+                fullName = "force",
+                description = "Force deletion",
+            ).default(false)
+
+            val containerId by argument(
+                ArgType.String,
+                description = "Container ID",
+            )
+
+            override fun execute() {
+                delete(rootPath, containerId, force)
             }
+        }
 
-            "kill" -> {
-                if (commandArgs.size < 2) {
-                    Logger.error("Usage: kontainer-runtime kill <container-id> <signal>")
-                    exit(1)
-                }
-                kill(rootPath, commandArgs[0], commandArgs[1])
-            }
+        class PsCommand : Subcommand("ps", "List processes in a container") {
+            val format by option(
+                ArgType.String,
+                shortName = "f",
+                fullName = "format",
+                description = "Output format (json or table)",
+            ).default("json")
 
-            "delete" -> {
-                // Parse --force or -f flag
-                val force = commandArgs.contains("--force") || commandArgs.contains("-f")
-                val containerArgs = commandArgs.filter { it != "--force" && it != "-f" }
+            val containerId by argument(
+                ArgType.String,
+                description = "Container ID",
+            )
 
-                if (containerArgs.isEmpty()) {
-                    Logger.error("Usage: kontainer-runtime delete [--force|-f] <container-id>")
-                    exit(1)
-                }
-
-                delete(rootPath, containerArgs[0], force)
-            }
-
-            "ps" -> {
-                val cmdArgs = commandArgs
-
-                // Parse options
-                var format = "json" // Default to JSON format
-                var containerId: String? = null
-                var i = 0
-
-                while (i < cmdArgs.size) {
-                    when (cmdArgs[i]) {
-                        "--format", "-f" -> {
-                            if (i + 1 >= cmdArgs.size) {
-                                Logger.error("--format requires a format argument (json or table)")
-                                exit(1)
-                            }
-                            format = cmdArgs[i + 1]
-                            i += 2
-                        }
-
-                        else -> {
-                            // Assume this is the container ID
-                            if (cmdArgs[i].startsWith("-")) {
-                                Logger.error("unknown option: ${cmdArgs[i]}")
-                                Logger.error("Usage: kontainer-runtime ps [--format|-f <json|table>] <container-id>")
-                                exit(1)
-                            }
-                            containerId = cmdArgs[i]
-                            i++
-                        }
-                    }
-                }
-
-                if (containerId == null) {
-                    Logger.error("Usage: kontainer-runtime ps [--format|-f <json|table>] <container-id>")
-                    exit(1)
-                    return
-                }
-
+            override fun execute() {
                 ps(rootPath, containerId, format)
             }
+        }
 
-            else -> {
-                Logger.error("unknown command: $command")
-                Logger.error("available commands: create, start, state, kill, delete, ps")
-                exit(1)
-            }
+        parser.subcommands(
+            CreateCommand(),
+            StartCommand(),
+            StateCommand(),
+            KillCommand(),
+            DeleteCommand(),
+            PsCommand(),
+        )
+
+        if (args.isEmpty()) {
+            println("Usage: kontainer-runtime [global-options] <command> [options] <container-id> [args...]")
+            println()
+            println("Global options:")
+            println("  --root <path>             Root directory for container state (default: /run/kontainer)")
+            println("  --log <path>, -l <path>   Log file path (default: stderr)")
+            println("  --log-format <text|json>  Log format (default: text)")
+            println("  --debug                   Enable debug logging")
+            println()
+            println("Commands:")
+            println("  create [--bundle|-b <path>] [--pid-file <path>] <container-id>    Create a new container")
+            println("  start <container-id>                                               Start a created container")
+            println("  state <container-id>                                               Display container state")
+            println("  kill <container-id> <signal>                                       Send a signal to a container")
+            println("  delete [--force|-f] <container-id>                                 Delete a container")
+            println("  ps [--format|-f <json|table>] <container-id>                       List processes in a container")
+            exit(1)
+        }
+
+        Logger.info("kontainer-runtime invoked with ${args.size} arguments. arguments: ${args.joinToString(" ") { "\"$it\"" }}")
+
+        try {
+            parser.parse(args)
+        } catch (e: IllegalStateException) {
+            Logger.error("error: ${e.message}")
+            exit(1)
+        }
+
+        // Apply global options after parsing
+        logFile?.let { Logger.setLogFile(it) }
+        logFormat?.let { Logger.setLogFormat(it) }
+        if (debug) {
+            Logger.setLogLevel(logger.Logger.Level.DEBUG)
         }
     }

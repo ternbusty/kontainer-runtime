@@ -5,7 +5,6 @@ import channel.MainSender
 import channel.NotifyListener
 import kotlinx.cinterop.*
 import logger.Logger
-import namespace.hasNamespace
 import platform.posix.*
 import rootfs.pivotRoot
 import rootfs.prepareRootfs
@@ -51,9 +50,9 @@ private fun initProcessInternal(
         // All namespaces (user, mount, network, uts, ipc, pid) are unshared by bootstrap.c Stage-1
         // before the Kotlin runtime starts.
         //
-        // Stage-0 (bootstrap-parent): Forks Stage-1 and handles UID/GID mapping protocol
-        // Stage-1: Unshares user namespace → requests mapping → waits for ack → becomes root in user NS
-        //          → unshares other namespaces → forks Stage-2 → exits
+        // 2-stage bootstrap process:
+        // Stage-1: Unshares user namespace → requests mapping from Main Process → waits for ack
+        //          → becomes root in user NS → unshares other namespaces → forks Stage-2 → exits
         // Stage-2: Starts Kotlin runtime (this process) → becomes container init via execve
         //
         // This design ensures:
@@ -65,23 +64,22 @@ private fun initProcessInternal(
         // - This process runs as PID 1 in the new PID namespace
         Logger.debug("all namespaces already unshared by Stage-1, UID/GID mapping already done")
 
-        // Cgroup setup is already done in Create.kt for intermediate process (Stage-0)
-        // - Stage-0 → Stage-1 → Stage-2 are all automatically included in the cgroup
-        // - Parent has necessary privileges (runs in host namespace)
+        // Cgroup setup is already done in MainProcess.kt for Stage-1
+        // - Stage-1 → Stage-2 are both included in the cgroup (inherited through fork)
+        // - Main Process has necessary privileges (runs in host namespace)
         // - Prevents race conditions and cgroup escape
 
         // User namespace mapping is already done by Stage-1
         // Stage-1 performed the following steps:
         // 1. unshare(CLONE_NEWUSER)
         // 2. prctl(PR_SET_DUMPABLE, 1)
-        // 3. Sent mapping request to Stage-0
-        // 4. Stage-0 forwarded to Create.kt
-        // 5. Create.kt wrote uid_map/gid_map for Stage-1 process
-        // 6. Create.kt sent ack to Stage-0
-        // 7. Stage-0 forwarded ack to Stage-1
-        // 8. prctl(PR_SET_DUMPABLE, 0)
-        // 9. setuid(0) and setgid(0) in Stage-1
-        // 10. unshare other namespaces
+        // 3. Sent mapping request (SYNC_USERMAP_PLS) to Main Process
+        // 4. Sent its own PID to Main Process
+        // 5. Main Process wrote uid_map/gid_map for Stage-1 process
+        // 6. Main Process sent ack (SYNC_USERMAP_ACK) to Stage-1
+        // 7. prctl(PR_SET_DUMPABLE, 0)
+        // 8. setuid(0) and setgid(0) in Stage-1
+        // 9. unshare other namespaces
         //
         // At this point, we are already root (UID 0, GID 0) in the user namespace
         // We inherited this from Stage-1 when it forked Stage-2
@@ -97,7 +95,7 @@ private fun initProcessInternal(
         // See: runc/libcontainer/standard_init_linux.go:80
 
         // Prepare rootfs
-        if (hasNamespace(spec.linux?.namespaces, "mount")) {
+        if (spec.hasNamespace("mount")) {
             prepareRootfs(rootfsPath)
             pivotRoot(rootfsPath)
         } else {
