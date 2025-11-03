@@ -3,7 +3,7 @@
 
 # Kontainer Runtime
 
-Kontainer Runtime is a low lever container runtime written in Kotlin/Native.
+Kontainer Runtime is a low layer container runtime written in Kotlin/Native.
 
 ## How to Run
 
