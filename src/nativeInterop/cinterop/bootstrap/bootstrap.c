@@ -32,7 +32,6 @@
 
 // Environment variable names
 #define ENV_IS_BOOTSTRAP "_KONTAINER_IS_BOOTSTRAP"
-#define ENV_IS_INIT "_KONTAINER_IS_INIT"
 #define ENV_SYNCPIPE "_KONTAINER_SYNCPIPE"
 #define ENV_CLONE_FLAGS "_KONTAINER_CLONE_FLAGS"
 
@@ -88,13 +87,6 @@ void kontainer_bootstrap(void) {
 
     // Check if bootstrap mode is enabled
     if (!getenv(ENV_IS_BOOTSTRAP)) {
-        return;
-    }
-
-    // If IS_INIT is set, this is the init process (Stage-2)
-    if (getenv(ENV_IS_INIT)) {
-        is_init_process = 1;
-        // Let Kotlin runtime start and handle init process logic
         return;
     }
 
@@ -284,12 +276,6 @@ void kontainer_bootstrap(void) {
 
         // Close sync pipe
         close(sync_pipe[0]);
-
-        // Set environment variable to indicate this is the init process
-        if (setenv(ENV_IS_INIT, "1", 1) < 0) {
-            fprintf(stderr, "[stage-2] Failed to set %s: %s\n", ENV_IS_INIT, strerror(errno));
-            _exit(1);
-        }
 
         // Set flag for Kotlin code to check
         is_init_process = 1;
