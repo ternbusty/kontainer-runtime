@@ -8,7 +8,7 @@ import platform.posix.access
 import spec.LinuxResources
 import utils.createDirectories
 import utils.readProcFile
-import utils.writeText
+import utils.writeTextFile
 
 /**
  * Cgroup v2 management
@@ -65,7 +65,7 @@ fun setupCgroup(
 
             for (controller in requiredControllers) {
                 try {
-                    writeText(subtreeControlPath, "+$controller")
+                    writeTextFile(subtreeControlPath, "+$controller")
                     Logger.debug("enabled $controller controller")
                 } catch (e: Exception) {
                     Logger.error("failed to enable $controller controller: ${e.message}")
@@ -77,7 +77,7 @@ fun setupCgroup(
         // Add process to cgroup
         val procsPath = "$fullPath/$CGROUP_PROCS"
         try {
-            writeText(procsPath, pid.toString())
+            writeTextFile(procsPath, pid.toString())
             Logger.debug("added PID $pid to cgroup")
         } catch (e: Exception) {
             Logger.error("failed to add PID to cgroup: ${e.message}")
@@ -212,7 +212,7 @@ private fun writeCgroupFile(
     name: String,
 ) {
     try {
-        writeText(path, value)
+        writeTextFile(path, value)
         Logger.debug("set $name = $value")
     } catch (e: Exception) {
         Logger.warn("failed to write $name: ${e.message}")

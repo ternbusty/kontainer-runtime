@@ -18,7 +18,7 @@ import state.State
 import state.createState
 import state.save
 import syscall.applyRlimits
-import utils.writeText
+import utils.writeTextFile
 
 /**
  * Main process - Parent process (internal implementation)
@@ -102,16 +102,16 @@ private fun runMainProcessInternal(
             if (!isPrivileged) {
                 // Disable setgroups for unprivileged user namespaces (CVE-2014-8989)
                 Logger.debug("disabling setgroups for pid $bootstrapPid")
-                writeText("/proc/$bootstrapPid/setgroups", "deny\n")
+                writeTextFile("/proc/$bootstrapPid/setgroups", "deny\n")
             } else {
                 Logger.debug("skipping setgroups write (running as root)")
             }
 
             Logger.debug("writing uid_map for pid $bootstrapPid")
-            writeText("/proc/$bootstrapPid/uid_map", uidMap)
+            writeTextFile("/proc/$bootstrapPid/uid_map", uidMap)
 
             Logger.debug("writing gid_map for pid $bootstrapPid")
-            writeText("/proc/$bootstrapPid/gid_map", gidMap)
+            writeTextFile("/proc/$bootstrapPid/gid_map", gidMap)
 
             Logger.debug("successfully wrote UID/GID mappings")
 
@@ -202,7 +202,7 @@ private fun runMainProcessInternal(
         // Write PID to file if --pid-file was specified
         if (pidFile != null) {
             Logger.debug("writing PID to file: $pidFile")
-            writeText(pidFile, "$stage2Pid")
+            writeTextFile(pidFile, "$stage2Pid")
             Logger.debug("successfully wrote PID $stage2Pid to $pidFile")
         }
 

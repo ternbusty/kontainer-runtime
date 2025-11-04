@@ -14,8 +14,6 @@ import platform.posix.*
 import utils.JsonCodec
 import utils.createDirectories
 import utils.fileExists
-import utils.readJsonFile
-import utils.writeJsonFile
 
 /**
  * Container status enum
@@ -182,19 +180,14 @@ fun State.save(rootPath: String) {
     // Create container directory (and parent directories if needed)
     createDirectories(containerDir)
 
-    // Serialize state to JSON
-    val json =
-        try {
-            JsonCodec.PrettyPrint.encode(this)
-        } catch (e: Exception) {
-            Logger.error("failed to serialize state: ${e.message ?: "unknown"}")
-            throw Exception("Failed to serialize state: ${e.message}")
-        }
+    // Serialize state to JSON and write to file
+    try {
+        JsonCodec.writeToFile(statePath, this, prettyPrint = true)
+    } catch (e: Exception) {
+        Logger.error("failed to save state: ${e.message ?: "unknown"}")
+        throw Exception("Failed to save state: ${e.message}")
+    }
 
-    Logger.debug("serialized state: $json")
-
-    // Write JSON to file
-    writeJsonFile(statePath, json)
     Logger.info("saved state for container ${this.id}")
 }
 
@@ -243,9 +236,7 @@ fun loadState(
 
     val state =
         try {
-            readJsonFile(statePath) { json ->
-                JsonCodec.PrettyPrint.decode<State>(json)
-            }
+            JsonCodec.loadFromFile<State>(statePath)
         } catch (e: Exception) {
             Logger.error("failed to load state: ${e.message ?: "unknown"}")
             throw Exception("Failed to load state file (container may not exist): ${e.message}")

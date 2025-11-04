@@ -91,7 +91,7 @@ fun ps(
  * Outputs a simple JSON array of PIDs: [123, 456, 789]
  */
 private fun outputJson(pids: List<Int>) {
-    val jsonString = JsonCodec.Compact.encode(pids)
+    val jsonString = JsonCodec.encode(pids)
     println(jsonString)
     Logger.debug("output JSON: $jsonString")
 }
