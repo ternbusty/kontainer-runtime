@@ -72,7 +72,7 @@ fun sendToSeccompListener(
         Logger.debug("connected to seccomp listener")
 
         // Send container state as JSON (compact format for network transmission)
-        val stateJson = JsonCodec.Compact.encode(state) + "\n"
+        val stateJson = JsonCodec.encode(state) + "\n"
         val stateBytes = stateJson.encodeToByteArray()
 
         memScoped {

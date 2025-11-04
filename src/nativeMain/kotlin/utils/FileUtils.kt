@@ -15,7 +15,7 @@ import platform.posix.*
  * @throws Exception if write fails for any reason
  */
 @OptIn(ExperimentalForeignApi::class)
-fun writeText(
+fun writeTextFile(
     path: String,
     content: String,
 ) {
@@ -183,66 +183,6 @@ fun readProcFile(path: String): String {
     } catch (e: Exception) {
         fclose(fp)
         throw e
-    }
-}
-
-/**
- * Read and parse a JSON file
- *
- * Generic function that reads a JSON file and decodes it using the provided decoder.
- *
- * @param path Path to JSON file
- * @param decoder Function to decode JSON string to type T
- * @return Decoded object of type T
- * @throws Exception if file read or JSON parsing fails
- */
-@OptIn(ExperimentalForeignApi::class)
-fun <T> readJsonFile(
-    path: String,
-    decoder: (String) -> T,
-): T {
-    Logger.debug("reading JSON file: $path")
-
-    val jsonContent =
-        try {
-            readTextFile(path)
-        } catch (e: Exception) {
-            Logger.error("failed to read JSON file $path: ${e.message}")
-            throw Exception("Failed to read JSON file $path: ${e.message}")
-        }
-
-    Logger.debug("parsing JSON from $path")
-
-    return try {
-        decoder(jsonContent)
-    } catch (e: Exception) {
-        Logger.error("failed to parse JSON from $path: ${e.message}")
-        throw Exception("Failed to parse JSON from $path: ${e.message}")
-    }
-}
-
-/**
- * Write JSON content to a file
- *
- * Writes a JSON string to a file using the robust writeText function.
- *
- * @param path Path to file to write
- * @param jsonContent JSON string to write
- * @throws Exception if write fails
- */
-@OptIn(ExperimentalForeignApi::class)
-fun writeJsonFile(
-    path: String,
-    jsonContent: String,
-) {
-    Logger.debug("writing JSON to file: $path")
-
-    try {
-        writeText(path, jsonContent)
-        Logger.debug("successfully wrote JSON to $path")
-    } catch (e: Exception) {
-        Logger.error("failed to write JSON to $path: ${e.message}")
-        throw Exception("Failed to write JSON to $path: ${e.message}")
     }
 }
 

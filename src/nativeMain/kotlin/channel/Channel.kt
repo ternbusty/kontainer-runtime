@@ -33,7 +33,7 @@ private fun sendMessage(
     socket: Int,
     message: Message,
 ) {
-    val json = JsonCodec.Message.encode(message)
+    val json = JsonCodec.encode(message)
     val bytes = json.encodeToByteArray()
 
     memScoped {
@@ -64,7 +64,7 @@ private fun receiveMessage(socket: Int): Message {
 
         buffer[received.toInt()] = 0
         val json = buffer.toKString()
-        return JsonCodec.Message.decode<Message>(json)
+        return JsonCodec.decode<Message>(json)
     }
 }
 
@@ -77,7 +77,7 @@ private fun sendMessageWithFd(
     message: Message,
     fd: Int,
 ) {
-    val json = JsonCodec.Message.encode(message)
+    val json = JsonCodec.encode(message)
     val bytes = json.encodeToByteArray()
 
     memScoped {
@@ -160,7 +160,7 @@ private fun receiveMessageWithFd(socket: Int): Pair<Message, Int> {
         // Extract message data
         buffer[received.toInt()] = 0
         val json = buffer.toKString()
-        val message = JsonCodec.Message.decode<Message>(json)
+        val message = JsonCodec.decode<Message>(json)
 
         // Extract file descriptor from control message
         var receivedFd = -1

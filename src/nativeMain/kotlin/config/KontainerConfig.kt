@@ -5,8 +5,6 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import logger.Logger
 import utils.JsonCodec
-import utils.readJsonFile
-import utils.writeJsonFile
 
 /**
  * Internal configuration for Kontainer Runtime
@@ -42,8 +40,7 @@ fun saveKontainerConfig(
 
     Logger.debug("saving kontainer config to $configPath")
 
-    val jsonString = JsonCodec.PrettyPrint.encode(config)
-    writeJsonFile(configPath, jsonString)
+    JsonCodec.writeToFile(configPath, config, prettyPrint = true)
 
     Logger.debug("saved kontainer config")
 }
@@ -66,7 +63,5 @@ fun loadKontainerConfig(
 
     Logger.debug("loading kontainer config from $configPath")
 
-    return readJsonFile(configPath) { json ->
-        JsonCodec.PrettyPrint.decode<KontainerConfig>(json)
-    }
+    return JsonCodec.loadFromFile<KontainerConfig>(configPath)
 }

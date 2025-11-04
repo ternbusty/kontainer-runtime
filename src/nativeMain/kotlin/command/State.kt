@@ -35,7 +35,7 @@ fun state(
 
     // Output state as JSON to stdout (OCI Runtime Spec requirement)
     try {
-        println(JsonCodec.PrettyPrint.encode(state))
+        println(JsonCodec.encode(state, prettyPrint = true))
     } catch (e: Exception) {
         Logger.error("failed to serialize state: ${e.message ?: "unknown"}")
         exit(1)
