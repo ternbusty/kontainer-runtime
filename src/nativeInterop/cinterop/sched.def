@@ -1,5 +1,5 @@
-headers = sched.h
-headerFilter = sched.h
+headers = sched.h sys/syscall.h
+headerFilter = sched.h sys/syscall.h
 package = platform.linux
 compilerOpts = -D_GNU_SOURCE
 ---

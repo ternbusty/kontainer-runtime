@@ -9,6 +9,7 @@
 #include <sys/wait.h>
 #include <sys/prctl.h>
 #include <sched.h>
+#include <sys/syscall.h>
 
 // Clone flags (in case not defined)
 #ifndef CLONE_NEWUSER
@@ -28,6 +29,9 @@
 #endif
 #ifndef CLONE_NEWNS
 #define CLONE_NEWNS 0x00020000
+#endif
+#ifndef CLONE_PARENT
+#define CLONE_PARENT 0x00008000
 #endif
 
 // Environment variable names
@@ -107,6 +111,30 @@ static unsigned int getenv_uint_hex(const char *name) {
         return 0;
     }
     return parse_hex(val);
+}
+
+/**
+ * Clone with CLONE_PARENT flag
+ * This makes the child process a sibling of the caller, not a child.
+ *
+ * When Stage-1 calls this to create Stage-2:
+ * - Stage-2's parent becomes Stage-1's parent (containerd-shim)
+ * - Stage-1 and Stage-2 are siblings
+ * - When Stage-1 exits, Stage-2 is not affected
+ *
+ * Returns: PID of cloned child on success, -1 on error
+ */
+static pid_t clone_parent(void) {
+    // Use raw syscall to clone with CLONE_PARENT
+    // Args: flags, child_stack, parent_tid, child_tid, tls
+    // We don't need custom stack or thread features, just CLONE_PARENT
+    pid_t pid = syscall(SYS_clone, SIGCHLD | CLONE_PARENT, NULL, NULL, NULL, NULL);
+
+    if (pid < 0) {
+        fprintf(stderr, "[clone_parent] Failed to clone with CLONE_PARENT: %s\n", strerror(errno));
+    }
+
+    return pid;
 }
 
 /**
@@ -269,13 +297,12 @@ void kontainer_bootstrap(void) {
 
     fprintf(stderr, "[stage-1] Successfully unshared all requested namespaces\n");
 
-    // Fork Stage-2 (init process)
-    // Stage-2 will become PID 1 in the new PID namespace
-    fprintf(stderr, "[stage-1] Forking stage-2 (init process)\n");
-    stage2_pid = fork();
+    // Clone Stage-2 (init process) with CLONE_PARENT
+    fprintf(stderr, "[stage-1] Cloning stage-2 with CLONE_PARENT (init process)\n");
+    stage2_pid = clone_parent();
 
     if (stage2_pid < 0) {
-        fprintf(stderr, "[stage-1] Failed to fork stage-2: %s\n", strerror(errno));
+        fprintf(stderr, "[stage-1] Failed to clone stage-2: %s\n", strerror(errno));
         exit(1);
     }
 
