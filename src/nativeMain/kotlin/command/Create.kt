@@ -6,8 +6,7 @@ import channel.mainChannel
 import kotlinx.cinterop.*
 import logger.Logger
 import namespace.calculateCloneFlags
-import platform.linux.PR_SET_CHILD_SUBREAPER
-import platform.linux.prctl
+import platform.linux.SYS_clone
 import platform.posix.*
 import process.runMainProcess
 import spec.loadSpec
@@ -117,20 +116,11 @@ fun create(
         exePathBuf[exePathLen.toInt()] = 0.toByte() // null terminate
         Logger.debug("executable path: ${exePathBuf.toKString()}")
 
-        // Set this process as a subreaper
-        // This ensures that when Stage-1 exits, Stage-2 reparents to this process
-        // instead of init (PID 1), allowing us to wait for the container process
-        Logger.debug("setting PR_SET_CHILD_SUBREAPER")
-        if (prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0) {
-            perror("prctl(PR_SET_CHILD_SUBREAPER)")
-            Logger.warn("Failed to set child subreaper, container may not be properly tracked")
-        }
-
-        // Fork and exec to trigger bootstrap constructor
-        when (val stage1Pid = fork()) {
+        // Clone with CLONE_PARENT and exec to trigger bootstrap constructor
+        when (val stage1Pid = cloneWithParent()) {
             -1 -> {
-                perror("fork")
-                Logger.error("Failed to fork")
+                perror("clone")
+                Logger.error("Failed to clone with CLONE_PARENT")
                 close(syncFds[0])
                 close(syncFds[1])
                 notifyListener.close()
@@ -206,3 +196,20 @@ fun create(
             }
         }
     }
+
+/**
+ * Clone with CLONE_PARENT flag using raw syscall
+ * Makes the child process a sibling of the caller (same parent)
+ *
+ * This ensures Stage-1 becomes a sibling of Create.kt (both children of containerd-shim)
+ * When Stage-1 exits, it won't become a zombie waiting for Create.kt to reap it
+ *
+ * @return PID of cloned child on success, -1 on error
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun cloneWithParent(): Int {
+    // CLONE_PARENT = 0x00008000
+    // syscall(SYS_clone, flags, child_stack, parent_tid, child_tid, tls)
+    val pid = syscall(SYS_clone.toLong(), SIGCHLD.toLong() or 0x00008000L, 0L, 0L, 0L, 0L)
+    return pid.toInt()
+}
