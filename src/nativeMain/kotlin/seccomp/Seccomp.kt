@@ -134,22 +134,11 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int? {
             Logger.warn("failed to set SCMP_FLTATR_CTL_NNP")
         }
 
-        // Handle architecture specifications
-        // When architectures are explicitly specified, we need to:
-        // 1. Remove the default native architecture
-        // 2. Add each specified architecture
+        // Handle architecture specification and Add specified architectures
         if (seccomp.architectures != null && seccomp.architectures.isNotEmpty()) {
             Logger.debug("processing ${seccomp.architectures.size} architecture(s)")
 
-            // Remove native architecture (added by default)
-            if (seccomp_arch_remove(ctx, SCMP_ARCH_NATIVE.toUInt()) < 0) {
-                perror("seccomp_arch_remove(SCMP_ARCH_NATIVE)")
-                Logger.warn("failed to remove native architecture")
-            } else {
-                Logger.debug("removed default native architecture")
-            }
-
-            // Add each specified architecture
+            // Add each specified architecture (keeping native architecture)
             seccomp.architectures.forEach { ociArchName ->
                 // Translate OCI arch name to libseccomp arch name
                 val libseccompArchName = translateArchName(ociArchName)
@@ -200,6 +189,7 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int? {
                 null
             }
 
+        Logger.info("seccomp filter initialized successfully")
         return notifyFd
     } finally {
         // Note: Don't release ctx yet if we're returning a notify FD,
