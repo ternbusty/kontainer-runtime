@@ -165,11 +165,9 @@ private fun initProcessInternal(
         // 5. Apply effective/permitted/inheritable/ambient capabilities (as non-root user)
         spec.process.capabilities?.let { capabilities ->
             // Step 1: Apply bounding set before changing user (root privilege required)
-            Logger.debug("applying bounding set capabilities")
             capability.applyBoundingSet(capabilities)
 
             // Step 2: Set PR_SET_KEEPCAPS to preserve capabilities while we change users
-            Logger.debug("setting PR_SET_KEEPCAPS")
             capability.setKeepCaps()
         }
 
@@ -203,11 +201,9 @@ private fun initProcessInternal(
         // Apply remaining capabilities after setuid
         spec.process.capabilities?.let { capabilities ->
             // Step 4: Clear PR_SET_KEEPCAPS
-            Logger.debug("clearing PR_SET_KEEPCAPS")
             capability.clearKeepCaps()
 
             // Step 5: Apply effective/permitted/inheritable/ambient capabilities
-            Logger.debug("applying effective/permitted/inheritable/ambient capabilities")
             capability.applyCapabilities(capabilities)
         }
 
@@ -218,9 +214,7 @@ private fun initProcessInternal(
         // This must be done after capabilities, but before closing channels
         // With no_new_privileges, seccomp is unprivileged; without it, requires CAP_SYS_ADMIN
         spec.linux?.seccomp?.let { seccomp ->
-            Logger.debug("initializing seccomp filter")
             val notifyFd = initializeSeccomp(seccomp)
-            Logger.info("seccomp filter initialized successfully")
             syncSeccompNotifyFd(notifyFd, mainSender, initReceiver)
         }
 
