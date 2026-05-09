@@ -57,19 +57,30 @@ fun setupCgroup(
         createDirectories(fullPath, 0x1EDu) // 0x1ED = 0755 octal
         Logger.debug("created cgroup directory: $fullPath")
 
-        // Enable controllers in subtree_control
-        // Only enable controllers that are actually needed based on resources
+        // Enable controllers at every ancestor of the leaf cgroup.
+        // In cgroup v2 a controller is only available in a child cgroup if its parent's
+        // cgroup.subtree_control contains +<controller>. For a nested path like
+        // "default/test-verify" we must enable controllers in both
+        // /sys/fs/cgroup/cgroup.subtree_control and /sys/fs/cgroup/default/cgroup.subtree_control,
+        // not only the root, otherwise opening memory.max etc. in the leaf fails with EACCES.
         val requiredControllers = getRequiredControllers(resources)
         if (requiredControllers.isNotEmpty()) {
-            val subtreeControlPath = "$CGROUP_ROOT/$CGROUP_SUBTREE_CONTROL"
+            val segments = normalizedPath.split("/").filter { it.isNotEmpty() }
+            val ancestorPaths = mutableListOf(CGROUP_ROOT)
+            for (i in 0 until segments.size - 1) {
+                ancestorPaths.add("${ancestorPaths.last()}/${segments[i]}")
+            }
 
-            for (controller in requiredControllers) {
-                try {
-                    writeTextFile(subtreeControlPath, "+$controller")
-                    Logger.debug("enabled $controller controller")
-                } catch (e: Exception) {
-                    Logger.error("failed to enable $controller controller: ${e.message}")
-                    throw Exception("Failed to enable required cgroup controller: $controller", e)
+            for (ancestorPath in ancestorPaths) {
+                val subtreeControlPath = "$ancestorPath/$CGROUP_SUBTREE_CONTROL"
+                for (controller in requiredControllers) {
+                    try {
+                        writeTextFile(subtreeControlPath, "+$controller")
+                        Logger.debug("enabled $controller controller in $ancestorPath")
+                    } catch (e: Exception) {
+                        Logger.error("failed to enable $controller controller in $ancestorPath: ${e.message}")
+                        throw Exception("Failed to enable required cgroup controller: $controller in $ancestorPath", e)
+                    }
                 }
             }
         }
