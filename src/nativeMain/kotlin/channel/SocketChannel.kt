@@ -1,0 +1,281 @@
+package channel
+
+import kotlinx.cinterop.*
+import platform.linux.*
+import platform.posix.*
+import utils.JsonCodec
+
+/**
+ * Socket-backed implementations of the channel interfaces.
+ *
+ * Each sender/receiver wraps a Unix domain socket FD. Senders serialize a
+ * [Message] to JSON and write it via send/sendmsg. Receivers do the inverse
+ * with recv/recvmsg. SCM_RIGHTS is used to pass the seccomp notify FD.
+ */
+
+@OptIn(ExperimentalForeignApi::class)
+private fun createSocketPair(): Pair<Int, Int> {
+    val sv = IntArray(2)
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv.refTo(0)) != 0) {
+        perror("socketpair")
+        throw Exception("Failed to create socketpair")
+    }
+    return Pair(sv[0], sv[1])
+}
+
+@OptIn(ExperimentalForeignApi::class)
+private fun sendMessage(
+    socket: Int,
+    message: Message,
+) {
+    val json = JsonCodec.encode(message)
+    val bytes = json.encodeToByteArray()
+
+    memScoped {
+        val sent = send(socket, bytes.refTo(0), bytes.size.toULong(), 0)
+        if (sent == -1L) {
+            perror("send")
+            throw Exception("Failed to send message")
+        }
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+private fun receiveMessage(socket: Int): Message {
+    memScoped {
+        val buffer = allocArray<ByteVar>(4096)
+        val received = recv(socket, buffer, 4095.toULong(), 0)
+
+        if (received == -1L) {
+            perror("recv")
+            throw Exception("Failed to receive message")
+        }
+        if (received == 0L) {
+            throw Exception("Connection closed")
+        }
+
+        buffer[received.toInt()] = 0
+        val json = buffer.toKString()
+        return JsonCodec.decode<Message>(json)
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+private fun sendMessageWithFd(
+    socket: Int,
+    message: Message,
+    fd: Int,
+) {
+    val json = JsonCodec.encode(message)
+    val bytes = json.encodeToByteArray()
+
+    memScoped {
+        val iov = alloc<iovec>()
+        iov.iov_base = bytes.refTo(0).getPointer(this)
+        iov.iov_len = bytes.size.toULong()
+
+        val cmsgSpace = _CMSG_SPACE(sizeOf<IntVar>().toULong())
+        val cmsgBuf = allocArray<ByteVar>(cmsgSpace.toInt())
+
+        val msg = alloc<msghdr>()
+        msg.msg_name = null
+        msg.msg_namelen = 0u
+        msg.msg_iov = iov.ptr
+        msg.msg_iovlen = 1u
+        msg.msg_control = cmsgBuf
+        msg.msg_controllen = cmsgSpace
+        msg.msg_flags = 0
+
+        val cmsg = _CMSG_FIRSTHDR(msg.ptr)
+        if (cmsg != null) {
+            cmsg.pointed.cmsg_level = SOL_SOCKET
+            cmsg.pointed.cmsg_type = SCM_RIGHTS
+            cmsg.pointed.cmsg_len = _CMSG_LEN(sizeOf<IntVar>().toULong())
+
+            val dataPtr = _CMSG_DATA(cmsg)
+            if (dataPtr != null) {
+                dataPtr.reinterpret<IntVar>().pointed.value = fd
+            }
+        }
+
+        val sent = sendmsg(socket, msg.ptr, 0)
+        if (sent == -1L) {
+            perror("sendmsg")
+            throw Exception("Failed to send message with FD")
+        }
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+private fun receiveMessageWithFd(socket: Int): Pair<Message, Int> {
+    memScoped {
+        val buffer = allocArray<ByteVar>(4096)
+        val iov = alloc<iovec>()
+        iov.iov_base = buffer
+        iov.iov_len = 4095u
+
+        val cmsgSpace = _CMSG_SPACE(sizeOf<IntVar>().toULong())
+        val cmsgBuf = allocArray<ByteVar>(cmsgSpace.toInt())
+
+        val msg = alloc<msghdr>()
+        msg.msg_name = null
+        msg.msg_namelen = 0u
+        msg.msg_iov = iov.ptr
+        msg.msg_iovlen = 1u
+        msg.msg_control = cmsgBuf
+        msg.msg_controllen = cmsgSpace
+        msg.msg_flags = 0
+
+        val received = recvmsg(socket, msg.ptr, 0)
+        if (received == -1L) {
+            perror("recvmsg")
+            throw Exception("Failed to receive message with FD")
+        }
+        if (received == 0L) {
+            throw Exception("Connection closed")
+        }
+
+        buffer[received.toInt()] = 0
+        val json = buffer.toKString()
+        val message = JsonCodec.decode<Message>(json)
+
+        var receivedFd = -1
+        val cmsg = _CMSG_FIRSTHDR(msg.ptr)
+
+        if (cmsg != null && cmsg.pointed.cmsg_level == SOL_SOCKET && cmsg.pointed.cmsg_type == SCM_RIGHTS) {
+            val dataPtr = _CMSG_DATA(cmsg)
+            if (dataPtr != null) {
+                receivedFd = dataPtr.reinterpret<IntVar>().pointed.value
+            }
+        }
+
+        if (receivedFd == -1) {
+            throw Exception("Failed to extract FD from control message")
+        }
+
+        return Pair(message, receivedFd)
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+class SocketMainSender(
+    private val socket: Int,
+) : MainSender {
+    override fun fd(): Int = socket
+
+    override fun identifierMappingRequest() {
+        sendMessage(socket, Message.WriteMapping)
+    }
+
+    override fun initReady() {
+        sendMessage(socket, Message.InitReady)
+    }
+
+    override fun seccompNotifyRequest(fd: Int) {
+        sendMessageWithFd(socket, Message.SeccompNotify, fd)
+    }
+
+    override fun execFailed(error: String) {
+        sendMessage(socket, Message.ExecFailed(error))
+    }
+
+    override fun sendError(error: String) {
+        sendMessage(socket, Message.OtherError(error))
+    }
+
+    override fun close() {
+        close(socket)
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+class SocketMainReceiver(
+    private val socket: Int,
+) : MainReceiver {
+    override fun fd(): Int = socket
+
+    override fun waitForMappingRequest(): Message.WriteMapping =
+        when (val msg = receiveMessage(socket)) {
+            is Message.WriteMapping -> msg
+            is Message.ExecFailed -> throw Exception("Exec failed: ${msg.error}")
+            is Message.OtherError -> throw Exception("Error: ${msg.error}")
+            else -> throw Exception("Unexpected message: $msg, expected WriteMapping")
+        }
+
+    override fun waitForInitReady() {
+        when (val msg = receiveMessage(socket)) {
+            is Message.InitReady -> return
+            is Message.ExecFailed -> throw Exception("Exec failed: ${msg.error}")
+            is Message.OtherError -> throw Exception("Error: ${msg.error}")
+            else -> throw Exception("Unexpected message: $msg, expected InitReady")
+        }
+    }
+
+    override fun waitForSeccompRequest(): Int {
+        val (msg, fd) = receiveMessageWithFd(socket)
+        return when (msg) {
+            is Message.SeccompNotify -> fd
+            is Message.ExecFailed -> throw Exception("Exec failed: ${msg.error}")
+            is Message.OtherError -> throw Exception("Error: ${msg.error}")
+            else -> throw Exception("Unexpected message: $msg, expected SeccompNotify")
+        }
+    }
+
+    override fun close() {
+        close(socket)
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+class SocketInitSender(
+    private val socket: Int,
+) : InitSender {
+    override fun fd(): Int = socket
+
+    override fun mappingWritten() {
+        sendMessage(socket, Message.MappingWritten)
+    }
+
+    override fun seccompNotifyDone() {
+        sendMessage(socket, Message.SeccompNotifyDone)
+    }
+
+    override fun close() {
+        close(socket)
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+class SocketInitReceiver(
+    private val socket: Int,
+) : InitReceiver {
+    override fun fd(): Int = socket
+
+    override fun waitForMappingAck() {
+        when (val msg = receiveMessage(socket)) {
+            is Message.MappingWritten -> return
+            else -> throw Exception("Unexpected message: $msg, expected MappingWritten")
+        }
+    }
+
+    override fun waitForSeccompRequestDone() {
+        when (val msg = receiveMessage(socket)) {
+            is Message.SeccompNotifyDone -> return
+            else -> throw Exception("Unexpected message: $msg, expected SeccompNotifyDone")
+        }
+    }
+
+    override fun close() {
+        close(socket)
+    }
+}
+
+fun mainChannel(): Pair<MainSender, MainReceiver> {
+    val (sender, receiver) = createSocketPair()
+    return Pair(SocketMainSender(sender), SocketMainReceiver(receiver))
+}
+
+fun initChannel(): Pair<InitSender, InitReceiver> {
+    val (sender, receiver) = createSocketPair()
+    return Pair(SocketInitSender(sender), SocketInitReceiver(receiver))
+}
