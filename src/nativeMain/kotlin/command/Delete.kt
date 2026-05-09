@@ -7,7 +7,7 @@ import logger.Logger
 import platform.posix.SIGKILL
 import platform.posix.exit
 import state.*
-import syscall.defaultSyscall
+import syscall.Syscall
 
 /**
  * Delete command - Deletes a container
@@ -18,6 +18,7 @@ import syscall.defaultSyscall
  */
 @OptIn(ExperimentalForeignApi::class)
 fun delete(
+    syscall: Syscall,
     rootPath: String,
     containerId: String,
     force: Boolean = false,
@@ -65,7 +66,7 @@ fun delete(
             Logger.debug("killing process before deletion")
             state.pid?.let { pid ->
                 try {
-                    defaultSyscall.killProcess(pid, SIGKILL)
+                    syscall.killProcess(pid, SIGKILL)
                     Logger.debug("killed process $pid")
                 } catch (e: Exception) {
                     Logger.warn("failed to kill process $pid: ${e.message ?: "unknown"}")

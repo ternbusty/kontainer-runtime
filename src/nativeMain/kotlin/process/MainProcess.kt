@@ -17,7 +17,7 @@ import state.ContainerStatus
 import state.State
 import state.createState
 import state.save
-import syscall.defaultSyscall
+import syscall.Syscall
 import utils.writeTextFile
 
 /**
@@ -37,6 +37,7 @@ import utils.writeTextFile
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun runMainProcessInternal(
+    syscall: Syscall,
     stage1Pid: Int,
     syncFd: Int,
     spec: Spec,
@@ -60,7 +61,7 @@ private fun runMainProcessInternal(
 
         // Apply rlimits to Stage-1 BEFORE entering user namespace
         // Rlimits are inherited: Stage-1 → Stage-2
-        defaultSyscall.applyRlimits(stage1Pid, spec.process.rlimits)
+        syscall.applyRlimits(stage1Pid, spec.process.rlimits)
 
         // Handle UID/GID mapping if user namespace is configured
         // This must be done BEFORE receiving Stage-2 PID, as Stage-1 waits for mapping completion
@@ -89,15 +90,15 @@ private fun runMainProcessInternal(
             Logger.debug("received bootstrap PID from Stage-1: $bootstrapPid")
 
             // Build uid_map and gid_map content
-            val uidMap = buildIdMapping(spec.linux?.uidMappings, geteuid())
-            val gidMap = buildIdMapping(spec.linux?.gidMappings, getegid())
+            val uidMap = buildIdMapping(spec.linux?.uidMappings, syscall.geteuid())
+            val gidMap = buildIdMapping(spec.linux?.gidMappings, syscall.getegid())
 
             Logger.debug("constructed uidMap: ${uidMap.trim()}")
             Logger.debug("constructed gidMap: ${gidMap.trim()}")
 
             // Determine if we need to write to setgroups
-            val isPrivileged = geteuid() == 0u
-            Logger.debug("privileged mode: $isPrivileged (euid=${geteuid()})")
+            val isPrivileged = syscall.geteuid() == 0u
+            Logger.debug("privileged mode: $isPrivileged (euid=${syscall.geteuid()})")
 
             if (!isPrivileged) {
                 // Disable setgroups for unprivileged user namespaces (CVE-2014-8989)
@@ -218,6 +219,7 @@ private fun runMainProcessInternal(
  */
 @OptIn(ExperimentalForeignApi::class)
 fun runMainProcess(
+    syscall: Syscall,
     stage1Pid: Int,
     syncFd: Int,
     spec: Spec,
@@ -233,6 +235,7 @@ fun runMainProcess(
 ) {
     try {
         runMainProcessInternal(
+            syscall,
             stage1Pid,
             syncFd,
             spec,

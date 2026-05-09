@@ -13,6 +13,7 @@ import spec.POSIXRlimit
  * implementation that records calls.
  */
 interface Syscall {
+    // Mount-family
     fun mount(
         source: String?,
         target: String,
@@ -31,6 +32,39 @@ interface Syscall {
         putOld: String,
     ): Int
 
+    fun chroot(path: String): Int
+
+    fun chdir(path: String): Int
+
+    // Identity / process
+    fun setuid(uid: UInt): Int
+
+    fun setgid(gid: UInt): Int
+
+    fun geteuid(): UInt
+
+    fun getegid(): UInt
+
+    fun sethostname(name: String): Int
+
+    fun umask(mask: UInt): UInt
+
+    // prctl primitive (used by capabilities and similar callers)
+    fun prctl(
+        option: Int,
+        arg2: ULong,
+        arg3: ULong,
+        arg4: ULong,
+        arg5: ULong,
+    ): Int
+
+    // Capabilities (capget/capset wrapped in logical form so the cinterop
+    // structs don't leak through the interface)
+    fun getCapabilities(): CapabilitySets
+
+    fun setCapabilities(caps: CapabilitySets)
+
+    // Resource / signal / fd helpers preserved from the existing wrappers
     fun applyRlimits(
         pid: Int,
         rlimits: List<POSIXRlimit>?,
@@ -49,11 +83,11 @@ interface Syscall {
 }
 
 /**
- * Default [Syscall] instance used by domain code.
- *
- * This is a temporary singleton bridging the in-progress refactor: existing
- * callers still invoke top-level helpers and need a single entry point. Once
- * every caller takes a [Syscall] parameter explicitly (Step 4 of the refactor),
- * this top-level binding will be removed.
+ * The three capability bitmasks read/written together by capget(2)/capset(2).
+ * Each bit position corresponds to a [capability.Capability.value].
  */
-val defaultSyscall: Syscall = LinuxSyscall()
+data class CapabilitySets(
+    val effective: UInt,
+    val permitted: UInt,
+    val inheritable: UInt,
+)
