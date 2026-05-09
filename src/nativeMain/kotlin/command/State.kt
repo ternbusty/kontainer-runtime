@@ -5,6 +5,7 @@ import logger.Logger
 import platform.posix.exit
 import state.loadState
 import state.refreshStatus
+import utils.FileSystem
 import utils.JsonCodec
 
 /**
@@ -15,13 +16,14 @@ import utils.JsonCodec
  */
 @OptIn(ExperimentalForeignApi::class)
 fun state(
+    fs: FileSystem,
     rootPath: String,
     containerId: String,
 ) {
     // Load container state
     var state =
         try {
-            loadState(rootPath, containerId)
+            loadState(fs, rootPath, containerId)
         } catch (e: Exception) {
             Logger.error("failed to load container state: ${e.message ?: "unknown"}")
             Logger.error("container may not exist or state file is corrupted")

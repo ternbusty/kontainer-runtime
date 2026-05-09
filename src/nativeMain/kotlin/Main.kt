@@ -14,6 +14,7 @@ import platform.posix.getpid
 import process.runInitProcess
 import spec.loadSpec
 import syscall.LinuxSyscall
+import utils.RealFileSystem
 
 /**
  * Kontainer Runtime - Container runtime written in Kotlin/Native
@@ -37,6 +38,7 @@ fun main(args: Array<String>): Unit =
         Logger.setContext("main")
 
         val syscall = LinuxSyscall()
+        val fs = RealFileSystem()
 
         // If this is Stage-2 (init process) forked by bootstrap.c
         if (isInit != 0 || (args.size == 1 && args[0] == "__init__")) {
@@ -74,7 +76,7 @@ fun main(args: Array<String>): Unit =
             Logger.debug("loading spec from $bundlePath/config.json")
             val spec =
                 try {
-                    loadSpec("$bundlePath/config.json")
+                    loadSpec(fs, "$bundlePath/config.json")
                 } catch (e: Exception) {
                     Logger.error("failed to load spec: ${e.message ?: "unknown error"}")
                     exit(1)
@@ -150,7 +152,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
-                create(syscall, rootPath, containerId, bundle, pidFile)
+                create(syscall, fs, rootPath, containerId, bundle, pidFile)
             }
         }
 
@@ -161,7 +163,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
-                start(rootPath, containerId)
+                start(fs, rootPath, containerId)
             }
         }
 
@@ -172,7 +174,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
-                state(rootPath, containerId)
+                state(fs, rootPath, containerId)
             }
         }
 
@@ -188,7 +190,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
-                kill(syscall, rootPath, containerId, signal)
+                kill(syscall, fs, rootPath, containerId, signal)
             }
         }
 
@@ -206,7 +208,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
-                delete(syscall, rootPath, containerId, force)
+                delete(syscall, fs, rootPath, containerId, force)
             }
         }
 
@@ -224,7 +226,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
-                ps(rootPath, containerId, format)
+                ps(fs, rootPath, containerId, format)
             }
         }
 

@@ -18,7 +18,7 @@ import state.State
 import state.createState
 import state.save
 import syscall.Syscall
-import utils.writeTextFile
+import utils.FileSystem
 
 /**
  * Main process - Parent process (internal implementation)
@@ -38,6 +38,7 @@ import utils.writeTextFile
 @OptIn(ExperimentalForeignApi::class)
 private fun runMainProcessInternal(
     syscall: Syscall,
+    fs: FileSystem,
     stage1Pid: Int,
     syncFd: Int,
     spec: Spec,
@@ -57,7 +58,7 @@ private fun runMainProcessInternal(
 
         // Setup cgroup for Stage-1 BEFORE syncing with child
         // Stage-1 → Stage-2 are both included in the cgroup (inherited through fork)
-        setupCgroup(stage1Pid, spec.linux?.cgroupsPath, spec.linux?.resources)
+        setupCgroup(fs, stage1Pid, spec.linux?.cgroupsPath, spec.linux?.resources)
 
         // Apply rlimits to Stage-1 BEFORE entering user namespace
         // Rlimits are inherited: Stage-1 → Stage-2
@@ -103,16 +104,16 @@ private fun runMainProcessInternal(
             if (!isPrivileged) {
                 // Disable setgroups for unprivileged user namespaces (CVE-2014-8989)
                 Logger.debug("disabling setgroups for pid $bootstrapPid")
-                writeTextFile("/proc/$bootstrapPid/setgroups", "deny\n")
+                fs.writeTextFile("/proc/$bootstrapPid/setgroups", "deny\n")
             } else {
                 Logger.debug("skipping setgroups write (running as root)")
             }
 
             Logger.debug("writing uid_map for pid $bootstrapPid")
-            writeTextFile("/proc/$bootstrapPid/uid_map", uidMap)
+            fs.writeTextFile("/proc/$bootstrapPid/uid_map", uidMap)
 
             Logger.debug("writing gid_map for pid $bootstrapPid")
-            writeTextFile("/proc/$bootstrapPid/gid_map", gidMap)
+            fs.writeTextFile("/proc/$bootstrapPid/gid_map", gidMap)
 
             Logger.debug("successfully wrote UID/GID mappings")
 
@@ -190,7 +191,7 @@ private fun runMainProcessInternal(
                 bundle = bundlePath,
                 annotations = null,
             )
-        state.save(rootPath)
+        state.save(fs, rootPath)
 
         // Save internal configuration (independent of bundle)
         Logger.debug("saving kontainer config")
@@ -198,12 +199,12 @@ private fun runMainProcessInternal(
             KontainerConfig(
                 cgroupPath = spec.linux?.cgroupsPath,
             )
-        saveKontainerConfig(kontainerConfig, rootPath, containerId)
+        saveKontainerConfig(fs, kontainerConfig, rootPath, containerId)
 
         // Write PID to file if --pid-file was specified
         if (pidFile != null) {
             Logger.debug("writing PID to file: $pidFile")
-            writeTextFile(pidFile, "$stage2Pid")
+            fs.writeTextFile(pidFile, "$stage2Pid")
             Logger.debug("successfully wrote PID $stage2Pid to $pidFile")
         }
 
@@ -220,6 +221,7 @@ private fun runMainProcessInternal(
 @OptIn(ExperimentalForeignApi::class)
 fun runMainProcess(
     syscall: Syscall,
+    fs: FileSystem,
     stage1Pid: Int,
     syncFd: Int,
     spec: Spec,
@@ -236,6 +238,7 @@ fun runMainProcess(
     try {
         runMainProcessInternal(
             syscall,
+            fs,
             stage1Pid,
             syncFd,
             spec,

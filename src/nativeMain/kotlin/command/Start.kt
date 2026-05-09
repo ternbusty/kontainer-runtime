@@ -5,6 +5,7 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import logger.Logger
 import platform.posix.exit
 import state.*
+import utils.FileSystem
 
 /**
  * Start command - Starts a created container
@@ -14,6 +15,7 @@ import state.*
  */
 @OptIn(ExperimentalForeignApi::class)
 fun start(
+    fs: FileSystem,
     rootPath: String,
     containerId: String,
 ) {
@@ -22,7 +24,7 @@ fun start(
     // Load container state to verify it exists
     var state =
         try {
-            loadState(rootPath, containerId)
+            loadState(fs, rootPath, containerId)
         } catch (e: Exception) {
             Logger.error("failed to load container state: ${e.message ?: "unknown"}")
             Logger.error("container may not exist or state file is corrupted")
@@ -51,7 +53,7 @@ fun start(
 
         // Update state to "running" and save
         val updatedState = state.withStatus(ContainerStatus.RUNNING)
-        updatedState.save(rootPath)
+        updatedState.save(fs, rootPath)
         Logger.debug("updated container state to 'running'")
 
         Logger.info("container $containerId started successfully")

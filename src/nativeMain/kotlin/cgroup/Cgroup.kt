@@ -6,9 +6,7 @@ import logger.Logger
 import platform.posix.F_OK
 import platform.posix.access
 import spec.LinuxResources
-import utils.createDirectories
-import utils.readProcFile
-import utils.writeTextFile
+import utils.FileSystem
 
 /**
  * Cgroup v2 management
@@ -36,6 +34,7 @@ private const val CPU_MAX = "cpu.max"
  */
 @OptIn(ExperimentalForeignApi::class)
 fun setupCgroup(
+    fs: FileSystem,
     pid: Int,
     cgroupPath: String?,
     resources: LinuxResources?,
@@ -54,7 +53,7 @@ fun setupCgroup(
         Logger.debug("setting up cgroup at $fullPath")
 
         // Create cgroup directory
-        createDirectories(fullPath, 0x1EDu) // 0x1ED = 0755 octal
+        fs.createDirectories(fullPath, 0x1EDu) // 0x1ED = 0755 octal
         Logger.debug("created cgroup directory: $fullPath")
 
         // Enable controllers at every ancestor of the leaf cgroup.
@@ -75,7 +74,7 @@ fun setupCgroup(
                 val subtreeControlPath = "$ancestorPath/$CGROUP_SUBTREE_CONTROL"
                 for (controller in requiredControllers) {
                     try {
-                        writeTextFile(subtreeControlPath, "+$controller")
+                        fs.writeTextFile(subtreeControlPath, "+$controller")
                         Logger.debug("enabled $controller controller in $ancestorPath")
                     } catch (e: Exception) {
                         Logger.error("failed to enable $controller controller in $ancestorPath: ${e.message}")
@@ -88,7 +87,7 @@ fun setupCgroup(
         // Add process to cgroup
         val procsPath = "$fullPath/$CGROUP_PROCS"
         try {
-            writeTextFile(procsPath, pid.toString())
+            fs.writeTextFile(procsPath, pid.toString())
             Logger.debug("added PID $pid to cgroup")
         } catch (e: Exception) {
             Logger.error("failed to add PID to cgroup: ${e.message}")
@@ -97,7 +96,7 @@ fun setupCgroup(
 
         // Apply resource limits if specified
         if (resources != null) {
-            applyResources(fullPath, resources)
+            applyResources(fs, fullPath, resources)
         }
     }
 }
@@ -107,17 +106,18 @@ fun setupCgroup(
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun applyResources(
+    fs: FileSystem,
     cgroupPath: String,
     resources: LinuxResources,
 ) {
     // Apply memory limits
     resources.memory?.let { memory ->
-        applyMemoryLimits(cgroupPath, memory.limit, memory.reservation, memory.swap)
+        applyMemoryLimits(fs, cgroupPath, memory.limit, memory.reservation, memory.swap)
     }
 
     // Apply CPU limits
     resources.cpu?.let { cpu ->
-        applyCpuLimits(cgroupPath, cpu.shares, cpu.quota, cpu.period)
+        applyCpuLimits(fs, cgroupPath, cpu.shares, cpu.quota, cpu.period)
     }
 }
 
@@ -126,6 +126,7 @@ private fun applyResources(
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun applyMemoryLimits(
+    fs: FileSystem,
     cgroupPath: String,
     limit: Long?,
     reservation: Long?,
@@ -135,14 +136,14 @@ private fun applyMemoryLimits(
     limit?.let {
         val memoryMaxPath = "$cgroupPath/$MEMORY_MAX"
         val value = if (it == -1L) "max" else it.toString()
-        writeCgroupFile(memoryMaxPath, value, "memory.max")
+        writeCgroupFile(fs, memoryMaxPath, value, "memory.max")
     }
 
     // Set memory.low (memory reservation / soft limit)
     reservation?.let {
         val memoryLowPath = "$cgroupPath/$MEMORY_LOW"
         val value = if (it == -1L) "max" else it.toString()
-        writeCgroupFile(memoryLowPath, value, "memory.low")
+        writeCgroupFile(fs, memoryLowPath, value, "memory.low")
     }
 
     // Set memory.swap.max (swap limit)
@@ -156,7 +157,7 @@ private fun applyMemoryLimits(
                     swapValue == -1L || limitValue == -1L -> "max"
                     else -> (swapValue - limitValue).toString()
                 }
-            writeCgroupFile(memorySwapPath, value, "memory.swap.max")
+            writeCgroupFile(fs, memorySwapPath, value, "memory.swap.max")
         }
     }
 }
@@ -166,6 +167,7 @@ private fun applyMemoryLimits(
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun applyCpuLimits(
+    fs: FileSystem,
     cgroupPath: String,
     shares: Long?,
     quota: Long?,
@@ -184,7 +186,7 @@ private fun applyCpuLimits(
                 }
             if (weight != 0L) {
                 val cpuWeightPath = "$cgroupPath/$CPU_WEIGHT"
-                writeCgroupFile(cpuWeightPath, weight.toString(), "cpu.weight")
+                writeCgroupFile(fs, cpuWeightPath, weight.toString(), "cpu.weight")
             }
         }
     }
@@ -209,7 +211,7 @@ private fun applyCpuLimits(
             }
 
         value?.let {
-            writeCgroupFile(cpuMaxPath, it, "cpu.max")
+            writeCgroupFile(fs, cpuMaxPath, it, "cpu.max")
         }
     }
 }
@@ -218,16 +220,17 @@ private fun applyCpuLimits(
  * Write value to a cgroup file
  */
 private fun writeCgroupFile(
+    fs: FileSystem,
     path: String,
     value: String,
     name: String,
 ) {
     try {
-        writeTextFile(path, value)
+        fs.writeTextFile(path, value)
         Logger.debug("set $name = $value")
     } catch (e: Exception) {
         Logger.warn("failed to write $name: ${e.message}")
-        // Note: This is warn-only for resource limits (Priority 2 issue)
+        // Warn-only because resource limits are best-effort
     }
 }
 
@@ -303,7 +306,10 @@ fun cleanupCgroup(cgroupPath: String?) {
  * @throws Exception if cgroup.procs file cannot be read
  */
 @OptIn(ExperimentalForeignApi::class)
-fun getCgroupPids(cgroupPath: String): List<Int> {
+fun getCgroupPids(
+    fs: FileSystem,
+    cgroupPath: String,
+): List<Int> {
     // Normalize cgroup path: remove leading slash if present
     val normalizedPath = cgroupPath.removePrefix("/")
     val fullPath = "$CGROUP_ROOT/$normalizedPath"
@@ -313,7 +319,7 @@ fun getCgroupPids(cgroupPath: String): List<Int> {
 
     val content =
         try {
-            readProcFile(procsPath)
+            fs.readProcFile(procsPath)
         } catch (e: Exception) {
             Logger.error("failed to read cgroup.procs: ${e.message}")
             throw Exception("Failed to read cgroup.procs file: ${e.message}")

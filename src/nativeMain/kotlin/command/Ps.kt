@@ -6,6 +6,7 @@ import kotlinx.cinterop.*
 import logger.Logger
 import platform.posix.*
 import state.loadState
+import utils.FileSystem
 import utils.JsonCodec
 
 /**
@@ -19,6 +20,7 @@ import utils.JsonCodec
  */
 @OptIn(ExperimentalForeignApi::class)
 fun ps(
+    fs: FileSystem,
     rootPath: String,
     containerId: String,
     format: String = "json",
@@ -34,7 +36,7 @@ fun ps(
     // Load container state to verify it exists
     val state =
         try {
-            loadState(rootPath, containerId)
+            loadState(fs, rootPath, containerId)
         } catch (e: Exception) {
             Logger.error("failed to load container state: ${e.message ?: "unknown"}")
             Logger.error("container may not exist")
@@ -47,7 +49,7 @@ fun ps(
     // Load kontainer config to get cgroup path
     val config =
         try {
-            loadKontainerConfig(rootPath, containerId)
+            loadKontainerConfig(fs, rootPath, containerId)
         } catch (e: Exception) {
             Logger.error("failed to load kontainer config: ${e.message ?: "unknown"}")
             exit(1)
@@ -67,7 +69,7 @@ fun ps(
     // Get PIDs from cgroup
     val pids =
         try {
-            getCgroupPids(cgroupPath)
+            getCgroupPids(fs, cgroupPath)
         } catch (e: Exception) {
             Logger.error("failed to get container PIDs: ${e.message ?: "unknown"}")
             exit(1)

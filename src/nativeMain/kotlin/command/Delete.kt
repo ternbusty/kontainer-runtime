@@ -8,6 +8,7 @@ import platform.posix.SIGKILL
 import platform.posix.exit
 import state.*
 import syscall.Syscall
+import utils.FileSystem
 
 /**
  * Delete command - Deletes a container
@@ -19,6 +20,7 @@ import syscall.Syscall
 @OptIn(ExperimentalForeignApi::class)
 fun delete(
     syscall: Syscall,
+    fs: FileSystem,
     rootPath: String,
     containerId: String,
     force: Boolean = false,
@@ -26,7 +28,7 @@ fun delete(
     Logger.info("deleting container: $containerId${if (force) " (force)" else ""}")
 
     // Check if container exists
-    if (!containerExists(rootPath, containerId)) {
+    if (!containerExists(fs, rootPath, containerId)) {
         if (force) {
             // With force flag, non-existent container is not an error
             Logger.debug("container $containerId does not exist, but force flag is set")
@@ -40,7 +42,7 @@ fun delete(
     // Load container state and refresh to get actual status
     var state =
         try {
-            loadState(rootPath, containerId)
+            loadState(fs, rootPath, containerId)
         } catch (e: Exception) {
             Logger.error("failed to load container state: ${e.message ?: "unknown"}")
             exit(1)
@@ -87,7 +89,7 @@ fun delete(
     // This is independent of bundle, so works even if bundle was moved/deleted
     val config =
         try {
-            loadKontainerConfig(rootPath, containerId)
+            loadKontainerConfig(fs, rootPath, containerId)
         } catch (e: Exception) {
             Logger.warn("failed to load kontainer config: ${e.message ?: "unknown"}")
             Logger.warn("will skip cgroup cleanup")

@@ -47,30 +47,29 @@ object JsonCodec {
     internal inline fun <reified T> decode(text: String): T = json.decodeFromString(serializer(), text)
 
     /**
-     * Write a value to a JSON file
+     * Write a value to a JSON file via the given [fs].
      *
-     * @param path File path to write to
-     * @param value Value to serialize and write
-     * @param prettyPrint If true, format output for human readability (default: false)
      * @throws Exception if file write fails
      */
     internal inline fun <reified T> writeToFile(
+        fs: FileSystem,
         path: String,
         value: T,
         prettyPrint: Boolean = false,
     ) {
-        writeTextFile(path, encode(value, prettyPrint))
+        fs.writeTextFile(path, encode(value, prettyPrint))
     }
 
     /**
-     * Load a value from a JSON file
+     * Load a value from a JSON file via the given [fs].
      *
-     * @param path File path to read from
-     * @return Decoded value of type T
      * @throws Exception if file read or JSON parsing fails
      */
-    internal inline fun <reified T> loadFromFile(path: String): T {
-        val jsonContent = readTextFile(path)
+    internal inline fun <reified T> loadFromFile(
+        fs: FileSystem,
+        path: String,
+    ): T {
+        val jsonContent = fs.readTextFile(path)
         return decode<T>(jsonContent)
     }
 }
