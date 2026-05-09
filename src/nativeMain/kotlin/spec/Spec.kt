@@ -113,6 +113,7 @@ data class LinuxResources(
 data class SeccompArg(
     val index: UInt,
     val value: ULong,
+    val valueTwo: ULong? = null,
     val op: String,
 )
 

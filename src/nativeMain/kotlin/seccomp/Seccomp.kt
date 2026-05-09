@@ -138,7 +138,14 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int? {
         if (seccomp.architectures != null && seccomp.architectures.isNotEmpty()) {
             Logger.debug("processing ${seccomp.architectures.size} architecture(s)")
 
-            // Add each specified architecture (keeping native architecture)
+            // Remove native architecture (added by default)
+            if (seccomp_arch_remove(ctx, SCMP_ARCH_NATIVE.toUInt()) < 0) {
+                perror("seccomp_arch_remove(SCMP_ARCH_NATIVE)")
+                Logger.warn("failed to remove native architecture")
+            } else {
+                Logger.debug("removed default native architecture")
+            }
+
             seccomp.architectures.forEach { ociArchName ->
                 // Translate OCI arch name to libseccomp arch name
                 val libseccompArchName = translateArchName(ociArchName)
@@ -239,12 +246,44 @@ private fun addSyscallRule(
                 throw Exception("Failed to add seccomp rule for syscall: $name")
             }
         } else {
-            // Add conditional rules
-            // Note: libseccomp requires one rule per argument comparison
+            // Add conditional rules with proper AND/OR logic
+            // Count how many conditions exist for each argument index
+            val argCounts = mutableMapOf<UInt, Int>()
             syscall.args.forEach { arg ->
-                if (addSyscallArgRule(ctx, action, syscallNum, arg) < 0) {
-                    Logger.error("failed to add conditional rule for syscall $name")
-                    throw Exception("Failed to add conditional seccomp rule for syscall: $name")
+                argCounts[arg.index] = (argCounts[arg.index] ?: 0) + 1
+            }
+
+            // Check if multiple conditions share the same argument index
+            val hasMultipleArgs = argCounts.values.any { it > 1 }
+
+            if (hasMultipleArgs) {
+                // Multiple conditions on the same argument index
+                // Add each condition as a separate rule (OR behavior)
+                Logger.debug("syscall $name has multiple conditions on same arg, using OR logic")
+                syscall.args.forEach { arg ->
+                    if (addSyscallArgRule(ctx, action, syscallNum, arg) < 0) {
+                        Logger.error("failed to add conditional rule for syscall $name")
+                        throw Exception("Failed to add conditional seccomp rule for syscall: $name")
+                    }
+                }
+            } else {
+                // Each condition is on a different argument index
+                // Add all conditions as a single rule (AND behavior)
+                Logger.debug("syscall $name has conditions on different args, using AND logic")
+                memScoped {
+                    val cmpArray = allocArray<scmp_arg_cmp>(syscall.args.size)
+                    syscall.args.forEachIndexed { i, arg ->
+                        cmpArray[i].arg = arg.index
+                        cmpArray[i].op = translateOp(arg.op)
+                        cmpArray[i].datum_a = arg.value
+                        cmpArray[i].datum_b = arg.valueTwo ?: 0u
+                    }
+
+                    if (seccomp_rule_add_array(ctx, action, syscallNum, syscall.args.size.toUInt(), cmpArray) < 0) {
+                        perror("seccomp_rule_add_array")
+                        Logger.error("failed to add conditional rule for syscall $name")
+                        throw Exception("Failed to add conditional seccomp rule for syscall: $name")
+                    }
                 }
             }
         }
@@ -266,7 +305,7 @@ private fun addSyscallArgRule(
         cmp.arg = arg.index
         cmp.op = translateOp(arg.op)
         cmp.datum_a = arg.value
-        cmp.datum_b = 0u // Used for SCMP_CMP_MASKED_EQ
+        cmp.datum_b = arg.valueTwo ?: 0u // For SCMP_CMP_MASKED_EQ
 
         seccomp_rule_add_array(ctx, action, syscallNum, 1u, cmp.ptr)
     }
