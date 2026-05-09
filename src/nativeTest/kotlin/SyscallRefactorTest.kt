@@ -15,14 +15,16 @@ class SyscallRefactorTest :
 
         // parseSignal (pure parser)
 
-        test("parseSignal accepts SIG-prefixed names case-insensitively") {
+        test("parseSignal accepts SIG-prefixed names") {
             parseSignal("SIGKILL") shouldBe 9
-            parseSignal("sigterm") shouldBe 15
+            parseSignal("SIGTERM") shouldBe 15
         }
 
-        test("parseSignal accepts bare names") {
+        test("parseSignal accepts bare names case-insensitively") {
             parseSignal("KILL") shouldBe 9
             parseSignal("TERM") shouldBe 15
+            parseSignal("kill") shouldBe 9
+            parseSignal("term") shouldBe 15
         }
 
         test("parseSignal accepts numeric input") {
