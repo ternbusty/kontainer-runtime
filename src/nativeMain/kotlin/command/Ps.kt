@@ -1,6 +1,6 @@
 package command
 
-import cgroup.getCgroupPids
+import cgroup.Cgroup
 import config.loadKontainerConfig
 import kotlinx.cinterop.*
 import logger.Logger
@@ -21,6 +21,7 @@ import utils.JsonCodec
 @OptIn(ExperimentalForeignApi::class)
 fun ps(
     fs: FileSystem,
+    cgroup: Cgroup,
     rootPath: String,
     containerId: String,
     format: String = "json",
@@ -69,7 +70,7 @@ fun ps(
     // Get PIDs from cgroup
     val pids =
         try {
-            getCgroupPids(fs, cgroupPath)
+            cgroup.getPids(cgroupPath)
         } catch (e: Exception) {
             Logger.error("failed to get container PIDs: ${e.message ?: "unknown"}")
             exit(1)

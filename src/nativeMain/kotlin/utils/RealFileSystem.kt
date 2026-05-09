@@ -184,4 +184,22 @@ class RealFileSystem : FileSystem {
         Logger.debug("file does not exist: $path")
         return false
     }
+
+    override fun removeDirectory(path: String): Boolean {
+        if (access(path, F_OK) != 0) {
+            Logger.debug("directory $path does not exist, nothing to remove")
+            return false
+        }
+
+        if (rmdir(path) != 0) {
+            val errNum = errno
+            // Best-effort: cleanup callers (cgroup, container dir) tolerate non-empty
+            // directories or permission errors silently.
+            Logger.warn("failed to remove directory $path: errno=$errNum")
+            return false
+        }
+
+        Logger.debug("removed directory: $path")
+        return true
+    }
 }

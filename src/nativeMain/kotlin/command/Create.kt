@@ -1,5 +1,6 @@
 package command
 
+import cgroup.Cgroup
 import channel.NotifyListener
 import channel.initChannel
 import channel.mainChannel
@@ -26,6 +27,7 @@ import utils.FileSystem
 fun create(
     syscall: Syscall,
     fs: FileSystem,
+    cgroup: Cgroup,
     rootPath: String,
     containerId: String,
     bundlePath: String = ".",
@@ -186,6 +188,7 @@ fun create(
                 runMainProcess(
                     syscall = syscall,
                     fs = fs,
+                    cgroup = cgroup,
                     stage1Pid = stage1Pid,
                     syncFd = syncFds[0],
                     spec = spec,

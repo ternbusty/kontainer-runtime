@@ -1,4 +1,5 @@
 import bootstrap.kontainer_is_init_process
+import cgroup.CgroupV2
 import channel.InitReceiver
 import channel.MainSender
 import channel.NotifyListener
@@ -39,6 +40,7 @@ fun main(args: Array<String>): Unit =
 
         val syscall = LinuxSyscall()
         val fs = RealFileSystem()
+        val cgroup = CgroupV2(fs)
 
         // If this is Stage-2 (init process) forked by bootstrap.c
         if (isInit != 0 || (args.size == 1 && args[0] == "__init__")) {
@@ -152,7 +154,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
-                create(syscall, fs, rootPath, containerId, bundle, pidFile)
+                create(syscall, fs, cgroup, rootPath, containerId, bundle, pidFile)
             }
         }
 
@@ -208,7 +210,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
-                delete(syscall, fs, rootPath, containerId, force)
+                delete(syscall, fs, cgroup, rootPath, containerId, force)
             }
         }
 
@@ -226,7 +228,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
-                ps(fs, rootPath, containerId, format)
+                ps(fs, cgroup, rootPath, containerId, format)
             }
         }
 
