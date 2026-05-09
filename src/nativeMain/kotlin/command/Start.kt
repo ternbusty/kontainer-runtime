@@ -1,6 +1,6 @@
 package command
 
-import channel.NotifySocket
+import channel.SocketNotifySocket
 import kotlinx.cinterop.ExperimentalForeignApi
 import logger.Logger
 import platform.posix.exit
@@ -46,7 +46,7 @@ fun start(
     val notifySocketPath = "/tmp/kontainer-$containerId.sock"
 
     // Send start signal to notify socket
-    val notifySocket = NotifySocket(notifySocketPath)
+    val notifySocket = SocketNotifySocket(notifySocketPath)
     try {
         notifySocket.notifyContainerStart()
         Logger.debug("sent start signal to container")

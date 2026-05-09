@@ -1,8 +1,8 @@
 import bootstrap.kontainer_is_init_process
 import cgroup.CgroupV2
-import channel.InitReceiver
-import channel.MainSender
-import channel.NotifyListener
+import channel.SocketInitReceiver
+import channel.SocketMainSender
+import channel.SocketNotifyListener
 import command.*
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.memScoped
@@ -86,9 +86,9 @@ fun main(args: Array<String>): Unit =
                 }
 
             // Recreate channel objects from FDs (inherited from parent process)
-            val mainSender = MainSender(mainSenderFd)
-            val initReceiver = InitReceiver(initReceiverFd)
-            val notifyListener = NotifyListener(notifyListenerFd)
+            val mainSender = SocketMainSender(mainSenderFd)
+            val initReceiver = SocketInitReceiver(initReceiverFd)
+            val notifyListener = SocketNotifyListener(notifyListenerFd)
 
             val pid = getpid()
             Logger.info("init process (Stage-2, PID=$pid) started successfully via bootstrap.c")

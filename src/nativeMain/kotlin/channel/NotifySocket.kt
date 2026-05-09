@@ -6,47 +6,71 @@ import platform.linux.sockaddr_un
 import platform.posix.*
 
 /**
- * Notify Socket implementation for container start signaling
+ * Notify socket abstractions for container start signaling.
+ *
+ * The runtime uses a Unix domain socket. The init process (Stage-2) listens on
+ * it via [NotifyListener] and blocks in waitForContainerStart() until the
+ * `start` command connects via [NotifySocket] and sends a message.
+ *
+ * Implementations live in the same file because they're tightly coupled (they
+ * have to agree on the socket protocol).
  */
 
 const val NOTIFY_FILE = "notify.sock"
 
 /**
- * NotifyListener (server side) - created during container creation
- * Waits for start signal from the main process
+ * Server side of the notify socket. Owned by the init process (and inherited
+ * across exec via [fd]).
+ */
+interface NotifyListener {
+    /** FD of the listening socket; passed across exec via env vars. */
+    fun fd(): Int
+
+    /** Block until a client connects and sends a start message. */
+    fun waitForContainerStart()
+
+    fun close()
+}
+
+/**
+ * Client side of the notify socket. Used by the `start` command.
+ */
+interface NotifySocket {
+    /** Connect and send the start message. */
+    fun notifyContainerStart()
+}
+
+/**
+ * Unix-domain-socket-backed [NotifyListener].
+ *
+ * Two construction paths: from a path (creates socket, binds, listens) used by
+ * Create, and from an inherited FD used by the init process after fork/exec.
  */
 @OptIn(ExperimentalForeignApi::class)
-class NotifyListener {
+class SocketNotifyListener : NotifyListener {
     private val socket: Int
 
-    /**
-     * Constructor for creating a new socket (used by Create.kt)
-     */
     constructor(socketPath: String) {
         Logger.debug("NotifyListener: creating socket at $socketPath")
 
         memScoped {
-            // Create Unix domain socket
             socket = socket(AF_UNIX, SOCK_STREAM, 0)
             if (socket == -1) {
                 perror("socket")
                 throw Exception("Failed to create socket")
             }
 
-            // Unlink if exists
             unlink(socketPath)
 
-            // Bind to socket path
             val addr = alloc<sockaddr_un>()
             addr.sun_family = AF_UNIX.toUShort()
 
-            // Copy path to sun_path (limited to 108 bytes on Linux)
+            // sun_path is limited to 108 bytes on Linux
             val pathBytes = socketPath.encodeToByteArray()
             if (pathBytes.size >= 108) {
                 throw Exception("Socket path too long (max 108 bytes)")
             }
 
-            // Copy path into sun_path array
             for (i in pathBytes.indices) {
                 addr.sun_path[i] = pathBytes[i]
             }
@@ -61,7 +85,6 @@ class NotifyListener {
                 throw Exception("Failed to bind socket to $socketPath")
             }
 
-            // Listen for connections
             if (listen(socket, 1) == -1) {
                 perror("listen")
                 close(socket)
@@ -72,35 +95,23 @@ class NotifyListener {
         }
     }
 
-    /**
-     * Constructor for reusing an existing socket FD (used by init process after fork)
-     */
     constructor(fd: Int) {
         Logger.debug("NotifyListener: reusing existing socket fd=$fd")
         socket = fd
     }
 
-    /**
-     * Get the socket FD (for passing to child process)
-     */
-    fun fd(): Int = socket
+    override fun fd(): Int = socket
 
-    /**
-     * Wait for container start signal
-     * Blocks until a connection is accepted and message is received
-     */
-    fun waitForContainerStart() {
+    override fun waitForContainerStart() {
         memScoped {
             Logger.debug("NotifyListener: waiting for container start signal...")
 
-            // Accept connection
             val clientSocket = accept(socket, null, null)
             if (clientSocket == -1) {
                 perror("accept")
                 throw Exception("Failed to accept connection")
             }
 
-            // Read message
             val buffer = allocArray<ByteVar>(256)
             val n = recv(clientSocket, buffer, 255.toULong(), 0)
             if (n == -1L) {
@@ -118,31 +129,28 @@ class NotifyListener {
         }
     }
 
-    fun close() {
+    override fun close() {
         close(socket)
     }
 }
 
 /**
- * NotifySocket (client side) - used by start command
- * Sends start signal to the init process
+ * Unix-domain-socket-backed [NotifySocket].
  */
 @OptIn(ExperimentalForeignApi::class)
-class NotifySocket(
+class SocketNotifySocket(
     private val socketPath: String,
-) {
-    fun notifyContainerStart() {
+) : NotifySocket {
+    override fun notifyContainerStart() {
         Logger.debug("NotifySocket: connecting to $socketPath")
 
         memScoped {
-            // Create Unix domain socket
             val sock = socket(AF_UNIX, SOCK_STREAM, 0)
             if (sock == -1) {
                 perror("socket")
                 throw Exception("Failed to create socket")
             }
 
-            // Connect to socket path
             val addr = alloc<sockaddr_un>()
             addr.sun_family = AF_UNIX.toUShort()
 
@@ -152,7 +160,6 @@ class NotifySocket(
                 throw Exception("Socket path too long (max 108 bytes)")
             }
 
-            // Copy path into sun_path array
             for (i in pathBytes.indices) {
                 addr.sun_path[i] = pathBytes[i]
             }
@@ -167,7 +174,6 @@ class NotifySocket(
                 throw Exception("Failed to connect to socket: $socketPath")
             }
 
-            // Send start message
             val message = "start container"
             val sent = send(sock, message.cstr.ptr, message.length.toULong(), 0)
             if (sent == -1L) {

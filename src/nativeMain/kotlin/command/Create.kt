@@ -1,7 +1,7 @@
 package command
 
 import cgroup.Cgroup
-import channel.NotifyListener
+import channel.SocketNotifyListener
 import channel.initChannel
 import channel.mainChannel
 import kotlinx.cinterop.*
@@ -77,7 +77,7 @@ fun create(
         // Create NotifyListener before forking (will be inherited by child processes)
         val notifyListener =
             try {
-                NotifyListener(notifySocketPath)
+                SocketNotifyListener(notifySocketPath)
             } catch (e: Exception) {
                 Logger.error("failed to create notify listener: ${e.message ?: "unknown"}")
                 exit(1)
