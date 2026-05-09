@@ -12,6 +12,7 @@ import process.runMainProcess
 import spec.loadSpec
 import state.containerExists
 import syscall.Syscall
+import utils.FileSystem
 
 /**
  * Create command - Creates a new container
@@ -24,13 +25,14 @@ import syscall.Syscall
 @OptIn(ExperimentalForeignApi::class)
 fun create(
     syscall: Syscall,
+    fs: FileSystem,
     rootPath: String,
     containerId: String,
     bundlePath: String = ".",
     pidFile: String? = null,
 ): Unit =
     memScoped {
-        if (containerExists(rootPath, containerId)) {
+        if (containerExists(fs, rootPath, containerId)) {
             Logger.error("container $containerId already exists")
             exit(1)
         }
@@ -42,7 +44,7 @@ fun create(
 
         val spec =
             try {
-                loadSpec(configPath)
+                loadSpec(fs, configPath)
             } catch (e: Exception) {
                 Logger.error("failed to load spec: ${e.message ?: "unknown error"}")
                 exit(1)
@@ -183,6 +185,7 @@ fun create(
 
                 runMainProcess(
                     syscall = syscall,
+                    fs = fs,
                     stage1Pid = stage1Pid,
                     syncFd = syncFds[0],
                     spec = spec,

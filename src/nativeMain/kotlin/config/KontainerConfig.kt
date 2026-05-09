@@ -4,6 +4,7 @@ import kotlinx.cinterop.*
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import logger.Logger
+import utils.FileSystem
 import utils.JsonCodec
 
 /**
@@ -31,6 +32,7 @@ data class KontainerConfig(
  */
 @OptIn(ExperimentalForeignApi::class)
 fun saveKontainerConfig(
+    fs: FileSystem,
     config: KontainerConfig,
     rootPath: String,
     containerId: String,
@@ -40,7 +42,7 @@ fun saveKontainerConfig(
 
     Logger.debug("saving kontainer config to $configPath")
 
-    JsonCodec.writeToFile(configPath, config, prettyPrint = true)
+    JsonCodec.writeToFile(fs, configPath, config, prettyPrint = true)
 
     Logger.debug("saved kontainer config")
 }
@@ -55,6 +57,7 @@ fun saveKontainerConfig(
  */
 @OptIn(ExperimentalForeignApi::class)
 fun loadKontainerConfig(
+    fs: FileSystem,
     rootPath: String,
     containerId: String,
 ): KontainerConfig {
@@ -63,5 +66,5 @@ fun loadKontainerConfig(
 
     Logger.debug("loading kontainer config from $configPath")
 
-    return JsonCodec.loadFromFile<KontainerConfig>(configPath)
+    return JsonCodec.loadFromFile<KontainerConfig>(fs, configPath)
 }

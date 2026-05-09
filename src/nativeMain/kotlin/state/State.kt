@@ -11,9 +11,8 @@ import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import logger.Logger
 import platform.posix.*
+import utils.FileSystem
 import utils.JsonCodec
-import utils.createDirectories
-import utils.fileExists
 
 /**
  * Container status enum
@@ -171,18 +170,19 @@ private fun getCurrentTimestamp(): String =
  * @throws Exception if directory creation or file write fails
  */
 @OptIn(ExperimentalForeignApi::class)
-fun State.save(rootPath: String) {
+fun State.save(
+    fs: FileSystem,
+    rootPath: String,
+) {
     val containerDir = getContainerDir(rootPath, this.id)
     val statePath = getStatePath(rootPath, this.id)
 
     Logger.debug("saving state to $statePath")
 
-    // Create container directory (and parent directories if needed)
-    createDirectories(containerDir)
+    fs.createDirectories(containerDir)
 
-    // Serialize state to JSON and write to file
     try {
-        JsonCodec.writeToFile(statePath, this, prettyPrint = true)
+        JsonCodec.writeToFile(fs, statePath, this, prettyPrint = true)
     } catch (e: Exception) {
         Logger.error("failed to save state: ${e.message ?: "unknown"}")
         throw Exception("Failed to save state: ${e.message}")
@@ -200,11 +200,12 @@ fun State.save(rootPath: String) {
  */
 @OptIn(ExperimentalForeignApi::class)
 fun containerExists(
+    fs: FileSystem,
     rootPath: String,
     containerId: String,
 ): Boolean {
     val statePath = getStatePath(rootPath, containerId)
-    val exists = fileExists(statePath)
+    val exists = fs.fileExists(statePath)
 
     if (exists) {
         Logger.debug("container $containerId exists at $statePath")
@@ -227,6 +228,7 @@ fun containerExists(
  */
 @OptIn(ExperimentalForeignApi::class)
 fun loadState(
+    fs: FileSystem,
     rootPath: String,
     containerId: String,
 ): State {
@@ -236,7 +238,7 @@ fun loadState(
 
     val state =
         try {
-            JsonCodec.loadFromFile<State>(statePath)
+            JsonCodec.loadFromFile<State>(fs, statePath)
         } catch (e: Exception) {
             Logger.error("failed to load state: ${e.message ?: "unknown"}")
             throw Exception("Failed to load state file (container may not exist): ${e.message}")

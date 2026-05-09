@@ -6,6 +6,7 @@ import platform.posix.*
 import state.loadState
 import state.refreshStatus
 import syscall.Syscall
+import utils.FileSystem
 
 /**
  * Kill command - Send a signal to a container
@@ -20,6 +21,7 @@ import syscall.Syscall
 @OptIn(ExperimentalForeignApi::class)
 fun kill(
     syscall: Syscall,
+    fs: FileSystem,
     rootPath: String,
     containerId: String,
     signalStr: String,
@@ -29,7 +31,7 @@ fun kill(
     // Load container state
     var state =
         try {
-            loadState(rootPath, containerId)
+            loadState(fs, rootPath, containerId)
         } catch (e: Exception) {
             Logger.error("failed to load container state: ${e.message ?: "unknown"}")
             Logger.error("container may not exist or state file is corrupted")
