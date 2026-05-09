@@ -17,7 +17,7 @@ import state.ContainerStatus
 import state.State
 import state.createState
 import state.save
-import syscall.applyRlimits
+import syscall.defaultSyscall
 import utils.writeTextFile
 
 /**
@@ -60,7 +60,7 @@ private fun runMainProcessInternal(
 
         // Apply rlimits to Stage-1 BEFORE entering user namespace
         // Rlimits are inherited: Stage-1 → Stage-2
-        applyRlimits(stage1Pid, spec.process.rlimits)
+        defaultSyscall.applyRlimits(stage1Pid, spec.process.rlimits)
 
         // Handle UID/GID mapping if user namespace is configured
         // This must be done BEFORE receiving Stage-2 PID, as Stage-1 waits for mapping completion

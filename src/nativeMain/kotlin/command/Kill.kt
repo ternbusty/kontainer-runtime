@@ -5,7 +5,7 @@ import logger.Logger
 import platform.posix.*
 import state.loadState
 import state.refreshStatus
-import syscall.killProcess
+import syscall.defaultSyscall
 
 /**
  * Kill command - Send a signal to a container
@@ -73,7 +73,7 @@ fun kill(
 
     // Send signal to init process
     try {
-        killProcess(pid, signal)
+        defaultSyscall.killProcess(pid, signal)
         Logger.info("successfully sent signal $signalStr to container $containerId (PID $pid)")
     } catch (e: Exception) {
         Logger.error("failed to kill container: ${e.message ?: "unknown"}")
