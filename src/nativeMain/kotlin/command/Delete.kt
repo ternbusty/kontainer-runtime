@@ -4,9 +4,10 @@ import cgroup.cleanupCgroup
 import config.loadKontainerConfig
 import kotlinx.cinterop.ExperimentalForeignApi
 import logger.Logger
+import platform.posix.SIGKILL
 import platform.posix.exit
 import state.*
-import syscall.killProcess
+import syscall.defaultSyscall
 
 /**
  * Delete command - Deletes a container
@@ -64,7 +65,7 @@ fun delete(
             Logger.debug("killing process before deletion")
             state.pid?.let { pid ->
                 try {
-                    killProcess(pid)
+                    defaultSyscall.killProcess(pid, SIGKILL)
                     Logger.debug("killed process $pid")
                 } catch (e: Exception) {
                     Logger.warn("failed to kill process $pid: ${e.message ?: "unknown"}")

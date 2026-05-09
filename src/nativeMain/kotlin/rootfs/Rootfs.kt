@@ -3,9 +3,7 @@ package rootfs
 import kotlinx.cinterop.*
 import logger.Logger
 import platform.posix.*
-import syscall.mount
-import syscall.pivotRoot
-import syscall.umount2
+import syscall.defaultSyscall
 
 // Mount flags (from linux/mount.h)
 const val MS_RDONLY = 1
@@ -30,7 +28,7 @@ fun mountFs(
     fstype: String?,
     flags: ULong,
     data: String? = null,
-): Int = mount(source, target, fstype, flags, data)
+): Int = defaultSyscall.mount(source, target, fstype, flags, data)
 
 /**
  * Umount filesystem using syscall layer
@@ -39,7 +37,7 @@ fun mountFs(
 fun umountFs(
     target: String,
     flags: Int,
-): Int = umount2(target, flags)
+): Int = defaultSyscall.umount2(target, flags)
 
 /**
  * Prepare rootfs with basic mounts
@@ -335,7 +333,7 @@ fun pivotRoot(newRoot: String) {
 
     // Perform pivot_root syscall using newroot for both arguments
     // This puts the old root at the same location as new root
-    if (pivotRoot(newRoot, newRoot) == -1) {
+    if (defaultSyscall.pivotRoot(newRoot, newRoot) == -1) {
         val errNum = errno
         perror("pivot_root")
         close(newrootFd)

@@ -11,9 +11,7 @@ import rootfs.prepareRootfs
 import rootfs.setRootfsReadonly
 import seccomp.initializeSeccomp
 import spec.Spec
-import syscall.closeRange
-import syscall.setAdditionalGroups
-import syscall.setNoNewPrivileges
+import syscall.defaultSyscall
 
 /**
  * Init process (Stage-2 / PID 1 in container)
@@ -154,7 +152,7 @@ private fun initProcessInternal(
         // (e.g., via setuid/setgid binaries or file capabilities)
         // Must be set before applying capabilities
         if (spec.process.noNewPrivileges == true) {
-            setNoNewPrivileges()
+            defaultSyscall.setNoNewPrivileges()
         }
 
         // Apply capability restrictions
@@ -177,7 +175,7 @@ private fun initProcessInternal(
         spec.process.user.additionalGids?.let { additionalGids ->
             if (additionalGids.isNotEmpty()) {
                 Logger.debug("setting ${additionalGids.size} additional groups")
-                setAdditionalGroups(additionalGids)
+                defaultSyscall.setAdditionalGroups(additionalGids)
             }
         }
 
@@ -230,7 +228,7 @@ private fun initProcessInternal(
         // This sets FD_CLOEXEC on all FDs >= 3 + preserveFds, so they will be
         // automatically closed when execve is called. We do this late (after
         // sending init_ready) to avoid closing the channel pipes prematurely.
-        closeRange(preserveFds)
+        defaultSyscall.closeRange(preserveFds)
 
         // Wait for start signal from notify socket
         Logger.debug("waiting for start signal...")
