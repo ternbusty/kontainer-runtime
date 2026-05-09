@@ -2,9 +2,9 @@ package capability
 
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
-import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import io.kotest.matchers.string.shouldNotContain
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.linux.PR_CAP_AMBIENT
 import platform.linux.PR_CAP_AMBIENT_CLEAR_ALL
