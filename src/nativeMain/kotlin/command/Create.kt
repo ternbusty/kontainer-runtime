@@ -11,6 +11,7 @@ import platform.posix.*
 import process.runMainProcess
 import spec.loadSpec
 import state.containerExists
+import syscall.Syscall
 
 /**
  * Create command - Creates a new container
@@ -22,6 +23,7 @@ import state.containerExists
  */
 @OptIn(ExperimentalForeignApi::class)
 fun create(
+    syscall: Syscall,
     rootPath: String,
     containerId: String,
     bundlePath: String = ".",
@@ -180,6 +182,7 @@ fun create(
                 Logger.debug("forked Stage-1, PID=$stage1Pid, waiting for bootstrap to complete")
 
                 runMainProcess(
+                    syscall = syscall,
                     stage1Pid = stage1Pid,
                     syncFd = syncFds[0],
                     spec = spec,

@@ -13,6 +13,7 @@ import platform.posix.getenv
 import platform.posix.getpid
 import process.runInitProcess
 import spec.loadSpec
+import syscall.LinuxSyscall
 
 /**
  * Kontainer Runtime - Container runtime written in Kotlin/Native
@@ -34,6 +35,8 @@ fun main(args: Array<String>): Unit =
         val isInit = kontainer_is_init_process()
 
         Logger.setContext("main")
+
+        val syscall = LinuxSyscall()
 
         // If this is Stage-2 (init process) forked by bootstrap.c
         if (isInit != 0 || (args.size == 1 && args[0] == "__init__")) {
@@ -90,7 +93,7 @@ fun main(args: Array<String>): Unit =
 
             // Run init process logic (Stage-2 / PID 1)
             // This will eventually call execve() and replace this process with the container process
-            runInitProcess(spec, rootfsPath, mainSender, initReceiver, notifyListener)
+            runInitProcess(syscall, spec, rootfsPath, mainSender, initReceiver, notifyListener)
 
             // Should not reach here (runInitProcess calls execve or _exit)
             Logger.error("runInitProcess returned unexpectedly")
@@ -147,7 +150,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
-                create(rootPath, containerId, bundle, pidFile)
+                create(syscall, rootPath, containerId, bundle, pidFile)
             }
         }
 
@@ -185,7 +188,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
-                kill(rootPath, containerId, signal)
+                kill(syscall, rootPath, containerId, signal)
             }
         }
 
@@ -203,7 +206,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
-                delete(rootPath, containerId, force)
+                delete(syscall, rootPath, containerId, force)
             }
         }
 

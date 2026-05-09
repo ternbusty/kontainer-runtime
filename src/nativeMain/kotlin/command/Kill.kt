@@ -5,7 +5,7 @@ import logger.Logger
 import platform.posix.*
 import state.loadState
 import state.refreshStatus
-import syscall.defaultSyscall
+import syscall.Syscall
 
 /**
  * Kill command - Send a signal to a container
@@ -19,6 +19,7 @@ import syscall.defaultSyscall
  */
 @OptIn(ExperimentalForeignApi::class)
 fun kill(
+    syscall: Syscall,
     rootPath: String,
     containerId: String,
     signalStr: String,
@@ -73,7 +74,7 @@ fun kill(
 
     // Send signal to init process
     try {
-        defaultSyscall.killProcess(pid, signal)
+        syscall.killProcess(pid, signal)
         Logger.info("successfully sent signal $signalStr to container $containerId (PID $pid)")
     } catch (e: Exception) {
         Logger.error("failed to kill container: ${e.message ?: "unknown"}")
@@ -84,7 +85,7 @@ fun kill(
 /**
  * Parse a signal name (e.g. "SIGKILL", "KILL") or number (e.g. "9") to its signal number.
  */
-private fun parseSignal(signalStr: String): Int {
+internal fun parseSignal(signalStr: String): Int {
     signalStr.toIntOrNull()?.let { return it }
 
     val normalized = if (signalStr.startsWith("SIG")) signalStr else "SIG$signalStr"

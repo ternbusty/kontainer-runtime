@@ -48,6 +48,82 @@ class LinuxSyscall : Syscall {
             syscall(__NR_pivot_root.toLong(), newRoot.cstr.ptr, putOld.cstr.ptr).toInt()
         }
 
+    override fun chroot(path: String): Int = platform.posix.chroot(path)
+
+    override fun chdir(path: String): Int = platform.posix.chdir(path)
+
+    override fun setuid(uid: UInt): Int = platform.posix.setuid(uid)
+
+    override fun setgid(gid: UInt): Int = platform.posix.setgid(gid)
+
+    override fun geteuid(): UInt = platform.posix.geteuid()
+
+    override fun getegid(): UInt = platform.posix.getegid()
+
+    override fun sethostname(name: String): Int = platform.posix.sethostname(name, name.length.toULong())
+
+    override fun umask(mask: UInt): UInt = platform.posix.umask(mask)
+
+    override fun prctl(
+        option: Int,
+        arg2: ULong,
+        arg3: ULong,
+        arg4: ULong,
+        arg5: ULong,
+    ): Int =
+        syscall(
+            __NR_prctl.toLong(),
+            option.toLong(),
+            arg2.toLong(),
+            arg3.toLong(),
+            arg4.toLong(),
+            arg5.toLong(),
+        ).toInt()
+
+    override fun getCapabilities(): CapabilitySets =
+        memScoped {
+            val header = alloc<__user_cap_header_struct>()
+            header.version = _LINUX_CAPABILITY_VERSION_3.toUInt()
+            header.pid = 0 // current process
+
+            val data = allocArray<__user_cap_data_struct>(2)
+
+            if (syscall(__NR_capget.toLong(), header.ptr, data) != 0L) {
+                perror("capget")
+                throw Exception("Failed to get capabilities: ${strerror(errno)?.toKString()}")
+            }
+
+            // Combine the two u32 values for each set (covers capabilities > 31)
+            val effective = data[0].effective or (data[1].effective.toLong() shl 32).toUInt()
+            val permitted = data[0].permitted or (data[1].permitted.toLong() shl 32).toUInt()
+            val inheritable = data[0].inheritable or (data[1].inheritable.toLong() shl 32).toUInt()
+
+            CapabilitySets(effective, permitted, inheritable)
+        }
+
+    override fun setCapabilities(caps: CapabilitySets) {
+        memScoped {
+            val header = alloc<__user_cap_header_struct>()
+            header.version = _LINUX_CAPABILITY_VERSION_3.toUInt()
+            header.pid = 0 // current process
+
+            val data = allocArray<__user_cap_data_struct>(2)
+
+            data[0].effective = caps.effective and 0xFFFFFFFFu
+            data[0].permitted = caps.permitted and 0xFFFFFFFFu
+            data[0].inheritable = caps.inheritable and 0xFFFFFFFFu
+
+            data[1].effective = (caps.effective shr 32) and 0xFFFFFFFFu
+            data[1].permitted = (caps.permitted shr 32) and 0xFFFFFFFFu
+            data[1].inheritable = (caps.inheritable shr 32) and 0xFFFFFFFFu
+
+            if (syscall(__NR_capset.toLong(), header.ptr, data) != 0L) {
+                perror("capset")
+                throw Exception("Failed to set capabilities: ${strerror(errno)?.toKString()}")
+            }
+        }
+    }
+
     override fun applyRlimits(
         pid: Int,
         rlimits: List<POSIXRlimit>?,
