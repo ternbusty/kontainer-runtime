@@ -2,10 +2,23 @@
 
 ## Prerequisites
 
-Set symbolic link for kontainer-runtime binary
+There are two ways to make `ctr` invoke kontainer-runtime as the OCI runtime.
+
+### Option A. Pass `--runc-binary` to `ctr run` (recommended)
+
+No setup needed beyond building the binary. Used by `.github/workflows/integration.yml`.
+
+```bash
+BIN="$HOME/kontainer-runtime/build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe"
+sudo ctr run --runc-binary="$BIN" ...
+```
+
+### Option B. Symlink the binary as `/usr/sbin/runc`
+
+Useful if you do not want to repeat `--runc-binary` for every command.
 
 ```
-sudo ln -sf /home/ternbusty/kontainer-runtime/build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe /usr/sbin/runc
+sudo ln -sf $HOME/kontainer-runtime/build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe /usr/sbin/runc
 ```
 
 ## Verification
@@ -13,7 +26,9 @@ sudo ln -sf /home/ternbusty/kontainer-runtime/build/bin/linuxX64/debugExecutable
 ### Test Command to Check from Inside Container
 
 ```bash
+BIN="$HOME/kontainer-runtime/build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe"
 sudo ctr run --rm \
+    --runc-binary="$BIN" \
     --seccomp \
     --read-only \
     --memory-limit 134217728 \
@@ -26,6 +41,8 @@ sudo ctr run --rm \
     test-alpine-comprehensive \
     sh -c "$(cat verify-from-container.sh)"
 ```
+
+If you used Option B (symlink), drop the `BIN=...` line and the `--runc-binary` flag.
 
 output
 

@@ -1,0 +1,96 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libseccomp-dev jq containerd
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build kontainer-runtime release binary
+        run: ./gradlew linkReleaseExecutableLinuxX64
+
+      - name: Make verify scripts executable
+        run: chmod +x test-scripts/*.sh
+
+      - name: Start containerd
+        run: |
+          sudo systemctl enable containerd
+          sudo systemctl start containerd
+          sudo systemctl status containerd --no-pager
+
+      - name: Pull alpine image
+        run: sudo ctr image pull docker.io/library/alpine:latest
+
+      - name: Run container and host-side verification
+        run: |
+          BIN="$(pwd)/build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe"
+
+          # Start the container in the background. verify-from-container.sh ends
+          # with `sleep 10`, giving the host script a window to read /proc/<pid>/.
+          sudo ctr run --rm \
+              --runc-binary="$BIN" \
+              --seccomp --read-only \
+              --memory-limit 134217728 --cpus 0.5 \
+              --uidmap "0:100000:65536" --gidmap "0:100000:65536" \
+              --user 1000:1000 --hostname my-test-container \
+              docker.io/library/alpine:latest \
+              test-verify \
+              sh -c "$(cat test-scripts/verify-from-container.sh)" \
+              > container.log 2>&1 &
+          CTR_PID=$!
+          echo "ctr PID: $CTR_PID"
+
+          # Give the container time to start so its /proc/<pid>/ entries are populated.
+          sleep 5
+
+          sudo ./test-scripts/verify-from-host.sh test-verify > host.log 2>&1
+
+          # Wait for the container to finish its trailing sleep and exit.
+          wait $CTR_PID
+
+      - name: Show captured logs
+        if: always()
+        run: |
+          echo "=== container.log ==="
+          cat container.log || true
+          echo ""
+          echo "=== host.log ==="
+          cat host.log || true
+
+      - name: Check expectations
+        run: |
+          ./test-scripts/check-expectations.sh container.log
+          ./test-scripts/check-expectations.sh host.log
+
+      - name: Upload logs as artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs
+          path: |
+            container.log
+            host.log
