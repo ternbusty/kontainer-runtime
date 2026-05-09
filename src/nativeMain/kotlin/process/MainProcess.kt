@@ -1,6 +1,6 @@
 package process
 
-import cgroup.setupCgroup
+import cgroup.Cgroup
 import channel.*
 import config.KontainerConfig
 import config.saveKontainerConfig
@@ -39,6 +39,7 @@ import utils.FileSystem
 private fun runMainProcessInternal(
     syscall: Syscall,
     fs: FileSystem,
+    cgroup: Cgroup,
     stage1Pid: Int,
     syncFd: Int,
     spec: Spec,
@@ -58,7 +59,7 @@ private fun runMainProcessInternal(
 
         // Setup cgroup for Stage-1 BEFORE syncing with child
         // Stage-1 → Stage-2 are both included in the cgroup (inherited through fork)
-        setupCgroup(fs, stage1Pid, spec.linux?.cgroupsPath, spec.linux?.resources)
+        cgroup.setup(stage1Pid, spec.linux?.cgroupsPath, spec.linux?.resources)
 
         // Apply rlimits to Stage-1 BEFORE entering user namespace
         // Rlimits are inherited: Stage-1 → Stage-2
@@ -222,6 +223,7 @@ private fun runMainProcessInternal(
 fun runMainProcess(
     syscall: Syscall,
     fs: FileSystem,
+    cgroup: Cgroup,
     stage1Pid: Int,
     syncFd: Int,
     spec: Spec,
@@ -239,6 +241,7 @@ fun runMainProcess(
         runMainProcessInternal(
             syscall,
             fs,
+            cgroup,
             stage1Pid,
             syncFd,
             spec,

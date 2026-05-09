@@ -1,6 +1,6 @@
 package command
 
-import cgroup.cleanupCgroup
+import cgroup.Cgroup
 import config.loadKontainerConfig
 import kotlinx.cinterop.ExperimentalForeignApi
 import logger.Logger
@@ -21,6 +21,7 @@ import utils.FileSystem
 fun delete(
     syscall: Syscall,
     fs: FileSystem,
+    cgroup: Cgroup,
     rootPath: String,
     containerId: String,
     force: Boolean = false,
@@ -99,7 +100,7 @@ fun delete(
     // Cleanup cgroup
     config?.cgroupPath?.let { cgroupPath ->
         try {
-            cleanupCgroup(cgroupPath)
+            cgroup.cleanup(cgroupPath)
         } catch (e: Exception) {
             Logger.warn("failed to cleanup cgroup: ${e.message ?: "unknown"}")
             // Continue with deletion even if cgroup cleanup fails

@@ -52,4 +52,9 @@ class FakeFileSystem : FileSystem {
         calls += "fileExists($path)"
         return path in files || path in directories
     }
+
+    override fun removeDirectory(path: String): Boolean {
+        calls += "removeDirectory($path)"
+        return directories.remove(path)
+    }
 }

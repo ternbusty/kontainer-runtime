@@ -1,342 +1,36 @@
 package cgroup
 
-import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.memScoped
-import logger.Logger
-import platform.posix.F_OK
-import platform.posix.access
 import spec.LinuxResources
-import utils.FileSystem
 
 /**
- * Cgroup v2 management
+ * Abstraction over cgroup operations the runtime invokes.
  *
- * Provides basic cgroup v2 support for resource limitation
+ * Domain code (process / command) calls methods on a [Cgroup] instance
+ * rather than touching cgroupfs directly. The production implementation
+ * is [CgroupV2]; tests inject a fake.
  */
+interface Cgroup {
+    /**
+     * Create a cgroup at [cgroupPath] (relative to the cgroup root), enable the
+     * controllers required by [resources] in every ancestor's cgroup.subtree_control,
+     * place [pid] in the leaf cgroup.procs, and apply the resource limits.
+     *
+     * No-op when both [cgroupPath] and [resources] are null.
+     */
+    fun setup(
+        pid: Int,
+        cgroupPath: String?,
+        resources: LinuxResources?,
+    )
 
-private const val CGROUP_ROOT = "/sys/fs/cgroup"
-private const val CGROUP_PROCS = "cgroup.procs"
-private const val CGROUP_SUBTREE_CONTROL = "cgroup.subtree_control"
-private const val MEMORY_MAX = "memory.max"
-private const val MEMORY_LOW = "memory.low"
-private const val MEMORY_SWAP_MAX = "memory.swap.max"
-private const val CPU_WEIGHT = "cpu.weight"
-private const val CPU_MAX = "cpu.max"
+    /**
+     * Best-effort removal of the cgroup directory at [cgroupPath]. Logs a warning
+     * on failure (e.g. cgroup not empty) and never throws.
+     */
+    fun cleanup(cgroupPath: String?)
 
-/**
- * Setup cgroup for a process
- *
- * Creates cgroup directory structure, enables controllers, and applies resource limits
- *
- * @param pid Process ID to add to cgroup
- * @param cgroupPath Relative path from /sys/fs/cgroup (e.g., "mycontainer")
- * @param resources Resource limits to apply
- */
-@OptIn(ExperimentalForeignApi::class)
-fun setupCgroup(
-    fs: FileSystem,
-    pid: Int,
-    cgroupPath: String?,
-    resources: LinuxResources?,
-) {
-    // Skip if no cgroup path or resources specified
-    if (cgroupPath == null && resources == null) {
-        return
-    }
-
-    memScoped {
-        // Normalize cgroup path: remove leading slash if present (for absolute paths from containerd)
-        val normalizedPath =
-            cgroupPath?.removePrefix("/") ?: "kontainer-$pid"
-        val fullPath = "$CGROUP_ROOT/$normalizedPath"
-
-        Logger.debug("setting up cgroup at $fullPath")
-
-        // Create cgroup directory
-        fs.createDirectories(fullPath, 0x1EDu) // 0x1ED = 0755 octal
-        Logger.debug("created cgroup directory: $fullPath")
-
-        // Enable controllers at every ancestor of the leaf cgroup.
-        // In cgroup v2 a controller is only available in a child cgroup if its parent's
-        // cgroup.subtree_control contains +<controller>. For a nested path like
-        // "default/test-verify" we must enable controllers in both
-        // /sys/fs/cgroup/cgroup.subtree_control and /sys/fs/cgroup/default/cgroup.subtree_control,
-        // not only the root, otherwise opening memory.max etc. in the leaf fails with EACCES.
-        val requiredControllers = getRequiredControllers(resources)
-        if (requiredControllers.isNotEmpty()) {
-            val segments = normalizedPath.split("/").filter { it.isNotEmpty() }
-            val ancestorPaths = mutableListOf(CGROUP_ROOT)
-            for (i in 0 until segments.size - 1) {
-                ancestorPaths.add("${ancestorPaths.last()}/${segments[i]}")
-            }
-
-            for (ancestorPath in ancestorPaths) {
-                val subtreeControlPath = "$ancestorPath/$CGROUP_SUBTREE_CONTROL"
-                for (controller in requiredControllers) {
-                    try {
-                        fs.writeTextFile(subtreeControlPath, "+$controller")
-                        Logger.debug("enabled $controller controller in $ancestorPath")
-                    } catch (e: Exception) {
-                        Logger.error("failed to enable $controller controller in $ancestorPath: ${e.message}")
-                        throw Exception("Failed to enable required cgroup controller: $controller in $ancestorPath", e)
-                    }
-                }
-            }
-        }
-
-        // Add process to cgroup
-        val procsPath = "$fullPath/$CGROUP_PROCS"
-        try {
-            fs.writeTextFile(procsPath, pid.toString())
-            Logger.debug("added PID $pid to cgroup")
-        } catch (e: Exception) {
-            Logger.error("failed to add PID to cgroup: ${e.message}")
-            throw Exception("Failed to add PID to cgroup", e)
-        }
-
-        // Apply resource limits if specified
-        if (resources != null) {
-            applyResources(fs, fullPath, resources)
-        }
-    }
-}
-
-/**
- * Apply resource limits to cgroup
- */
-@OptIn(ExperimentalForeignApi::class)
-private fun applyResources(
-    fs: FileSystem,
-    cgroupPath: String,
-    resources: LinuxResources,
-) {
-    // Apply memory limits
-    resources.memory?.let { memory ->
-        applyMemoryLimits(fs, cgroupPath, memory.limit, memory.reservation, memory.swap)
-    }
-
-    // Apply CPU limits
-    resources.cpu?.let { cpu ->
-        applyCpuLimits(fs, cgroupPath, cpu.shares, cpu.quota, cpu.period)
-    }
-}
-
-/**
- * Apply memory resource limits
- */
-@OptIn(ExperimentalForeignApi::class)
-private fun applyMemoryLimits(
-    fs: FileSystem,
-    cgroupPath: String,
-    limit: Long?,
-    reservation: Long?,
-    swap: Long?,
-) {
-    // Set memory.max (memory limit)
-    limit?.let {
-        val memoryMaxPath = "$cgroupPath/$MEMORY_MAX"
-        val value = if (it == -1L) "max" else it.toString()
-        writeCgroupFile(fs, memoryMaxPath, value, "memory.max")
-    }
-
-    // Set memory.low (memory reservation / soft limit)
-    reservation?.let {
-        val memoryLowPath = "$cgroupPath/$MEMORY_LOW"
-        val value = if (it == -1L) "max" else it.toString()
-        writeCgroupFile(fs, memoryLowPath, value, "memory.low")
-    }
-
-    // Set memory.swap.max (swap limit)
-    swap?.let { swapValue ->
-        limit?.let { limitValue ->
-            val memorySwapPath = "$cgroupPath/$MEMORY_SWAP_MAX"
-            // In cgroup v2, swap is separate from memory (unlike v1 where swap was memory+swap)
-            // So if swap=2048 and limit=1024, we write 2048-1024=1024 to memory.swap.max
-            val value =
-                when {
-                    swapValue == -1L || limitValue == -1L -> "max"
-                    else -> (swapValue - limitValue).toString()
-                }
-            writeCgroupFile(fs, memorySwapPath, value, "memory.swap.max")
-        }
-    }
-}
-
-/**
- * Apply CPU resource limits
- */
-@OptIn(ExperimentalForeignApi::class)
-private fun applyCpuLimits(
-    fs: FileSystem,
-    cgroupPath: String,
-    shares: Long?,
-    quota: Long?,
-    period: Long?,
-) {
-    // Convert shares to cpu.weight (cgroup v1 shares -> cgroup v2 weight conversion)
-    // Formula: weight = 1 + ((shares - 2) * 9999) / 262142
-    shares?.let {
-        if (it > 0) {
-            val weight =
-                if (it == 0L) {
-                    0L
-                } else {
-                    val w = 1L + ((it - 2) * 9999 / 262142)
-                    minOf(w, 10000L) // MAX_CPU_WEIGHT = 10000
-                }
-            if (weight != 0L) {
-                val cpuWeightPath = "$cgroupPath/$CPU_WEIGHT"
-                writeCgroupFile(fs, cpuWeightPath, weight.toString(), "cpu.weight")
-            }
-        }
-    }
-
-    // Set cpu.max (format: "quota period")
-    if (quota != null || period != null) {
-        val cpuMaxPath = "$cgroupPath/$CPU_MAX"
-        val quotaStr =
-            when {
-                quota == null -> null
-                quota <= 0 -> "max"
-                else -> quota.toString()
-            }
-        val periodStr = period?.toString()
-
-        val value =
-            when {
-                quotaStr != null && periodStr != null -> "$quotaStr $periodStr"
-                quotaStr != null -> quotaStr
-                periodStr != null -> "max $periodStr"
-                else -> null
-            }
-
-        value?.let {
-            writeCgroupFile(fs, cpuMaxPath, it, "cpu.max")
-        }
-    }
-}
-
-/**
- * Write value to a cgroup file
- */
-private fun writeCgroupFile(
-    fs: FileSystem,
-    path: String,
-    value: String,
-    name: String,
-) {
-    try {
-        fs.writeTextFile(path, value)
-        Logger.debug("set $name = $value")
-    } catch (e: Exception) {
-        Logger.warn("failed to write $name: ${e.message}")
-        // Warn-only because resource limits are best-effort
-    }
-}
-
-/**
- * Determine which controllers are required based on resource configuration
- */
-private fun getRequiredControllers(resources: LinuxResources?): List<String> {
-    if (resources == null) {
-        return emptyList()
-    }
-
-    val controllers = mutableListOf<String>()
-
-    // Memory controller needed if any memory limit is specified
-    if (resources.memory != null) {
-        controllers.add("memory")
-    }
-
-    // CPU controller needed if any CPU limit is specified
-    if (resources.cpu != null) {
-        controllers.add("cpu")
-    }
-
-    return controllers
-}
-
-/**
- * Cleanup cgroup for a container
- *
- * Removes the cgroup directory for the container.
- * Errors are logged as warnings and do not fail the operation.
- *
- * @param cgroupPath Relative path from /sys/fs/cgroup
- */
-@OptIn(ExperimentalForeignApi::class)
-fun cleanupCgroup(cgroupPath: String?) {
-    if (cgroupPath == null) {
-        Logger.debug("no cgroup path specified, skipping cleanup")
-        return
-    }
-
-    // Normalize cgroup path: remove leading slash if present
-    val normalizedPath = cgroupPath.removePrefix("/")
-    val fullPath = "$CGROUP_ROOT/$normalizedPath"
-    Logger.debug("cleaning up cgroup at $fullPath")
-
-    // Check if directory exists
-    if (access(fullPath, F_OK) != 0) {
-        Logger.debug("cgroup directory $fullPath does not exist, already cleaned up")
-        return
-    }
-
-    // Remove cgroup directory using rmdir
-    // Note: rmdir only works if the cgroup is empty (no processes)
-    val result = platform.posix.rmdir(fullPath)
-    if (result != 0) {
-        val errNum = platform.posix.errno
-        // Warn but don't fail - cgroup cleanup is best-effort
-        Logger.warn("failed to remove cgroup directory $fullPath: errno=$errNum")
-    } else {
-        Logger.debug("removed cgroup directory: $fullPath")
-    }
-}
-
-/**
- * Get list of PIDs in a cgroup
- *
- * Reads the cgroup.procs file and returns a list of process IDs.
- * This is used by the ps command to list processes in a container.
- *
- * @param cgroupPath Relative path from /sys/fs/cgroup (e.g., "mycontainer")
- * @return List of PIDs in the cgroup
- * @throws Exception if cgroup.procs file cannot be read
- */
-@OptIn(ExperimentalForeignApi::class)
-fun getCgroupPids(
-    fs: FileSystem,
-    cgroupPath: String,
-): List<Int> {
-    // Normalize cgroup path: remove leading slash if present
-    val normalizedPath = cgroupPath.removePrefix("/")
-    val fullPath = "$CGROUP_ROOT/$normalizedPath"
-    val procsPath = "$fullPath/$CGROUP_PROCS"
-
-    Logger.debug("reading PIDs from $procsPath")
-
-    val content =
-        try {
-            fs.readProcFile(procsPath)
-        } catch (e: Exception) {
-            Logger.error("failed to read cgroup.procs: ${e.message}")
-            throw Exception("Failed to read cgroup.procs file: ${e.message}")
-        }
-
-    // Parse PIDs from content (one PID per line)
-    val pids =
-        content
-            .trim()
-            .split("\n")
-            .filter { it.isNotBlank() }
-            .mapNotNull { line ->
-                line.trim().toIntOrNull()?.also {
-                    Logger.debug("found PID: $it")
-                }
-            }
-
-    Logger.debug("found ${pids.size} PIDs in cgroup")
-    return pids
+    /**
+     * Read the PIDs in the cgroup at [cgroupPath] from cgroup.procs.
+     */
+    fun getPids(cgroupPath: String): List<Int>
 }

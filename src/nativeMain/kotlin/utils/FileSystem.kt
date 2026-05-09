@@ -46,4 +46,11 @@ interface FileSystem {
      * Returns true if [path] exists and can be opened.
      */
     fun fileExists(path: String): Boolean
+
+    /**
+     * Remove an empty directory. Returns true if removed, false if it did not exist.
+     * Other errors (e.g. directory not empty, permission denied) are logged as a
+     * warning by the implementation but not thrown.
+     */
+    fun removeDirectory(path: String): Boolean
 }
