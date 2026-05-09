@@ -2,11 +2,10 @@ package command
 
 import kotlinx.cinterop.ExperimentalForeignApi
 import logger.Logger
-import platform.posix.exit
+import platform.posix.*
 import state.loadState
 import state.refreshStatus
 import syscall.killProcess
-import syscall.parseSignal
 
 /**
  * Kill command - Send a signal to a container
@@ -79,5 +78,37 @@ fun kill(
     } catch (e: Exception) {
         Logger.error("failed to kill container: ${e.message ?: "unknown"}")
         exit(1)
+    }
+}
+
+/**
+ * Parse a signal name (e.g. "SIGKILL", "KILL") or number (e.g. "9") to its signal number.
+ */
+private fun parseSignal(signalStr: String): Int {
+    signalStr.toIntOrNull()?.let { return it }
+
+    val normalized = if (signalStr.startsWith("SIG")) signalStr else "SIG$signalStr"
+
+    return when (normalized.uppercase()) {
+        "SIGHUP" -> SIGHUP
+        "SIGINT" -> SIGINT
+        "SIGQUIT" -> SIGQUIT
+        "SIGILL" -> SIGILL
+        "SIGABRT" -> SIGABRT
+        "SIGFPE" -> SIGFPE
+        "SIGKILL" -> SIGKILL
+        "SIGSEGV" -> SIGSEGV
+        "SIGPIPE" -> SIGPIPE
+        "SIGALRM" -> SIGALRM
+        "SIGTERM" -> SIGTERM
+        "SIGUSR1" -> SIGUSR1
+        "SIGUSR2" -> SIGUSR2
+        "SIGCHLD" -> SIGCHLD
+        "SIGCONT" -> SIGCONT
+        "SIGSTOP" -> SIGSTOP
+        "SIGTSTP" -> SIGTSTP
+        "SIGTTIN" -> SIGTTIN
+        "SIGTTOU" -> SIGTTOU
+        else -> throw IllegalArgumentException("Unknown signal: $signalStr")
     }
 }

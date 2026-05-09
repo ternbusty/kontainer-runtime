@@ -5,46 +5,6 @@ import logger.Logger
 import platform.posix.*
 
 /**
- * Parse signal string to signal number
- *
- * Accepts both signal names (e.g., "SIGKILL", "KILL") and numbers (e.g., "9").
- *
- * @param signalStr Signal string to parse
- * @return Signal number
- * @throws IllegalArgumentException if signal is invalid
- */
-fun parseSignal(signalStr: String): Int {
-    // Try parsing as number first
-    signalStr.toIntOrNull()?.let { return it }
-
-    // Parse as signal name (with or without SIG prefix)
-    val normalized = if (signalStr.startsWith("SIG")) signalStr else "SIG$signalStr"
-
-    return when (normalized.uppercase()) {
-        "SIGHUP" -> SIGHUP
-        "SIGINT" -> SIGINT
-        "SIGQUIT" -> SIGQUIT
-        "SIGILL" -> SIGILL
-        "SIGABRT" -> SIGABRT
-        "SIGFPE" -> SIGFPE
-        "SIGKILL" -> SIGKILL
-        "SIGSEGV" -> SIGSEGV
-        "SIGPIPE" -> SIGPIPE
-        "SIGALRM" -> SIGALRM
-        "SIGTERM" -> SIGTERM
-        "SIGUSR1" -> SIGUSR1
-        "SIGUSR2" -> SIGUSR2
-        "SIGCHLD" -> SIGCHLD
-        "SIGCONT" -> SIGCONT
-        "SIGSTOP" -> SIGSTOP
-        "SIGTSTP" -> SIGTSTP
-        "SIGTTIN" -> SIGTTIN
-        "SIGTTOU" -> SIGTTOU
-        else -> throw IllegalArgumentException("Unknown signal: $signalStr")
-    }
-}
-
-/**
  * Send a signal to a process
  *
  * Wrapper around kill(2) system call.
