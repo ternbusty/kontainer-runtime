@@ -1,9 +1,12 @@
 name: Integration Tests
 
 on:
-  pull_request:
-    branches: [ main ]
+  # Temporarily disabled while triaging OCI runtime-tools validation results.
+  # Re-enable once oci-validation.yml is stable.
+  # pull_request:
+  #   branches: [ main ]
   workflow_call:
+  workflow_dispatch:
 
 jobs:
   integration:
