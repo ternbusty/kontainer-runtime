@@ -108,6 +108,17 @@ private fun initProcessInternal(
             syscall.setNoNewPrivileges()
         }
 
+        // Load seccomp filter BEFORE dropping capabilities. seccomp(2) needs
+        // CAP_SYS_ADMIN unless PR_SET_NO_NEW_PRIVS is set, and an OCI default
+        // spec specifies seccomp without noNewPrivileges (so we cannot rely on
+        // NNP). Installing the filter here, while we still hold CAP_SYS_ADMIN,
+        // avoids the EPERM. The filter is inherited across the later capset /
+        // setuid / execve, so the container process runs under it.
+        spec.linux?.seccomp?.let { seccomp ->
+            val notifyFd = initializeSeccomp(seccomp)
+            syncSeccompNotifyFd(notifyFd, mainSender, initReceiver)
+        }
+
         // Capability ordering:
         // 1. Apply bounding set (root privilege required)
         // 2. Set PR_SET_KEEPCAPS to preserve capabilities across setuid
@@ -152,14 +163,6 @@ private fun initProcessInternal(
 
         // TODO: Apply AppArmor profile and SELinux label
         // See: runc/libcontainer/standard_init_linux.go:114-124
-
-        // Initialize seccomp filter.
-        // Must be done after capabilities, but before closing channels. With
-        // no_new_privileges seccomp is unprivileged; without it requires CAP_SYS_ADMIN.
-        spec.linux?.seccomp?.let { seccomp ->
-            val notifyFd = initializeSeccomp(seccomp)
-            syncSeccompNotifyFd(notifyFd, mainSender, initReceiver)
-        }
 
         mainSender.initReady()
         Logger.debug("sent init ready signal")
