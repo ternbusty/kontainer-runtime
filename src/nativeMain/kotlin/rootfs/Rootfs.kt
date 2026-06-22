@@ -261,7 +261,7 @@ private fun createDevSymlink(
  *   - device nodes (null/zero/full/random/urandom/tty)
  *   - /dev/pts (devpts) and /dev/mqueue (mqueue) submounts
  *   - /dev/shm (tmpfs)
- *   - symlinks (stdin/stdout/stderr/fd -> /proc/self/fd/*, ptmx -> pts/ptmx)
+ *   - symlinks (stdin/stdout/stderr/fd -> /proc/self/fd entries, ptmx -> pts/ptmx)
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun createDeviceNodes(
@@ -471,6 +471,121 @@ fun setRootfsReadonly(syscall: Syscall) {
         }
 
         Logger.debug("rootfs set as readonly (with existing flags)")
+    }
+}
+
+/**
+ * Mask a path inside the container by bind-mounting /dev/null over a regular file
+ * or an empty tmpfs over a directory. Used to implement spec.linux.maskedPaths.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun applyMaskedPaths(
+    syscall: Syscall,
+    paths: List<String>?,
+) {
+    if (paths.isNullOrEmpty()) return
+    for (path in paths) {
+        if (access(path, F_OK) != 0) {
+            Logger.debug("masked path $path does not exist, skipping")
+            continue
+        }
+        memScoped {
+            val st = alloc<stat>()
+            if (stat(path, st.ptr) != 0) {
+                Logger.warn("failed to stat masked path $path (errno=$errno)")
+                return@memScoped
+            }
+            val isDir = (st.st_mode.toInt() and S_IFMT) == S_IFDIR
+            val rc =
+                if (isDir) {
+                    syscall.mount(
+                        source = "tmpfs",
+                        target = path,
+                        fstype = "tmpfs",
+                        flags = (MS_RDONLY or MS_NOSUID or MS_NODEV).toULong(),
+                        data = "size=0k",
+                    )
+                } else {
+                    syscall.mount(
+                        source = "/dev/null",
+                        target = path,
+                        fstype = null,
+                        flags = MS_BIND.toULong(),
+                    )
+                }
+            if (rc != 0) {
+                Logger.warn("failed to mask path $path (errno=$errno)")
+            } else {
+                Logger.debug("masked path $path (dir=$isDir)")
+            }
+        }
+    }
+}
+
+/**
+ * Remount a list of paths as read-only by bind-remounting them with MS_RDONLY.
+ * Used to implement spec.linux.readonlyPaths.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun applyReadonlyPaths(
+    syscall: Syscall,
+    paths: List<String>?,
+) {
+    if (paths.isNullOrEmpty()) return
+    for (path in paths) {
+        if (access(path, F_OK) != 0) {
+            Logger.debug("readonly path $path does not exist, skipping")
+            continue
+        }
+        // Bind the path to itself first so MS_REMOUNT below operates on a mount we own,
+        // not on whatever filesystem the path happens to live in.
+        if (syscall.mount(
+                source = path,
+                target = path,
+                fstype = null,
+                flags = (MS_BIND or MS_REC).toULong(),
+            ) != 0
+        ) {
+            Logger.warn("failed to bind $path for readonly remount (errno=$errno)")
+            continue
+        }
+        if (syscall.mount(
+                source = path,
+                target = path,
+                fstype = null,
+                flags = (MS_BIND or MS_REC or MS_REMOUNT or MS_RDONLY).toULong(),
+            ) != 0
+        ) {
+            Logger.warn("failed to remount $path as readonly (errno=$errno)")
+        } else {
+            Logger.debug("remounted $path as readonly")
+        }
+    }
+}
+
+/**
+ * Write entries from spec.linux.sysctl to /proc/sys/<key-with-slashes>.
+ * Requires /proc to be mounted (done in prepareRootfs).
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun applySysctls(sysctls: Map<String, String>?) {
+    if (sysctls.isNullOrEmpty()) return
+    for ((key, value) in sysctls) {
+        val sysctlPath = "/proc/sys/" + key.replace('.', '/')
+        val fd = fopen(sysctlPath, "w")
+        if (fd == null) {
+            Logger.warn("failed to open $sysctlPath for sysctl $key (errno=$errno)")
+            continue
+        }
+        try {
+            if (fputs(value, fd) < 0) {
+                Logger.warn("failed to write sysctl $key=$value to $sysctlPath (errno=$errno)")
+            } else {
+                Logger.debug("set sysctl $key=$value")
+            }
+        } finally {
+            fclose(fd)
+        }
     }
 }
 

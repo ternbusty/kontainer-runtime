@@ -6,6 +6,9 @@ import channel.NotifyListener
 import kotlinx.cinterop.*
 import logger.Logger
 import platform.posix.*
+import rootfs.applyMaskedPaths
+import rootfs.applyReadonlyPaths
+import rootfs.applySysctls
 import rootfs.pivotRoot
 import rootfs.prepareRootfs
 import rootfs.setRootfsReadonly
@@ -77,6 +80,17 @@ private fun initProcessInternal(
                 Logger.debug("set hostname to $hostname")
             }
         }
+
+        // Apply spec.linux.sysctl entries via /proc/sys/*. /proc is mounted by
+        // prepareRootfs; we must do this while still root (writing /proc/sys
+        // generally needs CAP_SYS_ADMIN or similar).
+        applySysctls(spec.linux?.sysctl)
+
+        // Mask and remount-readonly paths inside the container. Done after
+        // prepareRootfs+pivotRoot (so the target paths exist inside the new
+        // root) and before dropping caps (mount/remount need CAP_SYS_ADMIN).
+        applyMaskedPaths(syscall, spec.linux?.maskedPaths)
+        applyReadonlyPaths(syscall, spec.linux?.readonlyPaths)
 
         // Finalize rootfs (set readonly, umask).
         // Must be done BEFORE dropping privileges (setuid/setgid) because remounting

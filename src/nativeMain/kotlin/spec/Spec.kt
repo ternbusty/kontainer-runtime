@@ -174,6 +174,10 @@ data class Linux(
     val resources: LinuxResources? = null,
     val cgroupsPath: String? = null,
     val seccomp: LinuxSeccomp? = null,
+    val maskedPaths: List<String>? = null,
+    val readonlyPaths: List<String>? = null,
+    val sysctl: Map<String, String>? = null,
+    val rootfsPropagation: String? = null,
 )
 
 /**
