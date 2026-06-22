@@ -83,6 +83,15 @@ data class Process(
     val umask: UInt? = null,
     val apparmorProfile: String? = null,
     val selinuxLabel: String? = null,
+    val terminal: Boolean = false,
+    val consoleSize: ConsoleSize? = null,
+)
+
+/** Window size of the container's pseudo-terminal. */
+@Serializable
+data class ConsoleSize(
+    val height: UInt,
+    val width: UInt,
 )
 
 @Serializable

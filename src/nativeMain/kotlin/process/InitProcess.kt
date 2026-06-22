@@ -289,6 +289,18 @@ private fun initProcessInternal(
         // execve. Done late (after init_ready) to avoid closing channel pipes early.
         syscall.closeRange(preserveFds)
 
+        // spec.process.terminal asks the runtime to wire stdin/stdout/stderr
+        // through a freshly allocated PTY and forward the master fd to a
+        // caller-supplied --console-socket. Full SCM_RIGHTS handshake is not
+        // yet implemented; emit a clear warning so users know stdio will be
+        // ordinary pipes rather than a tty.
+        if (spec.process.terminal) {
+            Logger.warn(
+                "spec.process.terminal=true is recognised but the PTY/console-socket " +
+                    "handshake is not yet implemented; container will run without a tty",
+            )
+        }
+
         Logger.debug("waiting for start signal...")
         notifyListener.waitForContainerStart()
         Logger.debug("received start signal, executing container process")
