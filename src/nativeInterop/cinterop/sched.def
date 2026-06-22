@@ -33,3 +33,17 @@ static inline int _CLONE_NEWNET() {
 static inline int _CLONE_PARENT() {
     return CLONE_PARENT;
 }
+
+// CLONE_NEWCGROUP may not be in older headers; #define it ourselves at value 0x02000000.
+#ifndef CLONE_NEWCGROUP
+#define CLONE_NEWCGROUP 0x02000000
+#endif
+static inline int _CLONE_NEWCGROUP() {
+    return CLONE_NEWCGROUP;
+}
+
+// setns(2) wrapper. nstype acts as a guard against opening the wrong kind of fd
+// (pass 0 to disable the check). Returns 0 on success or -1 with errno set.
+static inline int setns_wrapper(int fd, int nstype) {
+    return setns(fd, nstype);
+}

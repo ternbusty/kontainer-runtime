@@ -142,7 +142,7 @@ class CapabilityTest :
         test("resetEffective copies permitted into effective and preserves inheritable") {
             val syscall =
                 FakeSyscall().apply {
-                    capabilities = CapabilitySets(effective = 0u, permitted = 42u, inheritable = 7u)
+                    capabilities = CapabilitySets(effective = 0uL, permitted = 42uL, inheritable = 7uL)
                 }
 
             resetEffective(syscall)
@@ -152,9 +152,9 @@ class CapabilityTest :
                 "setCapabilities(effective=42, permitted=42, inheritable=7)"
 
             // The fake's stored capabilities are also updated as a sanity check
-            syscall.capabilities.effective shouldBe 42u
-            syscall.capabilities.permitted shouldBe 42u
-            syscall.capabilities.inheritable shouldBe 7u
-            syscall.capabilities shouldNotBe CapabilitySets(0u, 42u, 7u)
+            syscall.capabilities.effective shouldBe 42uL
+            syscall.capabilities.permitted shouldBe 42uL
+            syscall.capabilities.inheritable shouldBe 7uL
+            syscall.capabilities shouldNotBe CapabilitySets(0uL, 42uL, 7uL)
         }
     })

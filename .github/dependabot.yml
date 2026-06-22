@@ -1,0 +1,28 @@
+version: 2
+
+updates:
+  # Kotlin / Gradle dependencies (kotlinx-cli, kotlinx-serialization, kotest, ...).
+  # Patch / minor / major updates land as separate PRs labelled "deps" so
+  # release-please routes them into the dependency changelog section.
+  - package-ecosystem: gradle
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+      include: scope
+
+  # GitHub Actions used in the workflows (checkout, setup-java, ...).
+  # Action updates often carry node-version or security fixes; keep them
+  # fresh without manual auditing.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+      include: scope

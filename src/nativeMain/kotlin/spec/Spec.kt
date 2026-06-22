@@ -13,8 +13,11 @@ import utils.JsonCodec
 data class Spec(
     val ociVersion: String = "1.0.0",
     val root: Root,
-    val process: Process,
+    val process: Process = Process(args = emptyList()),
     val hostname: String? = null,
+    val mounts: List<Mount>? = null,
+    val annotations: Map<String, String>? = null,
+    val hooks: Hooks? = null,
     val linux: Linux? = null,
 ) {
     /**
@@ -22,6 +25,45 @@ data class Spec(
      */
     fun hasNamespace(type: String): Boolean = linux?.namespaces?.any { it.type == type } ?: false
 }
+
+/**
+ * One entry in spec.hooks.* — an external program to run at a lifecycle point.
+ * https://github.com/opencontainers/runtime-spec/blob/main/config.md#posix-platform-hooks
+ */
+@Serializable
+data class Hook(
+    val path: String,
+    val args: List<String>? = null,
+    val env: List<String>? = null,
+    val timeout: Int? = null,
+)
+
+/**
+ * The five hook points runtimes invoke. prestart/poststart/poststop are the
+ * pre-1.0.2 names that the runtime-tools validation suite still exercises;
+ * the createRuntime/createContainer/startContainer trio replaces them.
+ */
+@Serializable
+data class Hooks(
+    val prestart: List<Hook>? = null,
+    val createRuntime: List<Hook>? = null,
+    val createContainer: List<Hook>? = null,
+    val startContainer: List<Hook>? = null,
+    val poststart: List<Hook>? = null,
+    val poststop: List<Hook>? = null,
+)
+
+/**
+ * Mount entry from the OCI runtime-spec `mounts[]` array.
+ * https://github.com/opencontainers/runtime-spec/blob/main/config.md#mounts
+ */
+@Serializable
+data class Mount(
+    val destination: String,
+    val type: String? = null,
+    val source: String? = null,
+    val options: List<String>? = null,
+)
 
 @Serializable
 data class Root(
@@ -75,6 +117,7 @@ data class LinuxCapabilities(
 @Serializable
 data class Namespace(
     val type: String,
+    val path: String? = null,
 )
 
 @Serializable
@@ -174,6 +217,26 @@ data class Linux(
     val resources: LinuxResources? = null,
     val cgroupsPath: String? = null,
     val seccomp: LinuxSeccomp? = null,
+    val maskedPaths: List<String>? = null,
+    val readonlyPaths: List<String>? = null,
+    val sysctl: Map<String, String>? = null,
+    val rootfsPropagation: String? = null,
+    val devices: List<LinuxDevice>? = null,
+)
+
+/**
+ * A device node entry from spec.linux.devices[]. type is one of "c", "b", "u", "p".
+ * https://github.com/opencontainers/runtime-spec/blob/main/config-linux.md#devices
+ */
+@Serializable
+data class LinuxDevice(
+    val path: String,
+    val type: String,
+    val major: Long? = null,
+    val minor: Long? = null,
+    val fileMode: UInt? = null,
+    val uid: UInt? = null,
+    val gid: UInt? = null,
 )
 
 /**
@@ -187,9 +250,19 @@ fun loadSpec(
     // Read and parse JSON file
     val spec = JsonCodec.loadFromFile<Spec>(fs, configPath)
 
-    // Validate process.args is not empty (kotlinx.serialization doesn't check this)
-    if (spec.process.args.isEmpty()) {
-        throw Exception("Spec validation failed: process.args must not be empty")
+    // process.args may legitimately be empty: the spec allows omitting
+    // spec.process entirely, in which case create/start should still succeed
+    // (the container infrastructure is set up but the init process exec's
+    // nothing and exits immediately). The OCI runtime-tools start.t test
+    // exercises this path. Don't reject it here.
+
+    // The OCI runtime-spec says the runtime MUST generate an error on invalid /
+    // unsupported values. ociVersion is the canonical example: it has to be a
+    // semver like "1.0.0", not free text. Reject anything that doesn't parse as
+    // major.minor.patch.
+    val versionRegex = Regex("^\\d+\\.\\d+\\.\\d+(?:-[\\w.-]+)?$")
+    if (!versionRegex.matches(spec.ociVersion)) {
+        throw Exception("Spec validation failed: ociVersion '${spec.ociVersion}' is not a valid semver")
     }
 
     return spec

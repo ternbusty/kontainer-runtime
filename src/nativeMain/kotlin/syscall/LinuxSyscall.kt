@@ -93,10 +93,11 @@ class LinuxSyscall : Syscall {
                 throw Exception("Failed to get capabilities: ${strerror(errno)?.toKString()}")
             }
 
-            // Combine the two u32 values for each set (covers capabilities > 31)
-            val effective = data[0].effective or (data[1].effective.toLong() shl 32).toUInt()
-            val permitted = data[0].permitted or (data[1].permitted.toLong() shl 32).toUInt()
-            val inheritable = data[0].inheritable or (data[1].inheritable.toLong() shl 32).toUInt()
+            // Combine the two u32 values for each set (covers capabilities > 31).
+            // capset/capget store caps 0-31 in data[0] and caps 32-63 in data[1].
+            val effective = data[0].effective.toULong() or (data[1].effective.toULong() shl 32)
+            val permitted = data[0].permitted.toULong() or (data[1].permitted.toULong() shl 32)
+            val inheritable = data[0].inheritable.toULong() or (data[1].inheritable.toULong() shl 32)
 
             CapabilitySets(effective, permitted, inheritable)
         }
@@ -109,13 +110,13 @@ class LinuxSyscall : Syscall {
 
             val data = allocArray<__user_cap_data_struct>(2)
 
-            data[0].effective = caps.effective and 0xFFFFFFFFu
-            data[0].permitted = caps.permitted and 0xFFFFFFFFu
-            data[0].inheritable = caps.inheritable and 0xFFFFFFFFu
+            data[0].effective = (caps.effective and 0xFFFFFFFFuL).toUInt()
+            data[0].permitted = (caps.permitted and 0xFFFFFFFFuL).toUInt()
+            data[0].inheritable = (caps.inheritable and 0xFFFFFFFFuL).toUInt()
 
-            data[1].effective = (caps.effective shr 32) and 0xFFFFFFFFu
-            data[1].permitted = (caps.permitted shr 32) and 0xFFFFFFFFu
-            data[1].inheritable = (caps.inheritable shr 32) and 0xFFFFFFFFu
+            data[1].effective = ((caps.effective shr 32) and 0xFFFFFFFFuL).toUInt()
+            data[1].permitted = ((caps.permitted shr 32) and 0xFFFFFFFFuL).toUInt()
+            data[1].inheritable = ((caps.inheritable shr 32) and 0xFFFFFFFFuL).toUInt()
 
             if (syscall(__NR_capset.toLong(), header.ptr, data) != 0L) {
                 perror("capset")
@@ -287,6 +288,11 @@ class LinuxSyscall : Syscall {
             }
         }
     }
+
+    override fun setns(
+        fd: Int,
+        nstype: Int,
+    ): Int = setns_wrapper(fd, nstype)
 
     private fun rlimitTypeToResource(type: String): Int? =
         when (type) {

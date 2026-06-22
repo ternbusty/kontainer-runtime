@@ -2,10 +2,12 @@ package command
 
 import cgroup.Cgroup
 import config.loadKontainerConfig
+import hook.runHooks
 import kotlinx.cinterop.ExperimentalForeignApi
 import logger.Logger
 import platform.posix.SIGKILL
 import platform.posix.exit
+import spec.loadSpec
 import state.*
 import syscall.Syscall
 import utils.FileSystem
@@ -105,6 +107,19 @@ fun delete(
             Logger.warn("failed to cleanup cgroup: ${e.message ?: "unknown"}")
             // Continue with deletion even if cgroup cleanup fails
         }
+    }
+
+    // Run poststop hooks BEFORE we tear down the notify socket / container dir so
+    // the hook can still read state.json and the runtime layout. State at this
+    // point shows status="stopped". Hook failures are logged but non-fatal.
+    val poststopSpec =
+        try {
+            loadSpec(fs, "${state.bundle}/config.json")
+        } catch (e: Exception) {
+            null
+        }
+    if (poststopSpec?.hooks?.poststop != null) {
+        runHooks(poststopSpec.hooks.poststop, state.withStatus(ContainerStatus.STOPPED))
     }
 
     // Delete notify socket

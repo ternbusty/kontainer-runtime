@@ -13,7 +13,7 @@ import spec.POSIXRlimit
  */
 class FakeSyscall : Syscall {
     val calls: MutableList<String> = mutableListOf()
-    var capabilities: CapabilitySets = CapabilitySets(0u, 0u, 0u)
+    var capabilities: CapabilitySets = CapabilitySets(0uL, 0uL, 0uL)
     var euid: UInt = 0u
     var egid: UInt = 0u
 
@@ -103,6 +103,14 @@ class FakeSyscall : Syscall {
     override fun setCapabilities(caps: CapabilitySets) {
         calls += "setCapabilities(effective=${caps.effective}, permitted=${caps.permitted}, inheritable=${caps.inheritable})"
         capabilities = caps
+    }
+
+    override fun setns(
+        fd: Int,
+        nstype: Int,
+    ): Int {
+        calls += "setns(fd=$fd, nstype=$nstype)"
+        return 0
     }
 
     override fun applyRlimits(

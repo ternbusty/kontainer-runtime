@@ -6,6 +6,12 @@ import channel.NotifyListener
 import kotlinx.cinterop.*
 import logger.Logger
 import platform.posix.*
+import rootfs.applyLinuxDevices
+import rootfs.applyMaskedPaths
+import rootfs.applyReadonlyPaths
+import rootfs.applyRootfsPropagation
+import rootfs.applySpecMounts
+import rootfs.applySysctls
 import rootfs.pivotRoot
 import rootfs.prepareRootfs
 import rootfs.setRootfsReadonly
@@ -50,8 +56,14 @@ private fun initProcessInternal(
 
         // Prepare rootfs
         if (spec.hasNamespace("mount")) {
-            prepareRootfs(syscall, rootfsPath)
+            prepareRootfs(syscall, rootfsPath, spec.linux?.rootfsPropagation)
+            // Process spec.mounts BEFORE pivot_root so bind-mount source paths from
+            // the host are still reachable. Targets are inside rootfsPath.
+            applySpecMounts(syscall, spec.mounts, rootfsPath)
             pivotRoot(syscall, rootfsPath)
+            // Apply rootfsPropagation only AFTER pivot_root; the kernel forbids
+            // pivot_root into a MS_SHARED subtree.
+            applyRootfsPropagation(syscall, spec.linux?.rootfsPropagation)
         } else {
             Logger.debug("no mount namespace, skipping rootfs preparation")
         }
@@ -78,6 +90,20 @@ private fun initProcessInternal(
             }
         }
 
+        // Create spec.linux.devices[] device nodes inside the container's /dev.
+        applyLinuxDevices(syscall, spec.linux?.devices)
+
+        // Apply spec.linux.sysctl entries via /proc/sys/*. /proc is mounted by
+        // prepareRootfs; we must do this while still root (writing /proc/sys
+        // generally needs CAP_SYS_ADMIN or similar).
+        applySysctls(spec.linux?.sysctl)
+
+        // Mask and remount-readonly paths inside the container. Done after
+        // prepareRootfs+pivotRoot (so the target paths exist inside the new
+        // root) and before dropping caps (mount/remount need CAP_SYS_ADMIN).
+        applyMaskedPaths(syscall, spec.linux?.maskedPaths)
+        applyReadonlyPaths(syscall, spec.linux?.readonlyPaths)
+
         // Finalize rootfs (set readonly, umask).
         // Must be done BEFORE dropping privileges (setuid/setgid) because remounting
         // requires CAP_SYS_ADMIN.
@@ -101,11 +127,29 @@ private fun initProcessInternal(
                 0
             }
 
+        // Apply rlimits to self. The main process also tries this against stage-1's
+        // PID, but stage-1 may have already cloned stage-2 by then, so stage-2 would
+        // inherit the host's defaults instead. Setting them here, on the init process
+        // itself, guarantees the container sees the spec'd values. Done while still
+        // root so RLIMIT_NICE / RLIMIT_NOFILE etc. can be raised if requested.
+        syscall.applyRlimits(0, spec.process.rlimits)
+
         // Set no_new_privileges if specified.
         // Prevents the process from gaining new privileges through execve. Must be set
         // before applying capabilities.
         if (spec.process.noNewPrivileges == true) {
             syscall.setNoNewPrivileges()
+        }
+
+        // Load seccomp filter BEFORE dropping capabilities. seccomp(2) needs
+        // CAP_SYS_ADMIN unless PR_SET_NO_NEW_PRIVS is set, and an OCI default
+        // spec specifies seccomp without noNewPrivileges (so we cannot rely on
+        // NNP). Installing the filter here, while we still hold CAP_SYS_ADMIN,
+        // avoids the EPERM. The filter is inherited across the later capset /
+        // setuid / execve, so the container process runs under it.
+        spec.linux?.seccomp?.let { seccomp ->
+            val notifyFd = initializeSeccomp(seccomp)
+            syncSeccompNotifyFd(notifyFd, mainSender, initReceiver)
         }
 
         // Capability ordering:
@@ -153,14 +197,6 @@ private fun initProcessInternal(
         // TODO: Apply AppArmor profile and SELinux label
         // See: runc/libcontainer/standard_init_linux.go:114-124
 
-        // Initialize seccomp filter.
-        // Must be done after capabilities, but before closing channels. With
-        // no_new_privileges seccomp is unprivileged; without it requires CAP_SYS_ADMIN.
-        spec.linux?.seccomp?.let { seccomp ->
-            val notifyFd = initializeSeccomp(seccomp)
-            syncSeccompNotifyFd(notifyFd, mainSender, initReceiver)
-        }
-
         mainSender.initReady()
         Logger.debug("sent init ready signal")
 
@@ -177,6 +213,14 @@ private fun initProcessInternal(
         Logger.debug("received start signal, executing container process")
 
         notifyListener.close()
+
+        // An empty args list means the spec omitted spec.process entirely. The
+        // start operation must still succeed: exit cleanly so the container
+        // transitions to "stopped" without trying to exec nothing.
+        if (processArgs.isEmpty()) {
+            Logger.info("spec.process omitted; init exiting with status 0")
+            _exit(0)
+        }
 
         Logger.info("Executing: ${processArgs.joinToString(" ")}")
 

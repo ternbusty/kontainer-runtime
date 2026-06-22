@@ -10,6 +10,7 @@
 #include <sys/prctl.h>
 #include <sched.h>
 #include <sys/syscall.h>
+#include <fcntl.h>
 
 // Clone flags (in case not defined)
 #ifndef CLONE_NEWUSER
@@ -38,6 +39,42 @@
 #define ENV_IS_BOOTSTRAP "_KONTAINER_IS_BOOTSTRAP"
 #define ENV_SYNCPIPE "_KONTAINER_SYNCPIPE"
 #define ENV_CLONE_FLAGS "_KONTAINER_CLONE_FLAGS"
+// One env var per namespace whose spec entry includes a path:
+//   _KONTAINER_NS_PATH_MOUNT, _NS_PATH_NETWORK, _NS_PATH_UTS, _NS_PATH_IPC,
+//   _NS_PATH_PID, _NS_PATH_USER, _NS_PATH_CGROUP
+#define ENV_NS_PATH_PREFIX "_KONTAINER_NS_PATH_"
+
+#ifndef CLONE_NEWCGROUP
+#define CLONE_NEWCGROUP 0x02000000
+#endif
+
+/**
+ * If env var `_KONTAINER_NS_PATH_<name>` is set, open that path and setns(2)
+ * into it. Called for each namespace type before the unshare loop so that
+ * pid-ns joining (which the kernel forbids post-fork) and mount-ns joining
+ * (which requires a single-threaded process — bootstrap.c is single-threaded;
+ * the Kotlin runtime is not) both work.
+ */
+static void maybe_setns_by_path(const char *name, int nstype) {
+    char env_name[64];
+    snprintf(env_name, sizeof(env_name), "%s%s", ENV_NS_PATH_PREFIX, name);
+    const char *path = getenv(env_name);
+    if (!path || !*path) return;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "[stage-1] failed to open %s namespace path %s: %s\n",
+                name, path, strerror(errno));
+        exit(1);
+    }
+    if (setns(fd, nstype) != 0) {
+        fprintf(stderr, "[stage-1] setns(%s, %s) failed: %s\n",
+                path, name, strerror(errno));
+        close(fd);
+        exit(1);
+    }
+    close(fd);
+    fprintf(stderr, "[stage-1] joined %s namespace at %s\n", name, path);
+}
 
 // Global state
 static int is_init_process = 0;
@@ -245,6 +282,20 @@ void kontainer_bootstrap(void) {
         fprintf(stderr, "[stage-1] Successfully became root in user namespace\n");
     }
 
+    // Join any namespaces named by spec.linux.namespaces[].path BEFORE the
+    // unshare loop. NamespaceFlags on the Kotlin side already strips those bits
+    // from clone_flags, so the unshare loop won't double-handle them. PID
+    // joining works only here (kernel forbids it post-fork); mount joining
+    // works because bootstrap.c is single-threaded (the Kotlin runtime, which
+    // would otherwise be multi-threaded, hasn't started yet).
+    maybe_setns_by_path("MOUNT",   CLONE_NEWNS);
+    maybe_setns_by_path("NETWORK", CLONE_NEWNET);
+    maybe_setns_by_path("UTS",     CLONE_NEWUTS);
+    maybe_setns_by_path("IPC",     CLONE_NEWIPC);
+    maybe_setns_by_path("USER",    CLONE_NEWUSER);
+    maybe_setns_by_path("CGROUP",  CLONE_NEWCGROUP);
+    maybe_setns_by_path("PID",     CLONE_NEWPID);
+
     // Step 7: Unshare other namespaces (mount, network, uts, ipc)
     // These must be done AFTER user namespace mapping is complete
     if (clone_flags & CLONE_NEWNS) {
@@ -290,6 +341,19 @@ void kontainer_bootstrap(void) {
         fprintf(stderr, "[stage-1] Unsharing PID namespace (CLONE_NEWPID)\n");
         if (unshare(CLONE_NEWPID) < 0) {
             fprintf(stderr, "[stage-1] Failed to unshare PID namespace: %s (errno=%d)\n",
+                    strerror(errno), errno);
+            exit(1);
+        }
+    }
+
+    // Older kernel headers may not define CLONE_NEWCGROUP; fall back to the well-known value.
+    #ifndef CLONE_NEWCGROUP
+    #define CLONE_NEWCGROUP 0x02000000
+    #endif
+    if (clone_flags & CLONE_NEWCGROUP) {
+        fprintf(stderr, "[stage-1] Unsharing cgroup namespace (CLONE_NEWCGROUP)\n");
+        if (unshare(CLONE_NEWCGROUP) < 0) {
+            fprintf(stderr, "[stage-1] Failed to unshare cgroup namespace: %s (errno=%d)\n",
                     strerror(errno), errno);
             exit(1);
         }

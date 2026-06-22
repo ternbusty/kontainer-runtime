@@ -80,6 +80,16 @@ interface Syscall {
         pid: Int,
         signal: Int,
     )
+
+    /**
+     * Join the namespace referenced by the given file descriptor.
+     * [nstype] is one of CLONE_NEWNS / CLONE_NEWNET / ... and acts as a guard:
+     * the kernel returns EINVAL if the fd is not of that type (0 disables the check).
+     */
+    fun setns(
+        fd: Int,
+        nstype: Int,
+    ): Int
 }
 
 /**
@@ -87,7 +97,7 @@ interface Syscall {
  * Each bit position corresponds to a [capability.Capability.value].
  */
 data class CapabilitySets(
-    val effective: UInt,
-    val permitted: UInt,
-    val inheritable: UInt,
+    val effective: ULong,
+    val permitted: ULong,
+    val inheritable: ULong,
 )

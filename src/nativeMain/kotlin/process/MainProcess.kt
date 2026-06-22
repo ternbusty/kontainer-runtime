@@ -4,6 +4,7 @@ import cgroup.Cgroup
 import channel.*
 import config.KontainerConfig
 import config.saveKontainerConfig
+import hook.runHooks
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.memScoped
@@ -190,7 +191,7 @@ private fun runMainProcessInternal(
                 status = ContainerStatus.CREATED,
                 pid = stage2Pid,
                 bundle = bundlePath,
-                annotations = null,
+                annotations = spec.annotations,
             )
         state.save(fs, rootPath)
 
@@ -211,6 +212,17 @@ private fun runMainProcessInternal(
 
         Logger.info("container $containerId created with init PID $stage2Pid")
         Logger.info("run 'kontainer-runtime start $containerId' to start the container")
+
+        // Run prestart hooks AFTER state is saved (so state.json is valid for the
+        // hook to read) and BEFORE start. The hook's stdin sees the State JSON
+        // with status="created". Older runtime-tools tests still use this hook
+        // point; createRuntime/createContainer are the modern equivalents.
+        if (spec.hooks?.prestart != null) {
+            if (!runHooks(spec.hooks.prestart, state)) {
+                Logger.error("prestart hook failed; aborting container creation")
+                exit(1)
+            }
+        }
 
         exit(0)
     }
