@@ -1,5 +1,5 @@
-headers = sys/socket.h sys/ioctl.h net/if.h netinet/in.h string.h
-headerFilter = sys/socket.h sys/ioctl.h net/if.h netinet/in.h
+headers = sys/socket.h sys/ioctl.h net/if.h netinet/in.h string.h errno.h unistd.h
+headerFilter = sys/socket.h sys/ioctl.h net/if.h netinet/in.h errno.h
 package = platform.linux
 
 ---
