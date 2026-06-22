@@ -54,12 +54,38 @@ private fun initProcessInternal(
         // TODO: Setup network interfaces (setupNetwork) to bring up loopback interface.
         // See: runc/libcontainer/standard_init_linux.go:80
 
+        // Build a State view of ourselves for hook stdin. We're in the
+        // container's namespaces but haven't pivoted root or execve'd yet, so
+        // status is still "created" for createContainer and "running" for
+        // startContainer (set right before exec).
+        val bundlePath = getenv("_KONTAINER_BUNDLE_PATH")?.toKString() ?: ""
+        val containerId = getenv("_KONTAINER_CONTAINER_ID")?.toKString() ?: ""
+        val createdState =
+            state.State(
+                ociVersion = spec.ociVersion,
+                id = containerId,
+                status = state.ContainerStatus.CREATED,
+                pid = getpid(),
+                bundle = bundlePath,
+                annotations = spec.annotations,
+            )
+
         // Prepare rootfs
         if (spec.hasNamespace("mount")) {
             prepareRootfs(syscall, rootfsPath, spec.linux?.rootfsPropagation)
             // Process spec.mounts BEFORE pivot_root so bind-mount source paths from
             // the host are still reachable. Targets are inside rootfsPath.
             applySpecMounts(syscall, spec.mounts, rootfsPath)
+            // createContainer hooks run after the container's mount namespace
+            // is established but BEFORE pivot_root — they can still see the
+            // host paths via the new rootfs's parent. This is the standard
+            // spec timing (post-1.0.2).
+            if (spec.hooks?.createContainer != null) {
+                if (!hook.runHooks(spec.hooks.createContainer, createdState)) {
+                    Logger.error("createContainer hook failed; aborting")
+                    _exit(1)
+                }
+            }
             pivotRoot(syscall, rootfsPath)
             // Apply rootfsPropagation only AFTER pivot_root; the kernel forbids
             // pivot_root into a MS_SHARED subtree.
@@ -213,6 +239,16 @@ private fun initProcessInternal(
         Logger.debug("received start signal, executing container process")
 
         notifyListener.close()
+
+        // startContainer hooks run in the container's namespaces just before
+        // execve. Status is "running" at this point.
+        if (spec.hooks?.startContainer != null) {
+            val runningState = createdState.copy(status = state.ContainerStatus.RUNNING)
+            if (!hook.runHooks(spec.hooks.startContainer, runningState)) {
+                Logger.error("startContainer hook failed; aborting exec")
+                _exit(1)
+            }
+        }
 
         // An empty args list means the spec omitted spec.process entirely. The
         // start operation must still succeed: exit cleanly so the container

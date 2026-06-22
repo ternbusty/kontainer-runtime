@@ -223,6 +223,16 @@ private fun runMainProcessInternal(
                 exit(1)
             }
         }
+        // createRuntime is the modern equivalent of prestart and runs at the
+        // same point in the lifecycle (after create, before start) from the
+        // runtime's namespace. Many specs include both pointing at different
+        // programs, so we run both lists in order.
+        if (spec.hooks?.createRuntime != null) {
+            if (!runHooks(spec.hooks.createRuntime, state)) {
+                Logger.error("createRuntime hook failed; aborting container creation")
+                exit(1)
+            }
+        }
 
         exit(0)
     }
