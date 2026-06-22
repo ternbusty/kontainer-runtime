@@ -76,16 +76,30 @@ fun execHook(
         }
         close(writeEnd)
 
-        // Wait for the hook to finish. waitpid is blocking; honour timeout by
-        // alarm(2) for now — coarse but matches the test's expectations.
-        val timeout = hook.timeout ?: 0
-        if (timeout > 0) alarm(timeout.toUInt())
+        // Wait for the hook with a private timeout: WNOHANG-poll + sleep loop.
+        // alarm(2) would work but is process-wide — a future caller running two
+        // hooks concurrently, or with an unrelated SIGALRM handler, would see
+        // bogus interruptions. The 50ms poll cadence keeps CPU cost negligible
+        // while still firing the timeout within ~50ms of its budget.
         val status = alloc<IntVar>()
-        val rc = waitpid(pid, status.ptr, 0)
-        if (timeout > 0) alarm(0u)
-        if (rc < 0) {
-            Logger.warn("hook ${hook.path}: waitpid failed (errno=$errno)")
-            return@memScoped false
+        val timeoutMs = (hook.timeout ?: 0) * 1000L
+        val pollSleepMicros = 50_000u // 50ms
+        val deadline = if (timeoutMs > 0) monotonicMillis() + timeoutMs else 0L
+        while (true) {
+            val rc = waitpid(pid, status.ptr, WNOHANG)
+            if (rc == pid) break // hook finished
+            if (rc < 0) {
+                Logger.warn("hook ${hook.path}: waitpid failed (errno=$errno)")
+                return@memScoped false
+            }
+            // rc == 0: still running
+            if (deadline != 0L && monotonicMillis() >= deadline) {
+                Logger.warn("hook ${hook.path}: timed out after ${hook.timeout}s; killing")
+                kill(pid, SIGKILL)
+                waitpid(pid, status.ptr, 0)
+                return@memScoped false
+            }
+            usleep(pollSleepMicros)
         }
         val exited = (status.value and 0x7f) == 0
         val code = (status.value shr 8) and 0xff
@@ -97,6 +111,19 @@ fun execHook(
         true
     }
 }
+
+/**
+ * Read the monotonic clock and return milliseconds. CLOCK_MONOTONIC is immune
+ * to wall-clock changes (e.g. NTP adjustments) which would otherwise let a
+ * hook's deadline drift.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun monotonicMillis(): Long =
+    memScoped {
+        val ts = alloc<timespec>()
+        clock_gettime(CLOCK_MONOTONIC.toInt(), ts.ptr)
+        ts.tv_sec * 1000L + ts.tv_nsec / 1_000_000L
+    }
 
 /**
  * Run every hook in [hooks], stopping at the first failure. Returns true if all
