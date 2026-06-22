@@ -105,6 +105,14 @@ class FakeSyscall : Syscall {
         capabilities = caps
     }
 
+    override fun setns(
+        fd: Int,
+        nstype: Int,
+    ): Int {
+        calls += "setns(fd=$fd, nstype=$nstype)"
+        return 0
+    }
+
     override fun applyRlimits(
         pid: Int,
         rlimits: List<POSIXRlimit>?,

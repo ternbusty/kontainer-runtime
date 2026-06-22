@@ -5,6 +5,12 @@ import channel.MainSender
 import channel.NotifyListener
 import kotlinx.cinterop.*
 import logger.Logger
+import platform.linux._CLONE_NEWCGROUP
+import platform.linux._CLONE_NEWIPC
+import platform.linux._CLONE_NEWNET
+import platform.linux._CLONE_NEWNS
+import platform.linux._CLONE_NEWUSER
+import platform.linux._CLONE_NEWUTS
 import platform.posix.*
 import rootfs.applyLinuxDevices
 import rootfs.applyMaskedPaths
@@ -52,6 +58,48 @@ private fun initProcessInternal(
 
         // TODO: Setup network interfaces (setupNetwork) to bring up loopback interface.
         // See: runc/libcontainer/standard_init_linux.go:80
+
+        // Join existing namespaces named by spec.linux.namespaces[].path. Stage-1
+        // unconditionally unshares each declared namespace; for entries with a
+        // path we then setns() into the requested target, leaving the freshly
+        // unshared one orphaned. PID namespaces can't be changed after fork, so
+        // a path on a "pid" entry is rejected up front.
+        spec.linux?.namespaces?.forEach { ns ->
+            val path = ns.path ?: return@forEach
+            val nstype =
+                when (ns.type) {
+                    "mount" -> _CLONE_NEWNS()
+                    "network" -> _CLONE_NEWNET()
+                    "uts" -> _CLONE_NEWUTS()
+                    "ipc" -> _CLONE_NEWIPC()
+                    "user" -> _CLONE_NEWUSER()
+                    "cgroup" -> _CLONE_NEWCGROUP()
+                    "pid" -> {
+                        Logger.error("cannot join pid namespace by path after fork: $path")
+                        exit(1)
+                        return@memScoped
+                    }
+                    else -> {
+                        Logger.error("unknown namespace type '${ns.type}' with path $path")
+                        exit(1)
+                        return@memScoped
+                    }
+                }
+            val fd = open(path, O_RDONLY, 0u)
+            if (fd < 0) {
+                Logger.error("failed to open namespace path $path (errno=$errno)")
+                exit(1)
+                return@memScoped
+            }
+            if (syscall.setns(fd, nstype) != 0) {
+                Logger.error("setns($path, type=${ns.type}) failed: ${strerror(errno)?.toKString()}")
+                close(fd)
+                exit(1)
+                return@memScoped
+            }
+            close(fd)
+            Logger.debug("joined ${ns.type} namespace at $path")
+        }
 
         // Prepare rootfs
         if (spec.hasNamespace("mount")) {

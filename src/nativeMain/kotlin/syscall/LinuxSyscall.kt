@@ -289,6 +289,11 @@ class LinuxSyscall : Syscall {
         }
     }
 
+    override fun setns(
+        fd: Int,
+        nstype: Int,
+    ): Int = setns_wrapper(fd, nstype)
+
     private fun rlimitTypeToResource(type: String): Int? =
         when (type) {
             "RLIMIT_AS" -> RLIMIT_AS
