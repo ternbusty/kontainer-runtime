@@ -296,26 +296,9 @@ private fun createDeviceNodes(
         Logger.debug("mounted /dev/pts")
     }
 
-    // Mount /dev/mqueue (mqueue) for POSIX message queues.
-    val mqueuePath = "$devPath/mqueue"
-    if (access(mqueuePath, F_OK) != 0) {
-        if (mkdir(mqueuePath, 0x1EDu) != 0) {
-            Logger.warn("failed to create $mqueuePath directory (errno=$errno)")
-        }
-    }
-    if (syscall.mount(
-            source = "mqueue",
-            target = mqueuePath,
-            fstype = "mqueue",
-            flags = (MS_NOSUID or MS_NOEXEC or MS_NODEV).toULong(),
-        ) != 0
-    ) {
-        Logger.warn("failed to mount /dev/mqueue (errno=$errno)")
-    } else {
-        Logger.debug("mounted /dev/mqueue")
-    }
-
-    // Mount /dev/shm for shared memory (POSIX shm_open, etc.)
+    // Mount /dev/shm for shared memory (POSIX shm_open, etc.).
+    // Order matters: OCI default spec lists /dev/pts, /dev/shm, /dev/mqueue, /sys —
+    // some runtime-tools assertions check mounts appear "in order" against the spec.
     val shmPath = "$devPath/shm"
     if (access(shmPath, F_OK) != 0) {
         if (mkdir(shmPath, 0x1FFu) != 0) { // 0x1FF = 0777 octal
@@ -336,6 +319,25 @@ private fun createDeviceNodes(
         Logger.warn("failed to mount /dev/shm (errno=$errNum)")
     } else {
         Logger.debug("mounted /dev/shm")
+    }
+
+    // Mount /dev/mqueue (mqueue) for POSIX message queues.
+    val mqueuePath = "$devPath/mqueue"
+    if (access(mqueuePath, F_OK) != 0) {
+        if (mkdir(mqueuePath, 0x1EDu) != 0) {
+            Logger.warn("failed to create $mqueuePath directory (errno=$errno)")
+        }
+    }
+    if (syscall.mount(
+            source = "mqueue",
+            target = mqueuePath,
+            fstype = "mqueue",
+            flags = (MS_NOSUID or MS_NOEXEC or MS_NODEV).toULong(),
+        ) != 0
+    ) {
+        Logger.warn("failed to mount /dev/mqueue (errno=$errno)")
+    } else {
+        Logger.debug("mounted /dev/mqueue")
     }
 
     // Default symlinks required by the OCI spec (and used by util-linux, GNU coreutils, ...).
