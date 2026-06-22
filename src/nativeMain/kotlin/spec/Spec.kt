@@ -13,7 +13,7 @@ import utils.JsonCodec
 data class Spec(
     val ociVersion: String = "1.0.0",
     val root: Root,
-    val process: Process,
+    val process: Process = Process(args = emptyList()),
     val hostname: String? = null,
     val mounts: List<Mount>? = null,
     val annotations: Map<String, String>? = null,
@@ -250,10 +250,11 @@ fun loadSpec(
     // Read and parse JSON file
     val spec = JsonCodec.loadFromFile<Spec>(fs, configPath)
 
-    // Validate process.args is not empty (kotlinx.serialization doesn't check this)
-    if (spec.process.args.isEmpty()) {
-        throw Exception("Spec validation failed: process.args must not be empty")
-    }
+    // process.args may legitimately be empty: the spec allows omitting
+    // spec.process entirely, in which case create/start should still succeed
+    // (the container infrastructure is set up but the init process exec's
+    // nothing and exits immediately). The OCI runtime-tools start.t test
+    // exercises this path. Don't reject it here.
 
     // The OCI runtime-spec says the runtime MUST generate an error on invalid /
     // unsupported values. ociVersion is the canonical example: it has to be a

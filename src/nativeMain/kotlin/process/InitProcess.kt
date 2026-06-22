@@ -262,6 +262,14 @@ private fun initProcessInternal(
 
         notifyListener.close()
 
+        // An empty args list means the spec omitted spec.process entirely. The
+        // start operation must still succeed: exit cleanly so the container
+        // transitions to "stopped" without trying to exec nothing.
+        if (processArgs.isEmpty()) {
+            Logger.info("spec.process omitted; init exiting with status 0")
+            _exit(0)
+        }
+
         Logger.info("Executing: ${processArgs.joinToString(" ")}")
 
         // Clear host environment variables so container starts clean

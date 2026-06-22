@@ -103,10 +103,8 @@ jobs:
           #   process_rlimits -- Go's runtime auto-raises RLIMIT_NOFILE soft to
           #               hard during /runtimetest startup, masking the value we
           #               set (3000); only NOFILE is affected. Not a runtime bug.
-          #   start    -- test binary's outer exit code from r.State() polling
-          #               (not a per-assertion failure); all 6 sub-assertions
-          #               that exercise actual runtime semantics already PASS.
-          SKIP_BROKEN_PATTERN='^(pidfile|linux_ns_path|process_rlimits|start)$'
+          #               (takoyaki has the same behaviour: rc=0 / empty TAP.)
+          SKIP_BROKEN_PATTERN='^(pidfile|linux_ns_path|process_rlimits)$'
           for t in validation/*/*.t; do
             name=$(basename "$t" .t)
             if echo "$name" | grep -qE "$SKIP_V1_PATTERN"; then
