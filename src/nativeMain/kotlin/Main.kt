@@ -232,6 +232,22 @@ fun main(args: Array<String>): Unit =
             }
         }
 
+        class ExecCommand : Subcommand("exec", "Execute a process in a running container") {
+            val containerId by argument(
+                ArgType.String,
+                description = "Container ID",
+            )
+
+            val processArgs by argument(
+                ArgType.String,
+                description = "Command and arguments to run in the container",
+            ).vararg()
+
+            override fun execute() {
+                exec(fs, rootPath, containerId, processArgs)
+            }
+        }
+
         parser.subcommands(
             CreateCommand(),
             StartCommand(),
@@ -239,6 +255,7 @@ fun main(args: Array<String>): Unit =
             KillCommand(),
             DeleteCommand(),
             PsCommand(),
+            ExecCommand(),
         )
 
         if (args.isEmpty()) {
@@ -257,6 +274,7 @@ fun main(args: Array<String>): Unit =
             println("  kill <container-id> <signal>                                       Send a signal to a container")
             println("  delete [--force|-f] <container-id>                                 Delete a container")
             println("  ps [--format|-f <json|table>] <container-id>                       List processes in a container")
+            println("  exec <container-id> <command> [args...]                            Run a process in a running container")
             exit(1)
         }
 
