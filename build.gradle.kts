@@ -22,8 +22,10 @@ fun isReleaseTask(): Boolean =
 // Provider for generated source directory
 val buildConfigDir = layout.buildDirectory.dir("generated/buildconfig")
 
-// Generate BuildConfig.kt with build-time constants
-val generateBuildConfig by tasks.registering {
+// Generate BuildConfig.kt with build-time constants.
+// Gradle 9 deprecates the `by tasks.registering` property-delegate idiom in
+// favour of `tasks.register("name") { ... }` returning a TaskProvider.
+val generateBuildConfig = tasks.register("generateBuildConfig") {
     val isRelease = isReleaseTask()
     val defaultLogLevel = if (isRelease) "INFO" else "DEBUG"
 
@@ -53,7 +55,7 @@ val generateBuildConfig by tasks.registering {
 }
 
 // Build C bootstrap library
-val buildBootstrap by tasks.registering(Exec::class) {
+val buildBootstrap = tasks.register<Exec>("buildBootstrap") {
     workingDir = file("src/nativeInterop/cinterop/bootstrap")
 
     // Create build directory
@@ -112,13 +114,13 @@ kotlin {
         }
 
         compilations.getByName("main").cinterops {
-            val libseccomp by creating {}
-            val socket by creating {}
-            val sched by creating {}
-            val closerange by creating {}
-            val capability by creating {}
-            val bootstrap by creating {}
-            val prlimit by creating {}
+            create("libseccomp")
+            create("socket")
+            create("sched")
+            create("closerange")
+            create("capability")
+            create("bootstrap")
+            create("prlimit")
         }
     }
 
