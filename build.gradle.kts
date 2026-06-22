@@ -153,6 +153,13 @@ tasks.withType<org.jlleitschuh.gradle.ktlint.tasks.KtLintFormatTask>().configure
     dependsOn(generateBuildConfig)
 }
 
+// kotest 6.2+ made the `kotest` Gradle task opt-in: customGradleTask must be set,
+// otherwise the plugin throws "property has no value available" at task lookup time.
+// We use `./gradlew kotest` in CI, so opt in.
+kotest {
+    customGradleTask.set(true)
+}
+
 ktlint {
     version.set("1.7.1")
     verbose.set(true)
