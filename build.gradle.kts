@@ -54,17 +54,12 @@ val generateBuildConfig = tasks.register("generateBuildConfig") {
     }
 }
 
-// Build C bootstrap library
-val buildBootstrap = tasks.register<Exec>("buildBootstrap") {
+// Build C bootstrap library. Gradle 9 removed Project.exec() / Project.copy()
+// from inside task actions — the old `doLast { exec { ... } }` block no longer
+// compiles. Split into three sequential tasks (compile, archive, stage).
+val compileBootstrap = tasks.register<Exec>("compileBootstrap") {
     workingDir = file("src/nativeInterop/cinterop/bootstrap")
-
-    // Create build directory
-    doFirst {
-        file("$workingDir/build").mkdirs()
-        file("build/bootstrap").mkdirs()
-    }
-
-    // Compile bootstrap.c
+    doFirst { file("${workingDir}/build").mkdirs() }
     commandLine(
         "gcc",
         "-c",
@@ -75,25 +70,24 @@ val buildBootstrap = tasks.register<Exec>("buildBootstrap") {
         "-o",
         "build/bootstrap.o",
     )
+}
 
-    // Create static library and copy to build/bootstrap for linking
-    doLast {
-        exec {
-            workingDir = file("src/nativeInterop/cinterop/bootstrap")
-            commandLine(
-                "ar",
-                "rcs",
-                "build/libbootstrap.a",
-                "build/bootstrap.o",
-            )
-        }
+val archiveBootstrap = tasks.register<Exec>("archiveBootstrap") {
+    dependsOn(compileBootstrap)
+    workingDir = file("src/nativeInterop/cinterop/bootstrap")
+    commandLine(
+        "ar",
+        "rcs",
+        "build/libbootstrap.a",
+        "build/bootstrap.o",
+    )
+}
 
-        // Copy to build/bootstrap for linking
-        copy {
-            from("src/nativeInterop/cinterop/bootstrap/build/libbootstrap.a")
-            into("build/bootstrap")
-        }
-    }
+// Stages the archived static library where the cinterop step expects to find it.
+val buildBootstrap = tasks.register<Copy>("buildBootstrap") {
+    dependsOn(archiveBootstrap)
+    from("src/nativeInterop/cinterop/bootstrap/build/libbootstrap.a")
+    into(layout.buildDirectory.dir("bootstrap"))
 }
 
 kotlin {
