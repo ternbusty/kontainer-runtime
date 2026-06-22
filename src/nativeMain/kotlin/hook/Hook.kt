@@ -44,7 +44,9 @@ fun execHook(
             dup2(readEnd, STDIN_FILENO)
             close(readEnd)
 
-            val args = listOf(hook.path) + (hook.args ?: emptyList())
+            // Per the OCI spec, hook.args is the FULL argv (including argv[0]).
+            // Fall back to [hook.path] when args is omitted.
+            val args = hook.args ?: listOf(hook.path)
             val argv = allocArray<CPointerVar<ByteVar>>(args.size + 1)
             args.forEachIndexed { i, a -> argv[i] = a.cstr.ptr }
             argv[args.size] = null
