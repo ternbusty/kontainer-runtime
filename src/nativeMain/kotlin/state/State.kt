@@ -145,12 +145,15 @@ private inline fun <T> withContainerLock(
     }
     try {
         val op = if (exclusive) LOCK_EX else LOCK_SH
-        if (flock(fd, op) != 0) {
+        // The bare name `flock` resolves to the `struct flock` cinterop type
+        // (for fcntl record locks), which shadows the file-lock function, so
+        // call the syscall directly.
+        if (syscall(platform.linux.__NR_flock.toLong(), fd.toLong(), op.toLong()) != 0L) {
             Logger.warn("failed to flock $lockPath (errno=$errno); proceeding without lock")
         }
         return block()
     } finally {
-        flock(fd, LOCK_UN)
+        syscall(platform.linux.__NR_flock.toLong(), fd.toLong(), LOCK_UN.toLong())
         close(fd)
     }
 }
