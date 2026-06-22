@@ -6,6 +6,7 @@ import channel.NotifyListener
 import kotlinx.cinterop.*
 import logger.Logger
 import platform.posix.*
+import rootfs.applyLinuxDevices
 import rootfs.applyMaskedPaths
 import rootfs.applyReadonlyPaths
 import rootfs.applySpecMounts
@@ -54,7 +55,7 @@ private fun initProcessInternal(
 
         // Prepare rootfs
         if (spec.hasNamespace("mount")) {
-            prepareRootfs(syscall, rootfsPath)
+            prepareRootfs(syscall, rootfsPath, spec.linux?.rootfsPropagation)
             // Process spec.mounts BEFORE pivot_root so bind-mount source paths from
             // the host are still reachable. Targets are inside rootfsPath.
             applySpecMounts(syscall, spec.mounts, rootfsPath)
@@ -84,6 +85,9 @@ private fun initProcessInternal(
                 Logger.debug("set hostname to $hostname")
             }
         }
+
+        // Create spec.linux.devices[] device nodes inside the container's /dev.
+        applyLinuxDevices(syscall, spec.linux?.devices)
 
         // Apply spec.linux.sysctl entries via /proc/sys/*. /proc is mounted by
         // prepareRootfs; we must do this while still root (writing /proc/sys

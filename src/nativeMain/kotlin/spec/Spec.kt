@@ -88,6 +88,7 @@ data class LinuxCapabilities(
 @Serializable
 data class Namespace(
     val type: String,
+    val path: String? = null,
 )
 
 @Serializable
@@ -191,6 +192,22 @@ data class Linux(
     val readonlyPaths: List<String>? = null,
     val sysctl: Map<String, String>? = null,
     val rootfsPropagation: String? = null,
+    val devices: List<LinuxDevice>? = null,
+)
+
+/**
+ * A device node entry from spec.linux.devices[]. type is one of "c", "b", "u", "p".
+ * https://github.com/opencontainers/runtime-spec/blob/main/config-linux.md#devices
+ */
+@Serializable
+data class LinuxDevice(
+    val path: String,
+    val type: String,
+    val major: Long? = null,
+    val minor: Long? = null,
+    val fileMode: UInt? = null,
+    val uid: UInt? = null,
+    val gid: UInt? = null,
 )
 
 /**

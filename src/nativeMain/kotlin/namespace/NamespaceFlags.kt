@@ -22,6 +22,9 @@ fun calculateCloneFlags(namespaces: List<Namespace>?): UInt {
     var flags = 0u
 
     for (ns in namespaces) {
+        // A namespace entry with a non-null `path` means "join an existing namespace
+        // at this path", not "create a new one" — don't add it to the unshare set.
+        if (ns.path != null) continue
         val flag: UInt =
             when (ns.type) {
                 "mount" -> _CLONE_NEWNS().toUInt()
@@ -30,6 +33,7 @@ fun calculateCloneFlags(namespaces: List<Namespace>?): UInt {
                 "ipc" -> _CLONE_NEWIPC().toUInt()
                 "pid" -> _CLONE_NEWPID().toUInt()
                 "user" -> _CLONE_NEWUSER().toUInt()
+                "cgroup" -> 0x02000000u // CLONE_NEWCGROUP (not yet in K/N's platform.linux on older sysroots)
                 else -> {
                     // Skip unknown namespace types (for forward compatibility)
                     0u

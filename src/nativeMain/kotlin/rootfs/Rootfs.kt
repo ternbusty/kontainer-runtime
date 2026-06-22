@@ -32,6 +32,7 @@ const val MNT_DETACH = 2
 fun prepareRootfs(
     syscall: Syscall,
     rootfsPath: String,
+    rootfsPropagation: String? = null,
 ) {
     Logger.debug("preparing rootfs at $rootfsPath")
 
@@ -39,22 +40,38 @@ fun prepareRootfs(
         throw Exception("Rootfs path does not exist: $rootfsPath")
     }
 
-    // Change root mount propagation to slave so mount/umount events don't propagate
-    // to/from the host. Required for pivot_root to work correctly.
-    Logger.debug("changing root mount propagation to slave")
+    // Change root mount propagation. Default is "rslave" so mount/umount events
+    // don't propagate to/from the host. spec.linux.rootfsPropagation can override
+    // this with "shared"/"private"/"unbindable" (recursive variants too).
+    val (label, propFlags) =
+        when (rootfsPropagation) {
+            "shared" -> "shared" to MS_SHARED.toULong()
+            "rshared" -> "rshared" to (MS_SHARED or MS_REC).toULong()
+            "private" -> "private" to MS_PRIVATE.toULong()
+            "rprivate" -> "rprivate" to (MS_PRIVATE or MS_REC).toULong()
+            "slave" -> "slave" to MS_SLAVE.toULong()
+            "unbindable" -> "unbindable" to MS_UNBINDABLE.toULong()
+            "runbindable" -> "runbindable" to (MS_UNBINDABLE or MS_REC).toULong()
+            null, "rslave" -> "rslave" to (MS_SLAVE or MS_REC).toULong()
+            else -> {
+                Logger.warn("unknown rootfsPropagation $rootfsPropagation, falling back to rslave")
+                "rslave" to (MS_SLAVE or MS_REC).toULong()
+            }
+        }
+    Logger.debug("changing root mount propagation to $label")
     if (syscall.mount(
             source = null,
             target = "/",
             fstype = null,
-            flags = (MS_SLAVE or MS_REC).toULong(),
+            flags = propFlags,
         ) != 0
     ) {
         val errNum = errno
-        perror("mount / MS_SLAVE")
-        Logger.warn("failed to change root mount propagation to slave (errno=$errNum)")
+        perror("mount / $label")
+        Logger.warn("failed to change root mount propagation to $label (errno=$errNum)")
         // Continue anyway - this is best effort
     } else {
-        Logger.debug("root mount propagation changed to slave")
+        Logger.debug("root mount propagation changed to $label")
     }
 
     // Bind mount rootfs to itself to make it a mount point (required for pivot_root)
@@ -480,6 +497,73 @@ fun setRootfsReadonly(syscall: Syscall) {
         }
 
         Logger.debug("rootfs set as readonly (with existing flags)")
+    }
+}
+
+/**
+ * Create the device nodes specified by spec.linux.devices[] inside the container's
+ * /dev. Uses mknod(2) so the device has the requested major/minor. Falls back to
+ * a bind mount from /dev/null on EPERM (e.g. running in a user namespace without
+ * CAP_MKNOD).
+ *
+ * Called after pivot_root, while still root, so paths are relative to "/".
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun applyLinuxDevices(
+    syscall: Syscall,
+    devices: List<spec.LinuxDevice>?,
+) {
+    if (devices.isNullOrEmpty()) return
+    for (d in devices) {
+        val mode =
+            when (d.type) {
+                "c", "u" -> S_IFCHR
+                "b" -> S_IFBLK
+                "p" -> S_IFIFO
+                else -> {
+                    Logger.warn("unsupported device type ${d.type} for ${d.path}, skipping")
+                    continue
+                }
+            }
+        val perms = (d.fileMode ?: 0x1B6u).toInt() // 0666
+        val major = d.major ?: 0L
+        val minor = d.minor ?: 0L
+        // Linux gnu_dev_makedev encoding handles the common (major<256, minor<256)
+        // path with the simple (major<<8|minor) layout; full encoding is below.
+        val devNum =
+            (((major and 0xfff) shl 8) or (minor and 0xff) or
+                ((minor and 0xfff00) shl 12) or ((major and 0xfffff000) shl 32)).toULong()
+
+        // Ensure parent directory exists. For /dev/test1, parent is /dev (already mounted).
+        val parent = d.path.substringBeforeLast('/', missingDelimiterValue = "")
+        if (parent.isNotEmpty()) mkdirP(parent)
+
+        // Remove any pre-existing file at the destination so mknod doesn't EEXIST.
+        unlink(d.path)
+
+        val rc = mknod(d.path, (mode or perms).toUInt(), devNum)
+        if (rc != 0) {
+            Logger.warn("mknod ${d.path} (major=$major, minor=$minor) failed (errno=$errno); falling back to /dev/null bind")
+            // Fall back: empty file + bind mount from /dev/null
+            val fd = open(d.path, O_RDWR or O_CREAT, 0x1B6u)
+            if (fd >= 0) close(fd)
+            if (syscall.mount(
+                    source = "/dev/null",
+                    target = d.path,
+                    fstype = null,
+                    flags = MS_BIND.toULong(),
+                ) != 0
+            ) {
+                Logger.warn("bind /dev/null over ${d.path} failed (errno=$errno)")
+                continue
+            }
+        }
+        if (d.uid != null || d.gid != null) {
+            if (chown(d.path, d.uid ?: 0u, d.gid ?: 0u) != 0) {
+                Logger.warn("chown ${d.path} (uid=${d.uid}, gid=${d.gid}) failed (errno=$errno)")
+            }
+        }
+        Logger.debug("created device ${d.path} (type=${d.type}, major=$major, minor=$minor)")
     }
 }
 
