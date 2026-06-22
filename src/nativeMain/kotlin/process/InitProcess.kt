@@ -194,8 +194,54 @@ private fun initProcessInternal(
             capability.applyCapabilities(syscall, capabilities)
         }
 
-        // TODO: Apply AppArmor profile and SELinux label
-        // See: runc/libcontainer/standard_init_linux.go:114-124
+        // Apply AppArmor profile / SELinux exec context. Both are written to
+        // /proc/self/attr/* files and take effect on the next execve.
+        // - AppArmor: /proc/self/attr/apparmor/exec (newer) or .../exec (older);
+        //   format is "exec <profile>" or "changeprofile <profile>".
+        // - SELinux: /proc/self/attr/exec; format is the raw context label.
+        // Failure is logged but non-fatal — the LSM may not be loaded.
+        spec.process.apparmorProfile?.let { profile ->
+            val payload = "exec $profile"
+            val written = listOf(
+                "/proc/self/attr/apparmor/exec",
+                "/proc/self/attr/exec",
+            ).any { path ->
+                try {
+                    val fd = open(path, O_WRONLY)
+                    if (fd < 0) return@any false
+                    val bytes = payload.encodeToByteArray()
+                    val ok =
+                        bytes.usePinned { p ->
+                            write(fd, p.addressOf(0), bytes.size.toULong()).toInt() == bytes.size
+                        }
+                    close(fd)
+                    ok
+                } catch (_: Throwable) {
+                    false
+                }
+            }
+            if (!written) Logger.warn("failed to set apparmor profile '$profile'")
+            else Logger.debug("staged apparmor exec profile: $profile")
+        }
+        spec.process.selinuxLabel?.let { label ->
+            try {
+                val fd = open("/proc/self/attr/exec", O_WRONLY)
+                if (fd < 0) {
+                    Logger.warn("failed to open /proc/self/attr/exec for SELinux label (errno=$errno)")
+                } else {
+                    val bytes = label.encodeToByteArray()
+                    bytes.usePinned { p ->
+                        if (write(fd, p.addressOf(0), bytes.size.toULong()).toInt() != bytes.size) {
+                            Logger.warn("short write of SELinux label '$label'")
+                        }
+                    }
+                    close(fd)
+                    Logger.debug("staged SELinux exec label: $label")
+                }
+            } catch (e: Throwable) {
+                Logger.warn("failed to set SELinux label: ${e.message}")
+            }
+        }
 
         mainSender.initReady()
         Logger.debug("sent init ready signal")
