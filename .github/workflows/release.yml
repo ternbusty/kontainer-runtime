@@ -72,7 +72,7 @@ jobs:
              dist/kontainer-runtime_${{ needs.release-please.outputs.version }}_linux_amd64
 
       - name: Upload binary to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
           files: dist/*
