@@ -3,7 +3,7 @@ kotlin = "2.4.0"
 kotlinxSerialization = "1.8.0"
 kotlinxCli = "0.3.6"
 kotest = "6.2.1"
-ksp = "2.2.20-2.0.4"
+ksp = "2.3.9"
 ktlint = "13.1.0"
 
 [libraries]
