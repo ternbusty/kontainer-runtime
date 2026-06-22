@@ -295,6 +295,19 @@ void kontainer_bootstrap(void) {
         }
     }
 
+    // Older kernel headers may not define CLONE_NEWCGROUP; fall back to the well-known value.
+    #ifndef CLONE_NEWCGROUP
+    #define CLONE_NEWCGROUP 0x02000000
+    #endif
+    if (clone_flags & CLONE_NEWCGROUP) {
+        fprintf(stderr, "[stage-1] Unsharing cgroup namespace (CLONE_NEWCGROUP)\n");
+        if (unshare(CLONE_NEWCGROUP) < 0) {
+            fprintf(stderr, "[stage-1] Failed to unshare cgroup namespace: %s (errno=%d)\n",
+                    strerror(errno), errno);
+            exit(1);
+        }
+    }
+
     fprintf(stderr, "[stage-1] Successfully unshared all requested namespaces\n");
 
     // Clone Stage-2 (init process) with CLONE_PARENT

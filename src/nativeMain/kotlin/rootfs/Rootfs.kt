@@ -541,7 +541,11 @@ fun applyLinuxDevices(
         // Remove any pre-existing file at the destination so mknod doesn't EEXIST.
         unlink(d.path)
 
+        // Temporarily clear umask so mknod creates the file with the exact mode
+        // from the spec instead of letting the inherited umask trim bits off.
+        val savedUmask = umask(0u)
         val rc = mknod(d.path, (mode or perms).toUInt(), devNum)
+        umask(savedUmask)
         if (rc != 0) {
             Logger.warn("mknod ${d.path} (major=$major, minor=$minor) failed (errno=$errno); falling back to /dev/null bind")
             // Fall back: empty file + bind mount from /dev/null
@@ -557,13 +561,18 @@ fun applyLinuxDevices(
                 Logger.warn("bind /dev/null over ${d.path} failed (errno=$errno)")
                 continue
             }
+        } else {
+            // mknod respects the mode-bits-in-the-low-bits of mode arg, but file system
+            // mode-on-disk is mknod_mode & ~umask. We already zeroed umask, but chmod
+            // afterwards covers the kernel weirdness around setuid/setgid bits.
+            chmod(d.path, perms.toUInt())
         }
         if (d.uid != null || d.gid != null) {
             if (chown(d.path, d.uid ?: 0u, d.gid ?: 0u) != 0) {
                 Logger.warn("chown ${d.path} (uid=${d.uid}, gid=${d.gid}) failed (errno=$errno)")
             }
         }
-        Logger.debug("created device ${d.path} (type=${d.type}, major=$major, minor=$minor)")
+        Logger.debug("created device ${d.path} (type=${d.type}, major=$major, minor=$minor, perms=${perms.toString(8)})")
     }
 }
 
