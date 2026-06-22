@@ -226,5 +226,14 @@ fun loadSpec(
         throw Exception("Spec validation failed: process.args must not be empty")
     }
 
+    // The OCI runtime-spec says the runtime MUST generate an error on invalid /
+    // unsupported values. ociVersion is the canonical example: it has to be a
+    // semver like "1.0.0", not free text. Reject anything that doesn't parse as
+    // major.minor.patch.
+    val versionRegex = Regex("^\\d+\\.\\d+\\.\\d+(?:-[\\w.-]+)?$")
+    if (!versionRegex.matches(spec.ociVersion)) {
+        throw Exception("Spec validation failed: ociVersion '${spec.ociVersion}' is not a valid semver")
+    }
+
     return spec
 }
