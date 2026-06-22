@@ -161,6 +161,29 @@ fun create(
                 setenv("_KONTAINER_ROOTFS_PATH", rootfsPath, 1)
                 setenv("_KONTAINER_NOTIFY_SOCKET", notifySocketPath, 1)
 
+                // Pass any spec.linux.namespaces[].path entries to bootstrap.c
+                // so it can setns(2) into existing namespaces before the
+                // stage-2 fork. Doing this in the Kotlin runtime is unreliable
+                // because the runtime is multi-threaded (the kernel rejects
+                // setns into a mount namespace from such a process) and PID
+                // namespace join must happen pre-fork. The env var key matches
+                // ENV_NS_PATH_PREFIX in bootstrap.c.
+                spec.linux?.namespaces?.forEach { ns ->
+                    val path = ns.path ?: return@forEach
+                    val envKey =
+                        when (ns.type) {
+                            "mount" -> "_KONTAINER_NS_PATH_MOUNT"
+                            "network" -> "_KONTAINER_NS_PATH_NETWORK"
+                            "uts" -> "_KONTAINER_NS_PATH_UTS"
+                            "ipc" -> "_KONTAINER_NS_PATH_IPC"
+                            "user" -> "_KONTAINER_NS_PATH_USER"
+                            "cgroup" -> "_KONTAINER_NS_PATH_CGROUP"
+                            "pid" -> "_KONTAINER_NS_PATH_PID"
+                            else -> return@forEach
+                        }
+                    setenv(envKey, path, 1)
+                }
+
                 // Prepare arguments
                 val argv = allocArray<CPointerVar<ByteVar>>(3)
                 argv[0] = exePathBuf

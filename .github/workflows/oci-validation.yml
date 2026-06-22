@@ -104,7 +104,7 @@ jobs:
           #               hard during /runtimetest startup, masking the value we
           #               set (3000); only NOFILE is affected. Not a runtime bug.
           #               (takoyaki has the same behaviour: rc=0 / empty TAP.)
-          SKIP_BROKEN_PATTERN='^(pidfile|linux_ns_path|process_rlimits)$'
+          SKIP_BROKEN_PATTERN='^(pidfile|process_rlimits)$'
           for t in validation/*/*.t; do
             name=$(basename "$t" .t)
             if echo "$name" | grep -qE "$SKIP_V1_PATTERN"; then
