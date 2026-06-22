@@ -191,7 +191,7 @@ private fun runMainProcessInternal(
                 status = ContainerStatus.CREATED,
                 pid = stage2Pid,
                 bundle = bundlePath,
-                annotations = null,
+                annotations = spec.annotations,
             )
         state.save(fs, rootPath)
 
