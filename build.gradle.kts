@@ -22,8 +22,10 @@ fun isReleaseTask(): Boolean =
 // Provider for generated source directory
 val buildConfigDir = layout.buildDirectory.dir("generated/buildconfig")
 
-// Generate BuildConfig.kt with build-time constants
-val generateBuildConfig by tasks.registering {
+// Generate BuildConfig.kt with build-time constants.
+// Gradle 9 deprecates the `by tasks.registering` property-delegate idiom in
+// favour of `tasks.register("name") { ... }` returning a TaskProvider.
+val generateBuildConfig = tasks.register("generateBuildConfig") {
     val isRelease = isReleaseTask()
     val defaultLogLevel = if (isRelease) "INFO" else "DEBUG"
 
@@ -52,17 +54,12 @@ val generateBuildConfig by tasks.registering {
     }
 }
 
-// Build C bootstrap library
-val buildBootstrap by tasks.registering(Exec::class) {
+// Build C bootstrap library. Gradle 9 removed Project.exec() / Project.copy()
+// from inside task actions — the old `doLast { exec { ... } }` block no longer
+// compiles. Split into three sequential tasks (compile, archive, stage).
+val compileBootstrap = tasks.register<Exec>("compileBootstrap") {
     workingDir = file("src/nativeInterop/cinterop/bootstrap")
-
-    // Create build directory
-    doFirst {
-        file("$workingDir/build").mkdirs()
-        file("build/bootstrap").mkdirs()
-    }
-
-    // Compile bootstrap.c
+    doFirst { file("${workingDir}/build").mkdirs() }
     commandLine(
         "gcc",
         "-c",
@@ -73,25 +70,24 @@ val buildBootstrap by tasks.registering(Exec::class) {
         "-o",
         "build/bootstrap.o",
     )
+}
 
-    // Create static library and copy to build/bootstrap for linking
-    doLast {
-        exec {
-            workingDir = file("src/nativeInterop/cinterop/bootstrap")
-            commandLine(
-                "ar",
-                "rcs",
-                "build/libbootstrap.a",
-                "build/bootstrap.o",
-            )
-        }
+val archiveBootstrap = tasks.register<Exec>("archiveBootstrap") {
+    dependsOn(compileBootstrap)
+    workingDir = file("src/nativeInterop/cinterop/bootstrap")
+    commandLine(
+        "ar",
+        "rcs",
+        "build/libbootstrap.a",
+        "build/bootstrap.o",
+    )
+}
 
-        // Copy to build/bootstrap for linking
-        copy {
-            from("src/nativeInterop/cinterop/bootstrap/build/libbootstrap.a")
-            into("build/bootstrap")
-        }
-    }
+// Stages the archived static library where the cinterop step expects to find it.
+val buildBootstrap = tasks.register<Copy>("buildBootstrap") {
+    dependsOn(archiveBootstrap)
+    from("src/nativeInterop/cinterop/bootstrap/build/libbootstrap.a")
+    into(layout.buildDirectory.dir("bootstrap"))
 }
 
 kotlin {
@@ -112,13 +108,13 @@ kotlin {
         }
 
         compilations.getByName("main").cinterops {
-            val libseccomp by creating {}
-            val socket by creating {}
-            val sched by creating {}
-            val closerange by creating {}
-            val capability by creating {}
-            val bootstrap by creating {}
-            val prlimit by creating {}
+            create("libseccomp")
+            create("socket")
+            create("sched")
+            create("closerange")
+            create("capability")
+            create("bootstrap")
+            create("prlimit")
         }
     }
 
