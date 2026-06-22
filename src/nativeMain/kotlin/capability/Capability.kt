@@ -127,7 +127,13 @@ private fun dropBoundingCapabilities(
     syscall: Syscall,
     caps: Set<Capability>,
 ) {
-    val allCaps = (0..CAP_LAST_CAP).toSet()
+    // The kernel header constant CAP_LAST_CAP that K/N's sysroot ships may be
+    // older than the running kernel (e.g. 37 on a host that supports up to 40),
+    // which would leave CAP_PERFMON/CAP_BPF/CAP_CHECKPOINT_RESTORE undropped.
+    // Use our own enum's maximum as the upper bound and fall back to the
+    // header's value if the enum somehow comes in lower.
+    val maxCap = maxOf(Capability.entries.maxOf { it.value }, CAP_LAST_CAP)
+    val allCaps = (0..maxCap).toSet()
     val capsToDrop = allCaps.filter { capValue -> caps.none { it.value == capValue } }
 
     for (capValue in capsToDrop) {
