@@ -1,9 +1,11 @@
 package command
 
 import channel.SocketNotifySocket
+import hook.runHooks
 import kotlinx.cinterop.ExperimentalForeignApi
 import logger.Logger
 import platform.posix.exit
+import spec.loadSpec
 import state.*
 import utils.FileSystem
 
@@ -57,6 +59,20 @@ fun start(
         Logger.debug("updated container state to 'running'")
 
         Logger.info("container $containerId started successfully")
+
+        // Run poststart hooks AFTER the container is running. The hook stdin sees
+        // the State JSON with status="running". A failing hook here is logged but
+        // not fatal — the container is already up and tearing it down would be
+        // worse than the hook's intent.
+        val spec =
+            try {
+                loadSpec(fs, "${state.bundle}/config.json")
+            } catch (e: Exception) {
+                null
+            }
+        if (spec?.hooks?.poststart != null) {
+            runHooks(spec.hooks.poststart, updatedState)
+        }
     } catch (e: Exception) {
         Logger.error("failed to start container: ${e.message ?: "unknown"}")
         exit(1)

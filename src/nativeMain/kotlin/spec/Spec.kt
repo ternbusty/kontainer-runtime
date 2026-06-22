@@ -16,6 +16,8 @@ data class Spec(
     val process: Process,
     val hostname: String? = null,
     val mounts: List<Mount>? = null,
+    val annotations: Map<String, String>? = null,
+    val hooks: Hooks? = null,
     val linux: Linux? = null,
 ) {
     /**
@@ -23,6 +25,33 @@ data class Spec(
      */
     fun hasNamespace(type: String): Boolean = linux?.namespaces?.any { it.type == type } ?: false
 }
+
+/**
+ * One entry in spec.hooks.* — an external program to run at a lifecycle point.
+ * https://github.com/opencontainers/runtime-spec/blob/main/config.md#posix-platform-hooks
+ */
+@Serializable
+data class Hook(
+    val path: String,
+    val args: List<String>? = null,
+    val env: List<String>? = null,
+    val timeout: Int? = null,
+)
+
+/**
+ * The five hook points runtimes invoke. prestart/poststart/poststop are the
+ * pre-1.0.2 names that the runtime-tools validation suite still exercises;
+ * the createRuntime/createContainer/startContainer trio replaces them.
+ */
+@Serializable
+data class Hooks(
+    val prestart: List<Hook>? = null,
+    val createRuntime: List<Hook>? = null,
+    val createContainer: List<Hook>? = null,
+    val startContainer: List<Hook>? = null,
+    val poststart: List<Hook>? = null,
+    val poststop: List<Hook>? = null,
+)
 
 /**
  * Mount entry from the OCI runtime-spec `mounts[]` array.
