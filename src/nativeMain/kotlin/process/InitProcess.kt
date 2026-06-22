@@ -101,6 +101,13 @@ private fun initProcessInternal(
                 0
             }
 
+        // Apply rlimits to self. The main process also tries this against stage-1's
+        // PID, but stage-1 may have already cloned stage-2 by then, so stage-2 would
+        // inherit the host's defaults instead. Setting them here, on the init process
+        // itself, guarantees the container sees the spec'd values. Done while still
+        // root so RLIMIT_NICE / RLIMIT_NOFILE etc. can be raised if requested.
+        syscall.applyRlimits(0, spec.process.rlimits)
+
         // Set no_new_privileges if specified.
         // Prevents the process from gaining new privileges through execve. Must be set
         // before applying capabilities.

@@ -236,7 +236,32 @@ private fun createDeviceNode(
 }
 
 /**
- * Create essential device nodes in /dev.
+ * Create one of the default /dev symlinks (e.g. /dev/stdin -> /proc/self/fd/0).
+ * Failure is non-fatal so a missing target on the host doesn't kill the container.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun createDevSymlink(
+    linkPath: String,
+    target: String,
+) {
+    if (symlink(target, linkPath) != 0) {
+        val errNum = errno
+        if (errNum == EEXIST) {
+            Logger.debug("symlink $linkPath -> $target already exists")
+        } else {
+            Logger.warn("failed to symlink $linkPath -> $target (errno=$errNum)")
+        }
+    } else {
+        Logger.debug("created symlink $linkPath -> $target")
+    }
+}
+
+/**
+ * Create the default /dev contents required by the OCI runtime-spec:
+ *   - device nodes (null/zero/full/random/urandom/tty)
+ *   - /dev/pts (devpts) and /dev/mqueue (mqueue) submounts
+ *   - /dev/shm (tmpfs)
+ *   - symlinks (stdin/stdout/stderr/fd -> /proc/self/fd/*, ptmx -> pts/ptmx)
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun createDeviceNodes(
@@ -245,9 +270,50 @@ private fun createDeviceNodes(
 ) {
     createDeviceNode(syscall, "$devPath/null", "null")
     createDeviceNode(syscall, "$devPath/zero", "zero")
+    createDeviceNode(syscall, "$devPath/full", "full")
     createDeviceNode(syscall, "$devPath/random", "random")
     createDeviceNode(syscall, "$devPath/urandom", "urandom")
+    createDeviceNode(syscall, "$devPath/tty", "tty")
     Logger.debug("finished creating device nodes in $devPath")
+
+    // Mount /dev/pts (devpts) so /dev/ptmx -> pts/ptmx and pseudoterminal allocation work.
+    val ptsPath = "$devPath/pts"
+    if (access(ptsPath, F_OK) != 0) {
+        if (mkdir(ptsPath, 0x1EDu) != 0) { // 0755
+            Logger.warn("failed to create $ptsPath directory (errno=$errno)")
+        }
+    }
+    if (syscall.mount(
+            source = "devpts",
+            target = ptsPath,
+            fstype = "devpts",
+            flags = (MS_NOSUID or MS_NOEXEC).toULong(),
+            data = "newinstance,ptmxmode=0666,mode=0620",
+        ) != 0
+    ) {
+        Logger.warn("failed to mount /dev/pts (errno=$errno)")
+    } else {
+        Logger.debug("mounted /dev/pts")
+    }
+
+    // Mount /dev/mqueue (mqueue) for POSIX message queues.
+    val mqueuePath = "$devPath/mqueue"
+    if (access(mqueuePath, F_OK) != 0) {
+        if (mkdir(mqueuePath, 0x1EDu) != 0) {
+            Logger.warn("failed to create $mqueuePath directory (errno=$errno)")
+        }
+    }
+    if (syscall.mount(
+            source = "mqueue",
+            target = mqueuePath,
+            fstype = "mqueue",
+            flags = (MS_NOSUID or MS_NOEXEC or MS_NODEV).toULong(),
+        ) != 0
+    ) {
+        Logger.warn("failed to mount /dev/mqueue (errno=$errno)")
+    } else {
+        Logger.debug("mounted /dev/mqueue")
+    }
 
     // Mount /dev/shm for shared memory (POSIX shm_open, etc.)
     val shmPath = "$devPath/shm"
@@ -271,6 +337,14 @@ private fun createDeviceNodes(
     } else {
         Logger.debug("mounted /dev/shm")
     }
+
+    // Default symlinks required by the OCI spec (and used by util-linux, GNU coreutils, ...).
+    createDevSymlink("$devPath/stdin", "/proc/self/fd/0")
+    createDevSymlink("$devPath/stdout", "/proc/self/fd/1")
+    createDevSymlink("$devPath/stderr", "/proc/self/fd/2")
+    createDevSymlink("$devPath/fd", "/proc/self/fd")
+    createDevSymlink("$devPath/ptmx", "pts/ptmx")
+    createDevSymlink("$devPath/core", "/proc/kcore")
 }
 
 /**
