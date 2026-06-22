@@ -15,6 +15,7 @@ import platform.posix.*
 import rootfs.applyLinuxDevices
 import rootfs.applyMaskedPaths
 import rootfs.applyReadonlyPaths
+import rootfs.applyRootfsPropagation
 import rootfs.applySpecMounts
 import rootfs.applySysctls
 import rootfs.pivotRoot
@@ -108,6 +109,9 @@ private fun initProcessInternal(
             // the host are still reachable. Targets are inside rootfsPath.
             applySpecMounts(syscall, spec.mounts, rootfsPath)
             pivotRoot(syscall, rootfsPath)
+            // Apply rootfsPropagation only AFTER pivot_root; the kernel forbids
+            // pivot_root into a MS_SHARED subtree.
+            applyRootfsPropagation(syscall, spec.linux?.rootfsPropagation)
         } else {
             Logger.debug("no mount namespace, skipping rootfs preparation")
         }

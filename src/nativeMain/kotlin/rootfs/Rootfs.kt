@@ -75,37 +75,6 @@ fun prepareRootfs(
     }
     Logger.debug("rootfs bind mounted successfully")
 
-    // Apply spec.linux.rootfsPropagation to the rootfsPath mount itself.
-    val (label, propFlags) =
-        when (rootfsPropagation) {
-            "shared" -> "shared" to MS_SHARED.toULong()
-            "rshared" -> "rshared" to (MS_SHARED or MS_REC).toULong()
-            "private" -> "private" to MS_PRIVATE.toULong()
-            "rprivate" -> "rprivate" to (MS_PRIVATE or MS_REC).toULong()
-            "slave" -> "slave" to MS_SLAVE.toULong()
-            "unbindable" -> "unbindable" to MS_UNBINDABLE.toULong()
-            "runbindable" -> "runbindable" to (MS_UNBINDABLE or MS_REC).toULong()
-            null, "rslave" -> null to 0uL // already rslave from earlier mount of "/"
-            else -> {
-                Logger.warn("unknown rootfsPropagation $rootfsPropagation, leaving as rslave")
-                null to 0uL
-            }
-        }
-    if (propFlags != 0uL) {
-        Logger.debug("setting rootfs propagation to $label")
-        if (syscall.mount(
-                source = null,
-                target = rootfsPath,
-                fstype = null,
-                flags = propFlags,
-            ) != 0
-        ) {
-            val errNum = errno
-            perror("mount rootfs $label")
-            Logger.warn("failed to set rootfs propagation $label (errno=$errNum)")
-        }
-    }
-
     // Mount /proc if it exists in rootfs
     val procPath = "$rootfsPath/proc"
     if (access(procPath, F_OK) == 0) {
@@ -589,6 +558,42 @@ fun applyLinuxDevices(
             }
         }
         Logger.debug("created device ${d.path} (type=${d.type}, major=$major, minor=$minor, perms=${perms.toString(8)})")
+    }
+}
+
+/**
+ * Apply spec.linux.rootfsPropagation to "/" AFTER pivot_root. The kernel rejects
+ * pivot_root when the new root is MS_SHARED, so propagation must be set last.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun applyRootfsPropagation(
+    syscall: Syscall,
+    rootfsPropagation: String?,
+) {
+    val (label, flags) =
+        when (rootfsPropagation) {
+            "shared" -> "shared" to MS_SHARED.toULong()
+            "rshared" -> "rshared" to (MS_SHARED or MS_REC).toULong()
+            "private" -> "private" to MS_PRIVATE.toULong()
+            "rprivate" -> "rprivate" to (MS_PRIVATE or MS_REC).toULong()
+            "slave" -> "slave" to MS_SLAVE.toULong()
+            "unbindable" -> "unbindable" to MS_UNBINDABLE.toULong()
+            "runbindable" -> "runbindable" to (MS_UNBINDABLE or MS_REC).toULong()
+            null, "rslave" -> return // already rslave from prepareRootfs
+            else -> {
+                Logger.warn("unknown rootfsPropagation $rootfsPropagation, leaving as rslave")
+                return
+            }
+        }
+    Logger.debug("setting rootfs propagation to $label (post-pivot)")
+    if (syscall.mount(
+            source = null,
+            target = "/",
+            fstype = null,
+            flags = flags,
+        ) != 0
+    ) {
+        Logger.warn("failed to set rootfs propagation $label (errno=$errno)")
     }
 }
 
