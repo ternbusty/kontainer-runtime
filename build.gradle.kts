@@ -115,6 +115,7 @@ kotlin {
             create("capability")
             create("bootstrap")
             create("prlimit")
+            create("network")
         }
     }
 

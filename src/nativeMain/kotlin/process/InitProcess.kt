@@ -51,8 +51,17 @@ private fun initProcessInternal(
         Logger.debug("user namespace mapping already done by Stage-1, we are root in user NS")
         Logger.debug("session already created by bootstrap.c (sid=${getsid(0)})")
 
-        // TODO: Setup network interfaces (setupNetwork) to bring up loopback interface.
-        // See: runc/libcontainer/standard_init_linux.go:80
+        // Bring up the loopback interface inside the container's network
+        // namespace (when one is configured). Without this, the container has
+        // no working network at all — `ping 127.0.0.1` fails, `bind(...)` to
+        // 127.0.0.1 fails with EADDRNOTAVAIL, etc.
+        if (spec.hasNamespace("network")) {
+            if (platform.linux.set_loopback_up() != 0) {
+                Logger.warn("failed to bring up loopback interface (errno=$errno)")
+            } else {
+                Logger.debug("brought up loopback interface")
+            }
+        }
 
         // Prepare rootfs
         if (spec.hasNamespace("mount")) {
