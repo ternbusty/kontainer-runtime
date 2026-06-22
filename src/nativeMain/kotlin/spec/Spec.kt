@@ -141,11 +141,24 @@ data class LinuxCpu(
     val period: Long? = null,
 )
 
+@Serializable
+data class LinuxPids(
+    val limit: Long? = null,
+)
+
+@Serializable
+data class LinuxHugepageLimit(
+    val pageSize: String,
+    val limit: Long,
+)
+
 /**
  * Linux resource limits
  */
 @Serializable
 data class LinuxResources(
+    val pids: LinuxPids? = null,
+    val hugepageLimits: List<LinuxHugepageLimit>? = null,
     val memory: LinuxMemory? = null,
     val cpu: LinuxCpu? = null,
 )
