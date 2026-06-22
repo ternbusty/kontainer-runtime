@@ -223,9 +223,9 @@ fun applyCapabilities(
     val permittedCaps = parseCapabilities(capabilities.permitted)
     val ambientCaps = parseCapabilities(capabilities.ambient)
 
-    val effectiveMask = capabilitiesToMask(effectiveCaps).toUInt()
-    val permittedMask = capabilitiesToMask(permittedCaps).toUInt()
-    val inheritableMask = capabilitiesToMask(inheritableCaps).toUInt()
+    val effectiveMask = capabilitiesToMask(effectiveCaps)
+    val permittedMask = capabilitiesToMask(permittedCaps)
+    val inheritableMask = capabilitiesToMask(inheritableCaps)
 
     Logger.debug("setting effective capabilities: ${effectiveCaps.map { it.capName }}")
     Logger.debug("setting permitted capabilities: ${permittedCaps.map { it.capName }}")

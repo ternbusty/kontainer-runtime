@@ -87,7 +87,7 @@ interface Syscall {
  * Each bit position corresponds to a [capability.Capability.value].
  */
 data class CapabilitySets(
-    val effective: UInt,
-    val permitted: UInt,
-    val inheritable: UInt,
+    val effective: ULong,
+    val permitted: ULong,
+    val inheritable: ULong,
 )

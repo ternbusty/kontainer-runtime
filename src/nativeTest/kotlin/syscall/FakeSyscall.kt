@@ -13,7 +13,7 @@ import spec.POSIXRlimit
  */
 class FakeSyscall : Syscall {
     val calls: MutableList<String> = mutableListOf()
-    var capabilities: CapabilitySets = CapabilitySets(0u, 0u, 0u)
+    var capabilities: CapabilitySets = CapabilitySets(0uL, 0uL, 0uL)
     var euid: UInt = 0u
     var egid: UInt = 0u
 
