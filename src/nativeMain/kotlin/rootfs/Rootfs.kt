@@ -10,10 +10,17 @@ const val MS_RDONLY = 1
 const val MS_NOSUID = 2
 const val MS_NODEV = 4
 const val MS_NOEXEC = 8
+const val MS_NOATIME = 1024
+const val MS_NODIRATIME = 2048
 const val MS_REMOUNT = 32
 const val MS_BIND = 4096
 const val MS_REC = 16384
 const val MS_SLAVE = 524288 // 1 << 19
+const val MS_RELATIME = 2097152 // 1 << 21
+const val MS_STRICTATIME = 16777216 // 1 << 24
+const val MS_PRIVATE = 262144 // 1 << 18
+const val MS_SHARED = 1048576 // 1 << 20
+const val MS_UNBINDABLE = 131072 // 1 << 17
 
 // Umount flags
 const val MNT_DETACH = 2
@@ -587,6 +594,156 @@ fun applySysctls(sysctls: Map<String, String>?) {
             }
         } finally {
             fclose(fd)
+        }
+    }
+}
+
+/**
+ * Translate an OCI mount option string into a (flag, dataField, propagationFlag) triple.
+ * - flag: bitwise OR'd into the mount() flags
+ * - data: kept for fs-specific options like "size=64k" passed via mount() data
+ * - propagationFlag: applied with a SECOND mount() call (the kernel only honours
+ *   propagation flags when used alone)
+ */
+private data class ParsedMountOptions(
+    val flags: ULong,
+    val propagation: ULong,
+    val data: String?,
+)
+
+private fun parseMountOptions(options: List<String>?): ParsedMountOptions {
+    if (options.isNullOrEmpty()) return ParsedMountOptions(0uL, 0uL, null)
+    var flags = 0uL
+    var propagation = 0uL
+    val dataParts = mutableListOf<String>()
+    for (opt in options) {
+        when (opt) {
+            "ro" -> flags = flags or MS_RDONLY.toULong()
+            "rw" -> flags = flags and MS_RDONLY.toULong().inv()
+            "nosuid" -> flags = flags or MS_NOSUID.toULong()
+            "suid" -> flags = flags and MS_NOSUID.toULong().inv()
+            "nodev" -> flags = flags or MS_NODEV.toULong()
+            "dev" -> flags = flags and MS_NODEV.toULong().inv()
+            "noexec" -> flags = flags or MS_NOEXEC.toULong()
+            "exec" -> flags = flags and MS_NOEXEC.toULong().inv()
+            "noatime" -> flags = flags or MS_NOATIME.toULong()
+            "atime" -> flags = flags and MS_NOATIME.toULong().inv()
+            "nodiratime" -> flags = flags or MS_NODIRATIME.toULong()
+            "relatime" -> flags = flags or MS_RELATIME.toULong()
+            "strictatime" -> flags = flags or MS_STRICTATIME.toULong()
+            "remount" -> flags = flags or MS_REMOUNT.toULong()
+            "bind" -> flags = flags or MS_BIND.toULong()
+            "rbind" -> flags = flags or MS_BIND.toULong() or MS_REC.toULong()
+            "shared" -> propagation = propagation or MS_SHARED.toULong()
+            "rshared" -> propagation = propagation or MS_SHARED.toULong() or MS_REC.toULong()
+            "slave" -> propagation = propagation or MS_SLAVE.toULong()
+            "rslave" -> propagation = propagation or MS_SLAVE.toULong() or MS_REC.toULong()
+            "private" -> propagation = propagation or MS_PRIVATE.toULong()
+            "rprivate" -> propagation = propagation or MS_PRIVATE.toULong() or MS_REC.toULong()
+            "unbindable" -> propagation = propagation or MS_UNBINDABLE.toULong()
+            "runbindable" -> propagation = propagation or MS_UNBINDABLE.toULong() or MS_REC.toULong()
+            "defaults" -> { /* no-op */ }
+            else -> dataParts.add(opt)
+        }
+    }
+    val data = if (dataParts.isEmpty()) null else dataParts.joinToString(",")
+    return ParsedMountOptions(flags, propagation, data)
+}
+
+/**
+ * Best-effort mkdir -p for the bind/mount target. Bind mounts need the target to
+ * exist as a file or directory matching the source kind; tmpfs/proc/sysfs need
+ * a directory. We always create directories — the bind-mount-on-file case is
+ * left to the caller (only used by /dev/null masking).
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun mkdirP(path: String) {
+    if (path.isEmpty() || path == "/") return
+    val parent = path.substringBeforeLast('/', missingDelimiterValue = "")
+    if (parent.isNotEmpty()) mkdirP(parent)
+    if (access(path, F_OK) == 0) return
+    if (mkdir(path, 0x1EDu) != 0 && errno != EEXIST) {
+        Logger.debug("mkdir $path failed (errno=$errno)")
+    }
+}
+
+/**
+ * Process the spec.mounts[] array. Skips mount destinations that are already
+ * established by prepareRootfs (/proc, /dev, /sys etc.) so we don't double-mount,
+ * but processes everything else (user bind mounts, /dev/pts, /dev/shm, /dev/mqueue,
+ * /sys/fs/cgroup with their spec-defined options).
+ *
+ * Called after pivot_root, while the process is still root with CAP_SYS_ADMIN.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun applySpecMounts(
+    syscall: Syscall,
+    mounts: List<spec.Mount>?,
+    rootfsPath: String,
+) {
+    if (mounts.isNullOrEmpty()) return
+    // prepareRootfs() already establishes these defaults; skip to avoid double-mount.
+    val handledByPrepareRootfs = setOf("/proc", "/dev", "/sys", "/sys/fs/cgroup")
+    for (m in mounts) {
+        if (m.destination in handledByPrepareRootfs) {
+            Logger.debug("skipping spec.mount ${m.destination} (already handled by prepareRootfs)")
+            continue
+        }
+        val parsed = parseMountOptions(m.options)
+        val fsType = m.type
+        // Choose source: for bind mounts the source must exist on the host; for fs
+        // mounts the value is mainly a label (e.g. "shm").
+        val source = m.source ?: fsType
+        // The target is relative to the future container root; the actual filesystem
+        // path before pivot_root is rootfsPath + destination.
+        val target = rootfsPath + m.destination
+        mkdirP(target)
+        val rc =
+            syscall.mount(
+                source = source,
+                target = target,
+                fstype = if ((parsed.flags and MS_BIND.toULong()) != 0uL) null else fsType,
+                flags = parsed.flags,
+                data = parsed.data,
+            )
+        if (rc != 0) {
+            if (errno == EBUSY) {
+                Logger.debug("spec.mount ${m.destination}: already mounted, skipping")
+            } else {
+                Logger.warn("failed to mount ${m.destination} (type=$fsType, errno=$errno)")
+            }
+            continue
+        }
+        Logger.debug("mounted ${m.destination} (type=$fsType, flags=${parsed.flags})")
+
+        // Bind-remount once more with the requested flags. The kernel ignores flag
+        // bits other than MS_BIND/MS_REC on the initial bind mount; MS_RDONLY etc.
+        // only take effect via a subsequent MS_REMOUNT.
+        if ((parsed.flags and MS_BIND.toULong()) != 0uL && parsed.flags != MS_BIND.toULong() && parsed.flags != (MS_BIND or MS_REC).toULong()) {
+            val remountFlags = parsed.flags or MS_REMOUNT.toULong()
+            if (syscall.mount(
+                    source = source,
+                    target = target,
+                    fstype = null,
+                    flags = remountFlags,
+                    data = parsed.data,
+                ) != 0
+            ) {
+                Logger.warn("bind-remount of ${m.destination} failed (errno=$errno)")
+            }
+        }
+
+        // Apply propagation flag in a separate mount() call (kernel requirement).
+        if (parsed.propagation != 0uL) {
+            if (syscall.mount(
+                    source = null,
+                    target = target,
+                    fstype = null,
+                    flags = parsed.propagation,
+                ) != 0
+            ) {
+                Logger.warn("failed to set propagation on ${m.destination} (errno=$errno)")
+            }
         }
     }
 }

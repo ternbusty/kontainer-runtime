@@ -8,6 +8,7 @@ import logger.Logger
 import platform.posix.*
 import rootfs.applyMaskedPaths
 import rootfs.applyReadonlyPaths
+import rootfs.applySpecMounts
 import rootfs.applySysctls
 import rootfs.pivotRoot
 import rootfs.prepareRootfs
@@ -54,6 +55,9 @@ private fun initProcessInternal(
         // Prepare rootfs
         if (spec.hasNamespace("mount")) {
             prepareRootfs(syscall, rootfsPath)
+            // Process spec.mounts BEFORE pivot_root so bind-mount source paths from
+            // the host are still reachable. Targets are inside rootfsPath.
+            applySpecMounts(syscall, spec.mounts, rootfsPath)
             pivotRoot(syscall, rootfsPath)
         } else {
             Logger.debug("no mount namespace, skipping rootfs preparation")

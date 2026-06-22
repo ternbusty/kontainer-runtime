@@ -15,6 +15,7 @@ data class Spec(
     val root: Root,
     val process: Process,
     val hostname: String? = null,
+    val mounts: List<Mount>? = null,
     val linux: Linux? = null,
 ) {
     /**
@@ -22,6 +23,18 @@ data class Spec(
      */
     fun hasNamespace(type: String): Boolean = linux?.namespaces?.any { it.type == type } ?: false
 }
+
+/**
+ * Mount entry from the OCI runtime-spec `mounts[]` array.
+ * https://github.com/opencontainers/runtime-spec/blob/main/config.md#mounts
+ */
+@Serializable
+data class Mount(
+    val destination: String,
+    val type: String? = null,
+    val source: String? = null,
+    val options: List<String>? = null,
+)
 
 @Serializable
 data class Root(
