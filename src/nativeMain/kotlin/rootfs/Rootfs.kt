@@ -40,38 +40,23 @@ fun prepareRootfs(
         throw Exception("Rootfs path does not exist: $rootfsPath")
     }
 
-    // Change root mount propagation. Default is "rslave" so mount/umount events
-    // don't propagate to/from the host. spec.linux.rootfsPropagation can override
-    // this with "shared"/"private"/"unbindable" (recursive variants too).
-    val (label, propFlags) =
-        when (rootfsPropagation) {
-            "shared" -> "shared" to MS_SHARED.toULong()
-            "rshared" -> "rshared" to (MS_SHARED or MS_REC).toULong()
-            "private" -> "private" to MS_PRIVATE.toULong()
-            "rprivate" -> "rprivate" to (MS_PRIVATE or MS_REC).toULong()
-            "slave" -> "slave" to MS_SLAVE.toULong()
-            "unbindable" -> "unbindable" to MS_UNBINDABLE.toULong()
-            "runbindable" -> "runbindable" to (MS_UNBINDABLE or MS_REC).toULong()
-            null, "rslave" -> "rslave" to (MS_SLAVE or MS_REC).toULong()
-            else -> {
-                Logger.warn("unknown rootfsPropagation $rootfsPropagation, falling back to rslave")
-                "rslave" to (MS_SLAVE or MS_REC).toULong()
-            }
-        }
-    Logger.debug("changing root mount propagation to $label")
+    // Change root subtree propagation to slave|rec so mount/umount events from
+    // inside the container don't leak to the host. This must happen FIRST and
+    // is always slave|rec — applying rootfsPropagation to "/" before bind-mounting
+    // rootfsPath fails with EINVAL for shared/unbindable. The spec'd propagation
+    // is applied to the rootfsPath mount itself a few lines down.
+    Logger.debug("changing root mount propagation to rslave (pre-bind)")
     if (syscall.mount(
             source = null,
             target = "/",
             fstype = null,
-            flags = propFlags,
+            flags = (MS_SLAVE or MS_REC).toULong(),
         ) != 0
     ) {
         val errNum = errno
-        perror("mount / $label")
-        Logger.warn("failed to change root mount propagation to $label (errno=$errNum)")
+        perror("mount / MS_SLAVE")
+        Logger.warn("failed to change root mount propagation to rslave (errno=$errNum)")
         // Continue anyway - this is best effort
-    } else {
-        Logger.debug("root mount propagation changed to $label")
     }
 
     // Bind mount rootfs to itself to make it a mount point (required for pivot_root)
@@ -89,6 +74,37 @@ fun prepareRootfs(
         throw Exception("Failed to bind mount rootfs (errno=$errNum)")
     }
     Logger.debug("rootfs bind mounted successfully")
+
+    // Apply spec.linux.rootfsPropagation to the rootfsPath mount itself.
+    val (label, propFlags) =
+        when (rootfsPropagation) {
+            "shared" -> "shared" to MS_SHARED.toULong()
+            "rshared" -> "rshared" to (MS_SHARED or MS_REC).toULong()
+            "private" -> "private" to MS_PRIVATE.toULong()
+            "rprivate" -> "rprivate" to (MS_PRIVATE or MS_REC).toULong()
+            "slave" -> "slave" to MS_SLAVE.toULong()
+            "unbindable" -> "unbindable" to MS_UNBINDABLE.toULong()
+            "runbindable" -> "runbindable" to (MS_UNBINDABLE or MS_REC).toULong()
+            null, "rslave" -> null to 0uL // already rslave from earlier mount of "/"
+            else -> {
+                Logger.warn("unknown rootfsPropagation $rootfsPropagation, leaving as rslave")
+                null to 0uL
+            }
+        }
+    if (propFlags != 0uL) {
+        Logger.debug("setting rootfs propagation to $label")
+        if (syscall.mount(
+                source = null,
+                target = rootfsPath,
+                fstype = null,
+                flags = propFlags,
+            ) != 0
+        ) {
+            val errNum = errno
+            perror("mount rootfs $label")
+            Logger.warn("failed to set rootfs propagation $label (errno=$errNum)")
+        }
+    }
 
     // Mount /proc if it exists in rootfs
     val procPath = "$rootfsPath/proc"
