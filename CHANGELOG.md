@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/ternbusty/kontainer-runtime/compare/v0.2.0...v0.2.1) (2026-06-23)
+
+
+### Bug Fixes
+
+* hook timeout via WNOHANG poll + CLOCK_MONOTONIC (not process-wide alarm) ([#43](https://github.com/ternbusty/kontainer-runtime/issues/43)) ([e9ea336](https://github.com/ternbusty/kontainer-runtime/commit/e9ea3363fd7b325fd07cbeaef755fed8c8f00f02))
+* serialize state.json reads/writes with per-container flock ([#44](https://github.com/ternbusty/kontainer-runtime/issues/44)) ([9cb7a59](https://github.com/ternbusty/kontainer-runtime/commit/9cb7a59ab23243af74b0521cadf3ab2c796c1238))
+
 ## [0.2.0](https://github.com/ternbusty/kontainer-runtime/compare/v0.1.0...v0.2.0) (2026-06-23)
 
 
