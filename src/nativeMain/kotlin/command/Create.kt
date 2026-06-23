@@ -39,6 +39,20 @@ fun create(
             exit(1)
         }
 
+        // Canonicalize the bundle path. The OCI runtime spec requires the bundle
+        // field in the container state to be an absolute path, and downstream
+        // consumers (hooks, /proc/<pid>/root lookups, debuggers) rely on it.
+        val absBundle =
+            allocArray<ByteVar>(4096).let { buf ->
+                if (realpath(bundlePath, buf) == null) {
+                    Logger.error("failed to resolve bundle path '$bundlePath' (errno=$errno)")
+                    exit(1)
+                    return@memScoped
+                }
+                buf.toKString()
+            }
+        @Suppress("NAME_SHADOWING") val bundlePath = absBundle
+
         val configPath = "$bundlePath/config.json"
 
         Logger.info("creating container: $containerId")
