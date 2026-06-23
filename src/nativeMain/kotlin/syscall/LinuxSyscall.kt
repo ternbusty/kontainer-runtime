@@ -203,8 +203,12 @@ class LinuxSyscall : Syscall {
             val errNum = errno
             // ENOSYS = syscall not available (old kernel < 5.9)
             // EINVAL = flag not supported (old kernel < 5.11 doesn't support CLOSE_RANGE_CLOEXEC)
-            if (errNum == ENOSYS || errNum == EINVAL) {
-                Logger.debug("close_range not supported (errno=$errNum), using fallback")
+            // EPERM  = seccomp filter rejected close_range (the runtime-tools default
+            //          OCI profile predates close_range and falls through to EPERM).
+            //          The fallback uses /proc/self/fd + fcntl which IS allowed.
+            //          This is expected with the OCI default profile, so don't warn.
+            if (errNum == ENOSYS || errNum == EINVAL || errNum == EPERM) {
+                Logger.debug("close_range not available (errno=$errNum), using fallback")
                 emulateCloseRange(preserveFds)
             } else {
                 perror("close_range")
