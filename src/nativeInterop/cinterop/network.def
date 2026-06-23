@@ -1,0 +1,30 @@
+headers = sys/socket.h sys/ioctl.h net/if.h netinet/in.h string.h errno.h unistd.h
+headerFilter = sys/socket.h sys/ioctl.h net/if.h netinet/in.h errno.h
+package = platform.linux
+
+---
+
+// Bring up the loopback interface inside the current network namespace.
+// Equivalent to `ip link set lo up`. Returns 0 on success, -1 with errno set.
+static inline int set_loopback_up(void) {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, "lo", IFNAMSIZ);
+    if (ioctl(fd, SIOCGIFFLAGS, &ifr) < 0) {
+        int e = errno;
+        close(fd);
+        errno = e;
+        return -1;
+    }
+    ifr.ifr_flags |= IFF_UP | IFF_RUNNING;
+    if (ioctl(fd, SIOCSIFFLAGS, &ifr) < 0) {
+        int e = errno;
+        close(fd);
+        errno = e;
+        return -1;
+    }
+    close(fd);
+    return 0;
+}
