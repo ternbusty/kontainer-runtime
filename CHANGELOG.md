@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0](https://github.com/ternbusty/kontainer-runtime/compare/v0.1.0...v0.2.0) (2026-06-23)
+
+
+### Features
+
+* bring up loopback interface in container netns ([#41](https://github.com/ternbusty/kontainer-runtime/issues/41)) ([21353ce](https://github.com/ternbusty/kontainer-runtime/commit/21353ce6fd36c5f1c8560e07696e0697ab60fb0c))
+
+
+### Bug Fixes
+
+* resolve bundle path to absolute via realpath(3) before use ([#40](https://github.com/ternbusty/kontainer-runtime/issues/40)) ([13af970](https://github.com/ternbusty/kontainer-runtime/commit/13af9704ac6a72134f3137437458e3c0bb4a7dd5))
+* treat EPERM from close_range as 'use fallback' (seccomp may block it) ([#42](https://github.com/ternbusty/kontainer-runtime/issues/42)) ([c7ed434](https://github.com/ternbusty/kontainer-runtime/commit/c7ed434b7d5c92407a91c5728738f7ac4df6c091))
+
 ## 0.1.0 (2026-05-10)
 
 
