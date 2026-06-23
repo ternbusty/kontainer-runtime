@@ -114,6 +114,49 @@ data class State(
 )
 
 private const val STATE_FILE_NAME = "state.json"
+private const val LOCK_FILE_NAME = ".lock"
+
+private fun getLockPath(
+    rootPath: String,
+    containerId: String,
+): String = "${getContainerDir(rootPath, containerId)}/$LOCK_FILE_NAME"
+
+/**
+ * Run [block] while holding an advisory flock on the per-container lock file.
+ * Pass [exclusive] = true for write operations (LOCK_EX) and false for reads
+ * (LOCK_SH). Without this, parallel `kontainer-runtime state` / `delete` /
+ * `kill` invocations on the same container race on state.json.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private inline fun <T> withContainerLock(
+    fs: FileSystem,
+    rootPath: String,
+    containerId: String,
+    exclusive: Boolean,
+    block: () -> T,
+): T {
+    val containerDir = getContainerDir(rootPath, containerId)
+    val lockPath = getLockPath(rootPath, containerId)
+    fs.createDirectories(containerDir)
+    val fd = open(lockPath, O_CREAT or O_RDWR, 0x180u) // 0600
+    if (fd < 0) {
+        Logger.warn("failed to open lock file $lockPath (errno=$errno); proceeding without lock")
+        return block()
+    }
+    try {
+        val op = if (exclusive) LOCK_EX else LOCK_SH
+        // The bare name `flock` resolves to the `struct flock` cinterop type
+        // (for fcntl record locks), which shadows the file-lock function, so
+        // call the syscall directly.
+        if (syscall(platform.linux.__NR_flock.toLong(), fd.toLong(), op.toLong()) != 0L) {
+            Logger.warn("failed to flock $lockPath (errno=$errno); proceeding without lock")
+        }
+        return block()
+    } finally {
+        syscall(platform.linux.__NR_flock.toLong(), fd.toLong(), LOCK_UN.toLong())
+        close(fd)
+    }
+}
 
 /**
  * Get the directory path for a container's state
@@ -181,11 +224,13 @@ fun State.save(
 
     fs.createDirectories(containerDir)
 
-    try {
-        JsonCodec.writeToFile(fs, statePath, this, prettyPrint = true)
-    } catch (e: Exception) {
-        Logger.error("failed to save state: ${e.message ?: "unknown"}")
-        throw Exception("Failed to save state: ${e.message}")
+    withContainerLock(fs, rootPath, this.id, exclusive = true) {
+        try {
+            JsonCodec.writeToFile(fs, statePath, this, prettyPrint = true)
+        } catch (e: Exception) {
+            Logger.error("failed to save state: ${e.message ?: "unknown"}")
+            throw Exception("Failed to save state: ${e.message}")
+        }
     }
 
     Logger.info("saved state for container ${this.id}")
@@ -238,7 +283,9 @@ fun loadState(
 
     val state =
         try {
-            JsonCodec.loadFromFile<State>(fs, statePath)
+            withContainerLock(fs, rootPath, containerId, exclusive = false) {
+                JsonCodec.loadFromFile<State>(fs, statePath)
+            }
         } catch (e: Exception) {
             Logger.error("failed to load state: ${e.message ?: "unknown"}")
             throw Exception("Failed to load state file (container may not exist): ${e.message}")
