@@ -81,6 +81,8 @@ data class Process(
     val capabilities: LinuxCapabilities? = null,
     val rlimits: List<POSIXRlimit>? = null,
     val umask: UInt? = null,
+    val apparmorProfile: String? = null,
+    val selinuxLabel: String? = null,
 )
 
 @Serializable
@@ -235,6 +237,7 @@ data class Linux(
     val sysctl: Map<String, String>? = null,
     val rootfsPropagation: String? = null,
     val devices: List<LinuxDevice>? = null,
+    val mountLabel: String? = null,
 )
 
 /**
