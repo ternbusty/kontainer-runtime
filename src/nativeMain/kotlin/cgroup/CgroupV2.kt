@@ -132,6 +132,32 @@ class CgroupV2(
         resources.cpu?.let { cpu ->
             applyCpuLimits(cgroupPath, cpu.shares, cpu.quota, cpu.period)
         }
+        resources.pids?.let { pids ->
+            applyPidsLimit(cgroupPath, pids.limit)
+        }
+        resources.hugepageLimits?.forEach { hp ->
+            applyHugepageLimit(cgroupPath, hp.pageSize, hp.limit)
+        }
+    }
+
+    private fun applyPidsLimit(
+        cgroupPath: String,
+        limit: Long?,
+    ) {
+        if (limit == null) return
+        val value = if (limit <= 0) "max" else limit.toString()
+        writeCgroupFile("$cgroupPath/$PIDS_MAX", value, "pids.max")
+    }
+
+    private fun applyHugepageLimit(
+        cgroupPath: String,
+        pageSize: String,
+        limit: Long,
+    ) {
+        // cgroup v2 file name: hugetlb.<size>.max (e.g. hugetlb.2MB.max).
+        val fileName = "hugetlb.${pageSize}.max"
+        val value = if (limit <= 0) "max" else limit.toString()
+        writeCgroupFile("$cgroupPath/$fileName", value, fileName)
     }
 
     private fun applyMemoryLimits(
@@ -237,6 +263,8 @@ class CgroupV2(
         val controllers = mutableListOf<String>()
         if (resources.memory != null) controllers.add("memory")
         if (resources.cpu != null) controllers.add("cpu")
+        if (resources.pids != null) controllers.add("pids")
+        if (!resources.hugepageLimits.isNullOrEmpty()) controllers.add("hugetlb")
         return controllers
     }
 
@@ -249,5 +277,6 @@ class CgroupV2(
         private const val MEMORY_SWAP_MAX = "memory.swap.max"
         private const val CPU_WEIGHT = "cpu.weight"
         private const val CPU_MAX = "cpu.max"
+        private const val PIDS_MAX = "pids.max"
     }
 }
