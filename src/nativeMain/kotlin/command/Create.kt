@@ -174,6 +174,7 @@ fun create(
                 setenv("_KONTAINER_BUNDLE_PATH", bundlePath, 1)
                 setenv("_KONTAINER_ROOTFS_PATH", rootfsPath, 1)
                 setenv("_KONTAINER_NOTIFY_SOCKET", notifySocketPath, 1)
+                setenv("_KONTAINER_CONTAINER_ID", containerId, 1)
 
                 // Pass any spec.linux.namespaces[].path entries to bootstrap.c
                 // so it can setns(2) into existing namespaces before the
