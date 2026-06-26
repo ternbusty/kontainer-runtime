@@ -44,3 +44,7 @@ To delete the container
 ```bash
 sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe delete test
 ```
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE) for the full text.
