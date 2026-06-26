@@ -1,6 +1,7 @@
 package process
 
 import cgroup.Cgroup
+import cgroup.CgroupV2
 import channel.*
 import config.KontainerConfig
 import config.saveKontainerConfig
@@ -58,9 +59,15 @@ private fun runMainProcessInternal(
         Logger.setContext("main")
         Logger.debug("started, stage-1 pid=$stage1Pid")
 
+        // Resolve the OCI spec cgroupsPath (absolute → literal; relative or
+        // unspecified → nested under our runtime's subtree) and stash the
+        // resolved path so Delete can use it later. See
+        // CgroupV2.resolveCgroupPath() for the rules.
+        val resolvedCgroupPath = CgroupV2.resolveCgroupPath(spec.linux?.cgroupsPath, containerId)
+
         // Setup cgroup for Stage-1 BEFORE syncing with child
         // Stage-1 → Stage-2 are both included in the cgroup (inherited through fork)
-        cgroup.setup(stage1Pid, spec.linux?.cgroupsPath, spec.linux?.resources)
+        cgroup.setup(stage1Pid, resolvedCgroupPath, spec.linux?.resources)
 
         // Apply rlimits to Stage-1 BEFORE entering user namespace
         // Rlimits are inherited: Stage-1 → Stage-2
@@ -195,11 +202,14 @@ private fun runMainProcessInternal(
             )
         state.save(fs, rootPath)
 
-        // Save internal configuration (independent of bundle)
+        // Save internal configuration (independent of bundle). Store the
+        // *resolved* cgroup path (relative to /sys/fs/cgroup, no leading
+        // slash) so Delete.cleanup() removes the directory we actually
+        // created, not whatever spec.linux.cgroupsPath was.
         Logger.debug("saving kontainer config")
         val kontainerConfig =
             KontainerConfig(
-                cgroupPath = spec.linux?.cgroupsPath,
+                cgroupPath = resolvedCgroupPath,
             )
         saveKontainerConfig(fs, kontainerConfig, rootPath, containerId)
 

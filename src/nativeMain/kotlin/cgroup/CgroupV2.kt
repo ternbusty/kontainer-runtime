@@ -23,9 +23,12 @@ class CgroupV2(
         }
 
         memScoped {
-            // Normalize cgroup path: remove leading slash if present (containerd
-            // passes absolute paths)
-            val normalizedPath = cgroupPath?.removePrefix("/") ?: "kontainer-$pid"
+            // cgroupPath is expected to be the FINAL relative-to-cgroup-root
+            // path the runtime has already resolved (see resolveCgroupPath()
+            // in this file). If the caller passes null we fall back to a PID-
+            // suffixed leaf under our runtime's subtree — this is mainly for
+            // tests that don't go through MainProcess's resolver.
+            val normalizedPath = cgroupPath?.removePrefix("/") ?: "kontainer-runtime/kontainer-$pid"
             val fullPath = "$CGROUP_ROOT/$normalizedPath"
 
             Logger.debug("setting up cgroup at $fullPath")
@@ -269,6 +272,30 @@ class CgroupV2(
     }
 
     companion object {
+        /** Subtree under /sys/fs/cgroup where this runtime nests its containers. */
+        const val RUNTIME_CGROUP_PREFIX = "kontainer-runtime"
+
+        /**
+         * Resolve spec.linux.cgroupsPath into the final relative-to-cgroup-root
+         * path the runtime will create, per OCI runtime-spec
+         * config-linux.md#cgroupsPath:
+         *   - absolute (leading `/`): MUST be relative to the cgroup mount; we
+         *     strip the leading slash and use as-is.
+         *   - relative (no leading `/`): the runtime MAY interpret it relative
+         *     to a runtime-determined location, so we nest it under
+         *     `kontainer-runtime/`.
+         *   - null: runtime default — `kontainer-runtime/<container-id>`.
+         */
+        fun resolveCgroupPath(
+            specPath: String?,
+            containerId: String,
+        ): String =
+            when {
+                specPath == null -> "$RUNTIME_CGROUP_PREFIX/$containerId"
+                specPath.startsWith("/") -> specPath.removePrefix("/")
+                else -> "$RUNTIME_CGROUP_PREFIX/$specPath"
+            }
+
         private const val CGROUP_ROOT = "/sys/fs/cgroup"
         private const val CGROUP_PROCS = "cgroup.procs"
         private const val CGROUP_SUBTREE_CONTROL = "cgroup.subtree_control"
