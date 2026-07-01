@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0](https://github.com/ternbusty/kontainer-runtime/compare/v0.2.1...v0.3.0) (2026-07-01)
+
+
+### Features
+
+* add exec command to run additional processes in a running container ([#48](https://github.com/ternbusty/kontainer-runtime/issues/48)) ([8ab913a](https://github.com/ternbusty/kontainer-runtime/commit/8ab913afd08199b6c1f7c02eeb100c1652abedbe))
+* apply AppArmor profile and SELinux exec label via /proc/self/attr ([#47](https://github.com/ternbusty/kontainer-runtime/issues/47)) ([6edee95](https://github.com/ternbusty/kontainer-runtime/commit/6edee95808270b9697d62552818fa52d953d9955))
+* cgroup v2 pids.max and hugetlb limits ([#45](https://github.com/ternbusty/kontainer-runtime/issues/45)) ([4bc1b8f](https://github.com/ternbusty/kontainer-runtime/commit/4bc1b8fe3daf82bb7eb4b171efde4ab0ed15bdb0))
+* implement OCI createRuntime / createContainer / startContainer hooks ([#46](https://github.com/ternbusty/kontainer-runtime/issues/46)) ([77a33b7](https://github.com/ternbusty/kontainer-runtime/commit/77a33b72443d49f55dc8dfce262d44dbb0f7701e))
+* recognise spec.process.terminal / consoleSize (warns; PTY plumbing TBD) ([#49](https://github.com/ternbusty/kontainer-runtime/issues/49)) ([682eb60](https://github.com/ternbusty/kontainer-runtime/commit/682eb6012264b327551736fd2b207e20c4e6bc5d))
+
+
+### Bug Fixes
+
+* honour OCI cgroupsPath semantics; nest relative paths under kontainer-runtime/ ([#50](https://github.com/ternbusty/kontainer-runtime/issues/50)) ([e88094e](https://github.com/ternbusty/kontainer-runtime/commit/e88094e978de23002558294c8bdbedcd248fdcc8))
+
+
+### Documentation
+
+* MkDocs Material site with GitHub Pages workflow ([#58](https://github.com/ternbusty/kontainer-runtime/issues/58)) ([6d2dea3](https://github.com/ternbusty/kontainer-runtime/commit/6d2dea3718d15c07f685abf1a877c173e91b8e09))
+* **readme:** bump Kotlin badge from 2.2 to 2.4 to match libs.versions.toml ([#60](https://github.com/ternbusty/kontainer-runtime/issues/60)) ([31e59b2](https://github.com/ternbusty/kontainer-runtime/commit/31e59b2a63907bb63332a477cf3486096aee1dd6))
+
 ## [0.2.1](https://github.com/ternbusty/kontainer-runtime/compare/v0.2.0...v0.2.1) (2026-06-23)
 
 
