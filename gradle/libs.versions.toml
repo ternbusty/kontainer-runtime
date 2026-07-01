@@ -4,7 +4,7 @@ kotlinxSerialization = "1.11.0"
 kotlinxCli = "0.3.6"
 kotest = "6.2.1"
 ksp = "2.3.9"
-ktlint = "13.1.0"
+ktlint = "14.2.0"
 
 [libraries]
 kotlinxSerializationJson = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
