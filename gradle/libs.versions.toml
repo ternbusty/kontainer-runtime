@@ -1,5 +1,5 @@
 [versions]
-kotlin = "2.4.0"
+kotlin = "2.4.10"
 kotlinxSerialization = "1.11.0"
 kotlinxCli = "0.3.6"
 kotest = "6.2.2"
