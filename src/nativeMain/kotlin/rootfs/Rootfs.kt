@@ -516,8 +516,10 @@ fun applyLinuxDevices(
         // Linux gnu_dev_makedev encoding handles the common (major<256, minor<256)
         // path with the simple (major<<8|minor) layout; full encoding is below.
         val devNum =
-            (((major and 0xfff) shl 8) or (minor and 0xff) or
-                ((minor and 0xfff00) shl 12) or ((major and 0xfffff000) shl 32)).toULong()
+            (
+                ((major and 0xfff) shl 8) or (minor and 0xff) or
+                    ((minor and 0xfff00) shl 12) or ((major and 0xfffff000) shl 32)
+            ).toULong()
 
         // Ensure parent directory exists. For /dev/test1, parent is /dev (already mounted).
         val parent = d.path.substringBeforeLast('/', missingDelimiterValue = "")
@@ -833,7 +835,9 @@ fun applySpecMounts(
         // Bind-remount once more with the requested flags. The kernel ignores flag
         // bits other than MS_BIND/MS_REC on the initial bind mount; MS_RDONLY etc.
         // only take effect via a subsequent MS_REMOUNT.
-        if ((parsed.flags and MS_BIND.toULong()) != 0uL && parsed.flags != MS_BIND.toULong() && parsed.flags != (MS_BIND or MS_REC).toULong()) {
+        if ((parsed.flags and MS_BIND.toULong()) != 0uL && parsed.flags != MS_BIND.toULong() &&
+            parsed.flags != (MS_BIND or MS_REC).toULong()
+        ) {
             val remountFlags = parsed.flags or MS_REMOUNT.toULong()
             if (syscall.mount(
                     source = source,

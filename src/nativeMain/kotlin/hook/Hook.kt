@@ -34,7 +34,8 @@ fun execHook(
 
         val pid = fork()
         if (pid < 0) {
-            close(readEnd); close(writeEnd)
+            close(readEnd)
+            close(writeEnd)
             Logger.warn("hook ${hook.path}: fork() failed (errno=$errno)")
             return@memScoped false
         }

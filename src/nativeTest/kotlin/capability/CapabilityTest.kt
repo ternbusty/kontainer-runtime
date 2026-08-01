@@ -6,10 +6,10 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldNotContain
 import kotlinx.cinterop.ExperimentalForeignApi
+import platform.linux.PR_CAPBSET_DROP
 import platform.linux.PR_CAP_AMBIENT
 import platform.linux.PR_CAP_AMBIENT_CLEAR_ALL
 import platform.linux.PR_CAP_AMBIENT_RAISE
-import platform.linux.PR_CAPBSET_DROP
 import platform.linux.PR_SET_KEEPCAPS
 import spec.LinuxCapabilities
 import syscall.CapabilitySets
