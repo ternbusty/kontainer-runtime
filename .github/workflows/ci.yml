@@ -35,8 +35,7 @@ jobs:
       - name: Run tests
         run: ./gradlew linuxX64Test
 
-      # Guard against the task silently running zero tests, as happened when
-      # the kotest 6.2 bump turned `./gradlew kotest` into an empty stub task.
+      # Fail if the test task silently ran zero tests
       - name: Verify tests actually ran
         run: |
           count=$(grep -ho '<testcase ' build/test-results/linuxX64Test/TEST-*.xml 2>/dev/null | wc -l)

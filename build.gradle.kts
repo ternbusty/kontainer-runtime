@@ -92,13 +92,9 @@ val buildBootstrap = tasks.register<Copy>("buildBootstrap") {
     into(layout.buildDirectory.dir("bootstrap"))
 }
 
-// The io.kotest plugin reads this flag eagerly while Kotlin targets are being
-// created, so this block must stay above the kotlin {} block. When it sat below
-// (as it did from the 6.2.1 bump in PR #33 until PR #70), the plugin saw the
-// flag unset, skipped wiring linuxX64Test into its `kotest` task, and
-// `./gradlew kotest` passed without running a single test. With the ordering
-// right, `./gradlew kotest` works as an alias for linuxX64Test; CI calls
-// linuxX64Test directly and independently verifies that tests really ran.
+// Must stay above the kotlin {} block: the io.kotest plugin reads this flag
+// eagerly while targets are created. Set below, the `kotest` task silently
+// loses its dependency on linuxX64Test and runs zero tests.
 kotest {
     customGradleTask.set(true)
 }
