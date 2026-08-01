@@ -51,7 +51,9 @@ fun create(
                 }
                 buf.toKString()
             }
-        @Suppress("NAME_SHADOWING") val bundlePath = absBundle
+
+        @Suppress("NAME_SHADOWING")
+        val bundlePath = absBundle
 
         val configPath = "$bundlePath/config.json"
 
