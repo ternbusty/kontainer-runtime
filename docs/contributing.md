@@ -12,7 +12,7 @@
 Unit tests run under Kotest.
 
 ```bash
-./gradlew kotest
+./gradlew linuxX64Test
 ```
 
 Lint.

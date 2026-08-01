@@ -90,6 +90,24 @@ val buildBootstrap = tasks.register<Copy>("buildBootstrap") {
     into(layout.buildDirectory.dir("bootstrap"))
 }
 
+// Must stay above the kotlin {} block: the io.kotest plugin reads this flag
+// eagerly while targets are created. Set below, the `kotest` task silently
+// loses its dependency on linuxX64Test and runs zero tests.
+kotest {
+    customGradleTask.set(true)
+}
+
+// The kotest plugin force-disables Gradle's failOnNoDiscoveredTests on every
+// test task from its own taskGraph.whenReady hook. Re-enable it afterwards so
+// a test binary with zero registered specs fails the build instead of passing.
+gradle.taskGraph.whenReady {
+    tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
+        if (hasProperty("failOnNoDiscoveredTests")) {
+            setProperty("failOnNoDiscoveredTests", true)
+        }
+    }
+}
+
 kotlin {
     val hostOs = System.getProperty("os.name")
     val isArm64 = System.getProperty("os.arch") == "aarch64"
@@ -148,13 +166,6 @@ tasks.withType<org.jlleitschuh.gradle.ktlint.tasks.KtLintCheckTask>().configureE
 }
 tasks.withType<org.jlleitschuh.gradle.ktlint.tasks.KtLintFormatTask>().configureEach {
     dependsOn(generateBuildConfig)
-}
-
-// kotest 6.2+ made the `kotest` Gradle task opt-in: customGradleTask must be set,
-// otherwise the plugin throws "property has no value available" at task lookup time.
-// We use `./gradlew kotest` in CI, so opt in.
-kotest {
-    customGradleTask.set(true)
 }
 
 ktlint {

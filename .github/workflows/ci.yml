@@ -33,7 +33,7 @@ jobs:
         run: ./gradlew ktlintCheck
 
       - name: Run tests
-        run: ./gradlew kotest
+        run: ./gradlew linuxX64Test
 
       - name: Build release binary
         run: ./gradlew linkReleaseExecutableLinuxX64
