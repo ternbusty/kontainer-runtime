@@ -18,6 +18,8 @@ import syscall.Syscall
  * Apply the spec.process security profile to the CURRENT process, in the
  * mandatory order:
  *
+ * 0. oom_score_adj — lowering it below the inherited value requires
+ *    CAP_SYS_RESOURCE, so it must precede setuid
  * 1. umask
  * 2. no_new_privileges — must precede capability changes, and lets seccomp
  *    load without CAP_SYS_ADMIN
@@ -52,6 +54,20 @@ fun applyProcessSecurity(
     applySeccomp: (LinuxSeccomp) -> Int? = ::initializeSeccomp,
     onSeccompNotifyFd: (Int) -> Unit,
 ) {
+    process.oomScoreAdj?.let { adj ->
+        val f =
+            fopen("/proc/self/oom_score_adj", "w")
+                ?: throw Exception("Failed to open /proc/self/oom_score_adj (errno=$errno)")
+        try {
+            if (fputs(adj.toString(), f) < 0) {
+                throw Exception("Failed to write oom_score_adj=$adj (errno=$errno)")
+            }
+        } finally {
+            fclose(f)
+        }
+        Logger.debug("set oom_score_adj to $adj")
+    }
+
     // Set umask (default 0o022)
     val umaskValue = process.umask ?: 0x12u // 0x12 = 0o022 (octal)
     syscall.umask(umaskValue)
