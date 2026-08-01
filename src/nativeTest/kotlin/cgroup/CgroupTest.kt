@@ -129,6 +129,25 @@ class CgroupTest :
             CgroupV2(fs).getPids("x") shouldBe listOf(1, 2)
         }
 
+        // addProcess
+
+        test("addProcess writes the pid to cgroup.procs without touching anything else") {
+            val fs = FakeFileSystem()
+            CgroupV2(fs).addProcess(0, "kontainer-runtime/x")
+
+            fs.files["/sys/fs/cgroup/kontainer-runtime/x/cgroup.procs"] shouldBe "0"
+            // No directory creation, no controllers, no limits
+            fs.directories.isEmpty() shouldBe true
+            fs.files.keys shouldNotContain "/sys/fs/cgroup/cgroup.subtree_control"
+        }
+
+        test("addProcess accepts a leading slash in the path") {
+            val fs = FakeFileSystem()
+            CgroupV2(fs).addProcess(42, "/x")
+
+            fs.files["/sys/fs/cgroup/x/cgroup.procs"] shouldBe "42"
+        }
+
         // cleanup
 
         test("cleanup is a no-op for null path") {

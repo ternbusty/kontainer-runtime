@@ -41,6 +41,57 @@ class NamespaceFlagsTest :
             a shouldBe b
         }
 
+        test("nsJoinList returns empty for null and empty specs") {
+            nsJoinList(null) shouldBe emptyList()
+            nsJoinList(emptyList()) shouldBe emptyList()
+        }
+
+        test("nsJoinList returns only spec-defined namespaces") {
+            val joins = nsJoinList(listOf(Namespace("mount"), Namespace("pid")))
+            joins.map { it.ociType } shouldBe listOf("mount", "pid")
+        }
+
+        test("nsJoinList ignores unknown namespace types") {
+            nsJoinList(listOf(Namespace("bogus"))) shouldBe emptyList()
+        }
+
+        test("nsJoinList orders user first and pid last regardless of spec order") {
+            val joins =
+                nsJoinList(
+                    listOf(
+                        Namespace("pid"),
+                        Namespace("mount"),
+                        Namespace("user"),
+                        Namespace("network"),
+                    ),
+                )
+            joins.first().ociType shouldBe "user"
+            joins.last().ociType shouldBe "pid"
+        }
+
+        test("nsJoinList maps OCI names to /proc names") {
+            val joins = nsJoinList(listOf(Namespace("mount"), Namespace("network"), Namespace("uts")))
+            joins.associate { it.ociType to it.procName } shouldBe
+                mapOf("mount" to "mnt", "network" to "net", "uts" to "uts")
+        }
+
+        test("nsJoinList carries a non-zero clone flag for every namespace") {
+            val joins =
+                nsJoinList(
+                    listOf(
+                        Namespace("mount"),
+                        Namespace("network"),
+                        Namespace("uts"),
+                        Namespace("ipc"),
+                        Namespace("pid"),
+                        Namespace("user"),
+                        Namespace("cgroup"),
+                    ),
+                )
+            joins.size shouldBe 7
+            joins.forEach { it.cloneFlag shouldNotBe 0 }
+        }
+
         test("calculateCloneFlags combines all six known namespaces") {
             val all =
                 calculateCloneFlags(
