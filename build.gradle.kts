@@ -1,6 +1,10 @@
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.kotlinSerialization)
+    // The io.kotest plugin wires the Kotest KSP symbol processor, which generates
+    // the spec-registration entry point for Kotlin/Native (no runtime reflection).
+    // Tests run via the standard `linuxX64Test` task. The plugin's own `kotest`
+    // task has been an empty stub since 6.2, so never use it to run tests.
     alias(libs.plugins.kotest)
     alias(libs.plugins.ksp)
     alias(libs.plugins.ktlint)
@@ -148,13 +152,6 @@ tasks.withType<org.jlleitschuh.gradle.ktlint.tasks.KtLintCheckTask>().configureE
 }
 tasks.withType<org.jlleitschuh.gradle.ktlint.tasks.KtLintFormatTask>().configureEach {
     dependsOn(generateBuildConfig)
-}
-
-// kotest 6.2+ made the `kotest` Gradle task opt-in: customGradleTask must be set,
-// otherwise the plugin throws "property has no value available" at task lookup time.
-// We use `./gradlew kotest` in CI, so opt in.
-kotest {
-    customGradleTask.set(true)
 }
 
 ktlint {
