@@ -12,6 +12,7 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.usePinned
 import logger.Logger
 import platform.posix.*
+import seccomp.seccompUsesNotify
 import seccomp.sendToSeccompListener
 import spec.LinuxIdMapping
 import spec.Spec
@@ -148,11 +149,7 @@ private fun runMainProcessInternal(
         notifyListener.close()
 
         // Check if seccomp notify is used in the spec
-        val hasSeccompNotify =
-            spec.linux
-                ?.seccomp
-                ?.syscalls
-                ?.any { it.action == "SCMP_ACT_NOTIFY" } ?: false
+        val hasSeccompNotify = spec.linux?.seccomp?.let { seccompUsesNotify(it) } ?: false
         if (hasSeccompNotify) {
             Logger.debug("seccomp notify is enabled, waiting for notify FD")
             val notifyFd = mainReceiver.waitForSeccompRequest()

@@ -17,6 +17,15 @@ class FakeSyscall : Syscall {
     var euid: UInt = 0u
     var egid: UInt = 0u
 
+    /**
+     * Per-method return-value override, keyed by bare method name
+     * (e.g. "setgid" to -1). Int-returning methods consult this and
+     * fall back to 0 (success).
+     */
+    val returnValues: MutableMap<String, Int> = mutableMapOf()
+
+    private fun ret(method: String): Int = returnValues[method] ?: 0
+
     override fun mount(
         source: String?,
         target: String,
@@ -25,7 +34,7 @@ class FakeSyscall : Syscall {
         data: String?,
     ): Int {
         calls += "mount(source=$source, target=$target, fstype=$fstype, flags=$flags, data=$data)"
-        return 0
+        return ret("mount")
     }
 
     override fun umount2(
@@ -33,7 +42,7 @@ class FakeSyscall : Syscall {
         flags: Int,
     ): Int {
         calls += "umount2(target=$target, flags=$flags)"
-        return 0
+        return ret("umount2")
     }
 
     override fun pivotRoot(
@@ -41,27 +50,27 @@ class FakeSyscall : Syscall {
         putOld: String,
     ): Int {
         calls += "pivotRoot(newRoot=$newRoot, putOld=$putOld)"
-        return 0
+        return ret("pivotRoot")
     }
 
     override fun chroot(path: String): Int {
         calls += "chroot(path=$path)"
-        return 0
+        return ret("chroot")
     }
 
     override fun chdir(path: String): Int {
         calls += "chdir(path=$path)"
-        return 0
+        return ret("chdir")
     }
 
     override fun setuid(uid: UInt): Int {
         calls += "setuid(uid=$uid)"
-        return 0
+        return ret("setuid")
     }
 
     override fun setgid(gid: UInt): Int {
         calls += "setgid(gid=$gid)"
-        return 0
+        return ret("setgid")
     }
 
     override fun geteuid(): UInt {
@@ -76,7 +85,7 @@ class FakeSyscall : Syscall {
 
     override fun sethostname(name: String): Int {
         calls += "sethostname(name=$name)"
-        return 0
+        return ret("sethostname")
     }
 
     override fun umask(mask: UInt): UInt {
@@ -92,7 +101,7 @@ class FakeSyscall : Syscall {
         arg5: ULong,
     ): Int {
         calls += "prctl(option=$option, arg2=$arg2, arg3=$arg3, arg4=$arg4, arg5=$arg5)"
-        return 0
+        return ret("prctl")
     }
 
     override fun getCapabilities(): CapabilitySets {
@@ -110,7 +119,7 @@ class FakeSyscall : Syscall {
         nstype: Int,
     ): Int {
         calls += "setns(fd=$fd, nstype=$nstype)"
-        return 0
+        return ret("setns")
     }
 
     override fun applyRlimits(

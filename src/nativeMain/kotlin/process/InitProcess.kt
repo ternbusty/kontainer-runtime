@@ -15,7 +15,6 @@ import rootfs.applySysctls
 import rootfs.pivotRoot
 import rootfs.prepareRootfs
 import rootfs.setRootfsReadonly
-import seccomp.initializeSeccomp
 import spec.Spec
 import syscall.Syscall
 
@@ -162,120 +161,12 @@ private fun initProcessInternal(
                 0
             }
 
-        // Apply rlimits to self. The main process also tries this against stage-1's
-        // PID, but stage-1 may have already cloned stage-2 by then, so stage-2 would
-        // inherit the host's defaults instead. Setting them here, on the init process
-        // itself, guarantees the container sees the spec'd values. Done while still
-        // root so RLIMIT_NICE / RLIMIT_NOFILE etc. can be raised if requested.
-        syscall.applyRlimits(0, spec.process.rlimits)
-
-        // Set no_new_privileges if specified.
-        // Prevents the process from gaining new privileges through execve. Must be set
-        // before applying capabilities.
-        if (spec.process.noNewPrivileges == true) {
-            syscall.setNoNewPrivileges()
-        }
-
-        // Load seccomp filter BEFORE dropping capabilities. seccomp(2) needs
-        // CAP_SYS_ADMIN unless PR_SET_NO_NEW_PRIVS is set, and an OCI default
-        // spec specifies seccomp without noNewPrivileges (so we cannot rely on
-        // NNP). Installing the filter here, while we still hold CAP_SYS_ADMIN,
-        // avoids the EPERM. The filter is inherited across the later capset /
-        // setuid / execve, so the container process runs under it.
-        spec.linux?.seccomp?.let { seccomp ->
-            val notifyFd = initializeSeccomp(seccomp)
+        // Apply the shared spec.process security profile (umask, NNP, seccomp,
+        // capabilities, setgid/setuid, AppArmor/SELinux). The seccomp notify FD,
+        // if any, is forwarded to the main process over the channel.
+        // rlimits are applied dead-last, right before execvp (see below).
+        applyProcessSecurity(syscall, spec.process, spec.linux?.seccomp) { notifyFd ->
             syncSeccompNotifyFd(notifyFd, mainSender, initReceiver)
-        }
-
-        // Capability ordering:
-        // 1. Apply bounding set (root privilege required)
-        // 2. Set PR_SET_KEEPCAPS to preserve capabilities across setuid
-        // 3. setgroups/setgid/setuid
-        // 4. Clear PR_SET_KEEPCAPS
-        // 5. Apply effective/permitted/inheritable/ambient capabilities (as non-root user)
-        spec.process.capabilities?.let { capabilities ->
-            capability.applyBoundingSet(syscall, capabilities)
-            capability.setKeepCaps(syscall)
-        }
-
-        // Set additional groups (supplementary groups) before dropping privileges.
-        // Note: /proc/self/setgroups may be "deny" in unprivileged user namespaces (Linux 3.19+).
-        spec.process.user.additionalGids?.let { additionalGids ->
-            if (additionalGids.isNotEmpty()) {
-                Logger.debug("setting ${additionalGids.size} additional groups")
-                syscall.setAdditionalGroups(additionalGids)
-            }
-        }
-
-        // setgid must be called before setuid (once non-root, we can't setgid).
-        val targetUid = spec.process.user.uid
-        val targetGid = spec.process.user.gid
-
-        if (syscall.setgid(targetGid) != 0) {
-            perror("setgid")
-            Logger.error("Failed to set GID to $targetGid")
-            throw Exception("Failed to set GID to $targetGid")
-        }
-        if (syscall.setuid(targetUid) != 0) {
-            perror("setuid")
-            Logger.error("Failed to set UID to $targetUid")
-            throw Exception("Failed to set UID to $targetUid")
-        }
-        Logger.debug("set UID=$targetUid GID=$targetGid for container process")
-
-        // Apply remaining capabilities after setuid
-        spec.process.capabilities?.let { capabilities ->
-            capability.clearKeepCaps(syscall)
-            capability.applyCapabilities(syscall, capabilities)
-        }
-
-        // Apply AppArmor profile / SELinux exec context. Both are written to
-        // /proc/self/attr/* files and take effect on the next execve.
-        // - AppArmor: /proc/self/attr/apparmor/exec (newer) or .../exec (older);
-        //   format is "exec <profile>" or "changeprofile <profile>".
-        // - SELinux: /proc/self/attr/exec; format is the raw context label.
-        // Failure is logged but non-fatal — the LSM may not be loaded.
-        spec.process.apparmorProfile?.let { profile ->
-            val payload = "exec $profile"
-            val written = listOf(
-                "/proc/self/attr/apparmor/exec",
-                "/proc/self/attr/exec",
-            ).any { path ->
-                try {
-                    val fd = open(path, O_WRONLY)
-                    if (fd < 0) return@any false
-                    val bytes = payload.encodeToByteArray()
-                    val ok =
-                        bytes.usePinned { p ->
-                            write(fd, p.addressOf(0), bytes.size.toULong()).toInt() == bytes.size
-                        }
-                    close(fd)
-                    ok
-                } catch (_: Throwable) {
-                    false
-                }
-            }
-            if (!written) Logger.warn("failed to set apparmor profile '$profile'")
-            else Logger.debug("staged apparmor exec profile: $profile")
-        }
-        spec.process.selinuxLabel?.let { label ->
-            try {
-                val fd = open("/proc/self/attr/exec", O_WRONLY)
-                if (fd < 0) {
-                    Logger.warn("failed to open /proc/self/attr/exec for SELinux label (errno=$errno)")
-                } else {
-                    val bytes = label.encodeToByteArray()
-                    bytes.usePinned { p ->
-                        if (write(fd, p.addressOf(0), bytes.size.toULong()).toInt() != bytes.size) {
-                            Logger.warn("short write of SELinux label '$label'")
-                        }
-                    }
-                    close(fd)
-                    Logger.debug("staged SELinux exec label: $label")
-                }
-            } catch (e: Throwable) {
-                Logger.warn("failed to set SELinux label: ${e.message}")
-            }
         }
 
         mainSender.initReady()
@@ -328,23 +219,15 @@ private fun initProcessInternal(
         Logger.info("Executing: ${processArgs.joinToString(" ")}")
 
         // Clear host environment variables so container starts clean
-        clearenv()
-        Logger.debug("cleared all host environment variables")
+        applyProcessEnv(processEnv)
 
-        processEnv.forEach { envEntry ->
-            val parts = envEntry.split("=", limit = 2)
-            if (parts.size == 2) {
-                val key = parts[0]
-                val value = parts[1]
-                if (setenv(key, value, 1) != 0) {
-                    perror("setenv")
-                    Logger.warn("failed to set environment variable: $key=$value")
-                }
-            } else {
-                Logger.warn("invalid environment variable format: $envEntry")
-            }
-        }
-        Logger.debug("set ${processEnv.size} environment variables")
+        // Apply rlimits dead-last: a low RLIMIT_AS applied any earlier could
+        // abort the Kotlin/Native runtime itself before execve. The main
+        // process also applies rlimits against stage-1's PID early, which is
+        // what allows raising hard limits while still privileged; this final
+        // application guarantees the container sees the spec'd values even if
+        // stage-2 was cloned before that early prlimit landed.
+        syscall.applyRlimits(0, spec.process.rlimits)
 
         val argv = allocArray<CPointerVar<ByteVar>>(processArgs.size + 1)
         processArgs.forEachIndexed { i, arg ->
@@ -389,29 +272,29 @@ fun runInitProcess(
 }
 
 /**
- * Synchronize seccomp notify FD with main process.
- *
- * If a notify FD is provided, send it to main process via seccompNotifyRequest()
- * and wait for main process to handle it.
+ * Synchronize a seccomp notify FD with the process that forwards it to the
+ * OCI seccomp listener. Sends the FD via seccompNotifyRequest() and blocks
+ * until the peer acknowledges, so the listener is attached before any user
+ * code runs. Used by both the init path (peer = main process) and exec
+ * (peer = the exec parent process).
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun syncSeccompNotifyFd(
-    notifyFd: Int?,
+fun syncSeccompNotifyFd(
+    notifyFd: Int,
     mainSender: MainSender,
     initReceiver: InitReceiver,
 ) {
-    if (notifyFd != null) {
-        Logger.debug("sending seccomp notify FD to main process")
-        mainSender.seccompNotifyRequest(notifyFd)
-        initReceiver.waitForSeccompRequestDone()
-        Logger.debug("seccomp notify FD handled by main process")
-    }
+    Logger.debug("sending seccomp notify FD for forwarding")
+    mainSender.seccompNotifyRequest(notifyFd)
+    initReceiver.waitForSeccompRequestDone()
+    Logger.debug("seccomp notify FD handled by forwarding process")
 }
 
 /**
  * Finalize rootfs setup
  * - Set rootfs as readonly if specified
- * - Set umask
+ * (umask now lives in applyProcessSecurity, alongside the rest of the
+ * spec.process setup shared with exec)
  * See: runc/libcontainer/rootfs_linux.go:finalizeRootfs()
  */
 @OptIn(ExperimentalForeignApi::class)
@@ -423,9 +306,4 @@ private fun finalizeRootfs(
         Logger.debug("finalizing rootfs as readonly")
         setRootfsReadonly(syscall)
     }
-
-    // Set umask (default 0o022)
-    val umaskValue = spec.process.umask ?: 0x12u // 0x12 = 0o022 (octal)
-    syscall.umask(umaskValue)
-    Logger.debug("set umask to ${umaskValue.toString(8)}")
 }

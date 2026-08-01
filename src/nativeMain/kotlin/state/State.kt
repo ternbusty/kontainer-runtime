@@ -47,6 +47,12 @@ enum class ContainerStatus(
      */
     fun canDelete(): Boolean = this == STOPPED
 
+    /**
+     * Check if a process can be exec'd into the container
+     * Only RUNNING containers accept exec (runc parity)
+     */
+    fun canExec(): Boolean = this == RUNNING
+
     companion object {
         /**
          * Parse status string to ContainerStatus

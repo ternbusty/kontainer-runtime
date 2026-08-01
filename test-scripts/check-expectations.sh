@@ -55,6 +55,23 @@ if grep -q "KONTAINER-RUNTIME COMPREHENSIVE TEST" "$LOG"; then
     assert_match         "rootfs is readonly"            'OK: Root is readonly'
     assert_match         "memory.max = 134217728 (128MB)" '^134217728$'
     assert_match         "cpu.max = 50000 100000"        '^50000 100000$'
+elif grep -q "EXEC VERIFICATION" "$LOG"; then
+    echo "Checking exec-side log: $LOG"
+    assert_match         "exec'd process runs as spec uid 1000"  '^EXEC-UID: 1000$'
+    assert_match         "exec'd process runs as spec gid 1000"  '^EXEC-GID: 1000$'
+    assert_match         "seccomp filter mode active"            '^EXEC-STATUS Seccomp:[[:space:]]+2'
+    assert_match         "no_new_privs is set"                   '^EXEC-STATUS NoNewPrivs:[[:space:]]+1'
+    assert_match         "capabilities match init process"       '^EXEC-CAPEFF-MATCH: YES$'
+    assert_match         "host env did not leak"                 '^EXEC-CANARY: absent$'
+    assert_match         "spec env is present"                   '^EXEC-ENVVAR PATH='
+    assert_match         "cwd is the spec cwd"                   '^EXEC-CWD: /$'
+    # ctr run's default spec has no cgroup namespace, so the path inside the
+    # container is host-relative; asserting the concrete container cgroup
+    # path also proves membership directly.
+    assert_match         "runs inside the container cgroup"      '^EXEC-CGROUP: 0::/default/test-verify$'
+    assert_match         "joined the container cgroup"           '^EXEC-CGROUP-PROCS-OK: YES$'
+    assert_match         "exit code propagates"                  '^EXEC-EXITCODE: 42$'
+    assert_match         "nonexistent container rejected"        '^EXEC-MISSING-CONTAINER: rejected$'
 elif grep -q "HOST-SIDE CONTAINER VERIFICATION" "$LOG"; then
     echo "Checking host-side log: $LOG"
     # PID and user namespaces should differ from host (verify script prints "Different? YES" twice)

@@ -98,9 +98,11 @@ private fun translateOp(op: String): scmp_compare =
     }
 
 /**
- * Check if seccomp config uses SCMP_ACT_NOTIFY action
+ * Check if seccomp config uses SCMP_ACT_NOTIFY action.
+ * Public so callers (MainProcess, exec) can decide up front whether a notify
+ * FD will need forwarding to the OCI seccomp listener.
  */
-private fun hasNotifyAction(seccomp: LinuxSeccomp): Boolean = seccomp.syscalls?.any { it.action == "SCMP_ACT_NOTIFY" } ?: false
+fun seccompUsesNotify(seccomp: LinuxSeccomp): Boolean = seccomp.syscalls?.any { it.action == "SCMP_ACT_NOTIFY" } ?: false
 
 /**
  * Initialize and load seccomp filter based on OCI spec
@@ -183,7 +185,7 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int? {
 
         // If SCMP_ACT_NOTIFY is used, get the notify FD
         val notifyFd =
-            if (hasNotifyAction(seccomp)) {
+            if (seccompUsesNotify(seccomp)) {
                 val fd = seccomp_notify_fd(ctx)
                 if (fd < 0) {
                     perror("seccomp_notify_fd")

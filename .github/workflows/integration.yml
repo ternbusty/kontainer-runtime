@@ -44,12 +44,12 @@ jobs:
       - name: Pull alpine image
         run: sudo ctr image pull docker.io/library/alpine:latest
 
-      - name: Run container and host-side verification
+      - name: Run container, host-side and exec verification
         run: |
           BIN="$(pwd)/build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe"
 
           # Start the container in the background. verify-from-container.sh ends
-          # with `sleep 10`, giving the host script a window to read /proc/<pid>/.
+          # with `sleep 30`, giving the host and exec scripts a window to run.
           sudo ctr run --rm \
               --runc-binary="$BIN" \
               --seccomp --read-only \
@@ -67,6 +67,7 @@ jobs:
           sleep 5
 
           sudo ./test-scripts/verify-from-host.sh test-verify > host.log 2>&1
+          sudo ./test-scripts/verify-exec.sh test-verify "$BIN" > exec.log 2>&1
 
           # Wait for the container to finish its trailing sleep and exit.
           wait $CTR_PID
@@ -79,11 +80,15 @@ jobs:
           echo ""
           echo "=== host.log ==="
           cat host.log || true
+          echo ""
+          echo "=== exec.log ==="
+          cat exec.log || true
 
       - name: Check expectations
         run: |
           ./test-scripts/check-expectations.sh container.log
           ./test-scripts/check-expectations.sh host.log
+          ./test-scripts/check-expectations.sh exec.log
 
       - name: Upload logs as artifacts
         if: always()
@@ -93,3 +98,4 @@ jobs:
           path: |
             container.log
             host.log
+            exec.log
