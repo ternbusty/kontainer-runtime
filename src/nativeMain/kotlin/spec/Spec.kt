@@ -81,6 +81,7 @@ data class Process(
     val capabilities: LinuxCapabilities? = null,
     val rlimits: List<POSIXRlimit>? = null,
     val umask: UInt? = null,
+    val oomScoreAdj: Int? = null,
     val apparmorProfile: String? = null,
     val selinuxLabel: String? = null,
     val terminal: Boolean = false,

@@ -134,6 +134,23 @@ fun main(args: Array<String>): Unit =
                 description = "Enable debug logging",
             ).default(false)
 
+        // kotlinx-cli runs Subcommand.execute() inside parser.parse(), so global
+        // options must be applied at the start of each execute() — code placed
+        // after parse() returns would run only after the command has finished
+        // (or never, if the command exits).
+        var globalOptionsApplied = false
+
+        fun applyGlobalOptions() {
+            if (globalOptionsApplied) return
+            globalOptionsApplied = true
+            logFile?.let { Logger.setLogFile(it) }
+            logFormat?.let { Logger.setLogFormat(it) }
+            if (debug) {
+                Logger.setLogLevel(Logger.Level.DEBUG)
+            }
+            Logger.debug("invoked with arguments: ${args.joinToString(" ") { "\"$it\"" }}")
+        }
+
         class CreateCommand : Subcommand("create", "Create a new container") {
             val bundle by option(
                 ArgType.String,
@@ -154,6 +171,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
+                applyGlobalOptions()
                 create(syscall, fs, cgroup, rootPath, containerId, bundle, pidFile)
             }
         }
@@ -165,6 +183,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
+                applyGlobalOptions()
                 start(fs, rootPath, containerId)
             }
         }
@@ -176,6 +195,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
+                applyGlobalOptions()
                 state(fs, rootPath, containerId)
             }
         }
@@ -192,6 +212,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
+                applyGlobalOptions()
                 kill(syscall, fs, rootPath, containerId, signal)
             }
         }
@@ -210,6 +231,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
+                applyGlobalOptions()
                 delete(syscall, fs, cgroup, rootPath, containerId, force)
             }
         }
@@ -228,6 +250,7 @@ fun main(args: Array<String>): Unit =
             )
 
             override fun execute() {
+                applyGlobalOptions()
                 ps(fs, cgroup, rootPath, containerId, format)
             }
         }
@@ -244,6 +267,7 @@ fun main(args: Array<String>): Unit =
             ).vararg()
 
             override fun execute() {
+                applyGlobalOptions()
                 exec(syscall, fs, cgroup, rootPath, containerId, processArgs)
             }
         }
@@ -278,8 +302,6 @@ fun main(args: Array<String>): Unit =
             exit(1)
         }
 
-        Logger.info("kontainer-runtime invoked with ${args.size} arguments. arguments: ${args.joinToString(" ") { "\"$it\"" }}")
-
         try {
             parser.parse(args)
         } catch (e: IllegalStateException) {
@@ -287,10 +309,6 @@ fun main(args: Array<String>): Unit =
             exit(1)
         }
 
-        // Apply global options after parsing
-        logFile?.let { Logger.setLogFile(it) }
-        logFormat?.let { Logger.setLogFormat(it) }
-        if (debug) {
-            Logger.setLogLevel(logger.Logger.Level.DEBUG)
-        }
+        // Covers invocations without a subcommand (execute() never ran)
+        applyGlobalOptions()
     }

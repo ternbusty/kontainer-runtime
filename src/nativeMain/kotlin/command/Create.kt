@@ -12,6 +12,8 @@ import platform.posix.*
 import process.runMainProcess
 import spec.loadSpec
 import state.containerExists
+import state.getContainerDir
+import state.getNotifySocketPath
 import syscall.Syscall
 import utils.FileSystem
 
@@ -51,7 +53,9 @@ fun create(
                 }
                 buf.toKString()
             }
-        @Suppress("NAME_SHADOWING") val bundlePath = absBundle
+
+        @Suppress("NAME_SHADOWING")
+        val bundlePath = absBundle
 
         val configPath = "$bundlePath/config.json"
 
@@ -85,8 +89,10 @@ fun create(
         val (mainSender, mainReceiver) = mainChannel()
         val (initSender, initReceiver) = initChannel()
 
-        // Create notify socket path
-        val notifySocketPath = "/tmp/kontainer-$containerId.sock"
+        // The notify socket lives inside the root-owned container state
+        // directory (not /tmp), so create that directory before binding.
+        fs.createDirectories(getContainerDir(rootPath, containerId))
+        val notifySocketPath = getNotifySocketPath(rootPath, containerId)
 
         // Create NotifyListener before forking (will be inherited by child processes)
         val notifyListener =

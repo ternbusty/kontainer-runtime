@@ -185,6 +185,16 @@ class RealFileSystem : FileSystem {
         return false
     }
 
+    override fun renameFile(
+        oldPath: String,
+        newPath: String,
+    ) {
+        if (rename(oldPath, newPath) != 0) {
+            val errNum = errno
+            throw Exception("Failed to rename $oldPath to $newPath: errno=$errNum")
+        }
+    }
+
     override fun removeDirectory(path: String): Boolean {
         if (access(path, F_OK) != 0) {
             Logger.debug("directory $path does not exist, nothing to remove")

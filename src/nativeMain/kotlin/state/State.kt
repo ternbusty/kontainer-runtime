@@ -120,49 +120,6 @@ data class State(
 )
 
 private const val STATE_FILE_NAME = "state.json"
-private const val LOCK_FILE_NAME = ".lock"
-
-private fun getLockPath(
-    rootPath: String,
-    containerId: String,
-): String = "${getContainerDir(rootPath, containerId)}/$LOCK_FILE_NAME"
-
-/**
- * Run [block] while holding an advisory flock on the per-container lock file.
- * Pass [exclusive] = true for write operations (LOCK_EX) and false for reads
- * (LOCK_SH). Without this, parallel `kontainer-runtime state` / `delete` /
- * `kill` invocations on the same container race on state.json.
- */
-@OptIn(ExperimentalForeignApi::class)
-private inline fun <T> withContainerLock(
-    fs: FileSystem,
-    rootPath: String,
-    containerId: String,
-    exclusive: Boolean,
-    block: () -> T,
-): T {
-    val containerDir = getContainerDir(rootPath, containerId)
-    val lockPath = getLockPath(rootPath, containerId)
-    fs.createDirectories(containerDir)
-    val fd = open(lockPath, O_CREAT or O_RDWR, 0x180u) // 0600
-    if (fd < 0) {
-        Logger.warn("failed to open lock file $lockPath (errno=$errno); proceeding without lock")
-        return block()
-    }
-    try {
-        val op = if (exclusive) LOCK_EX else LOCK_SH
-        // The bare name `flock` resolves to the `struct flock` cinterop type
-        // (for fcntl record locks), which shadows the file-lock function, so
-        // call the syscall directly.
-        if (syscall(platform.linux.__NR_flock.toLong(), fd.toLong(), op.toLong()) != 0L) {
-            Logger.warn("failed to flock $lockPath (errno=$errno); proceeding without lock")
-        }
-        return block()
-    } finally {
-        syscall(platform.linux.__NR_flock.toLong(), fd.toLong(), LOCK_UN.toLong())
-        close(fd)
-    }
-}
 
 /**
  * Get the directory path for a container's state
@@ -171,10 +128,21 @@ private inline fun <T> withContainerLock(
  * @param containerId Container ID
  * @return Path to container's state directory
  */
-private fun getContainerDir(
+fun getContainerDir(
     rootPath: String,
     containerId: String,
 ): String = "$rootPath/$containerId"
+
+/**
+ * Get the path of the notify socket used to signal container start.
+ *
+ * Lives inside the root-owned container state directory — NOT in /tmp —
+ * so an unprivileged local user cannot pre-create or hijack the path.
+ */
+fun getNotifySocketPath(
+    rootPath: String,
+    containerId: String,
+): String = "${getContainerDir(rootPath, containerId)}/notify.sock"
 
 /**
  * Get the full path to the state file
@@ -230,13 +198,18 @@ fun State.save(
 
     fs.createDirectories(containerDir)
 
-    withContainerLock(fs, rootPath, this.id, exclusive = true) {
-        try {
-            JsonCodec.writeToFile(fs, statePath, this, prettyPrint = true)
-        } catch (e: Exception) {
-            Logger.error("failed to save state: ${e.message ?: "unknown"}")
-            throw Exception("Failed to save state: ${e.message}")
-        }
+    // Write to a temp file in the same directory, then rename(2) it over
+    // state.json. rename is atomic within a filesystem, so concurrent readers
+    // always see either the old or the new complete file, never a partial
+    // write — this replaces file locking (runc does the same).
+    val tmpPath = "$statePath.tmp.${getpid()}"
+    try {
+        JsonCodec.writeToFile(fs, tmpPath, this, prettyPrint = true)
+        fs.renameFile(tmpPath, statePath)
+    } catch (e: Exception) {
+        unlink(tmpPath) // best-effort cleanup; the temp file may not exist
+        Logger.error("failed to save state: ${e.message ?: "unknown"}")
+        throw Exception("Failed to save state: ${e.message}")
     }
 
     Logger.info("saved state for container ${this.id}")
@@ -289,9 +262,7 @@ fun loadState(
 
     val state =
         try {
-            withContainerLock(fs, rootPath, containerId, exclusive = false) {
-                JsonCodec.loadFromFile<State>(fs, statePath)
-            }
+            JsonCodec.loadFromFile<State>(fs, statePath)
         } catch (e: Exception) {
             Logger.error("failed to load state: ${e.message ?: "unknown"}")
             throw Exception("Failed to load state file (container may not exist): ${e.message}")
@@ -330,14 +301,18 @@ fun State.withStatus(newStatus: ContainerStatus): State = this.copy(status = new
 /**
  * Delete notify socket for a container
  *
- * Removes /tmp/kontainer-{container-id}.sock
+ * Removes {rootPath}/{container-id}/notify.sock
  * Errors are ignored (socket may not exist)
  *
+ * @param rootPath Root directory for container state
  * @param containerId Container ID
  */
 @OptIn(ExperimentalForeignApi::class)
-fun deleteNotifySocket(containerId: String) {
-    val notifySocketPath = "/tmp/kontainer-$containerId.sock"
+fun deleteNotifySocket(
+    rootPath: String,
+    containerId: String,
+) {
+    val notifySocketPath = getNotifySocketPath(rootPath, containerId)
 
     Logger.debug("deleting notify socket: $notifySocketPath")
 

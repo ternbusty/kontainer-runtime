@@ -45,7 +45,7 @@ fun start(
 
     Logger.debug("container ${state.id} has init PID ${state.pid}")
 
-    val notifySocketPath = "/tmp/kontainer-$containerId.sock"
+    val notifySocketPath = getNotifySocketPath(rootPath, containerId)
 
     // Send start signal to notify socket
     val notifySocket = SocketNotifySocket(notifySocketPath)
