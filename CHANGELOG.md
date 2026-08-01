@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/ternbusty/kontainer-runtime/compare/v0.3.0...v0.3.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* **exec:** apply the container's OCI process security to exec'd processes ([#71](https://github.com/ternbusty/kontainer-runtime/issues/71)) ([019e7ca](https://github.com/ternbusty/kontainer-runtime/commit/019e7ca4a187310eef405d1b4c596218a632026d))
+* remove /tmp fixed paths, apply global CLI options correctly, atomic state saves, oomScoreAdj support ([#72](https://github.com/ternbusty/kontainer-runtime/issues/72)) ([e94a796](https://github.com/ternbusty/kontainer-runtime/commit/e94a7969c80bec7fed75663f6299e9340a00b2c0))
+
 ## [0.3.0](https://github.com/ternbusty/kontainer-runtime/compare/v0.2.1...v0.3.0) (2026-07-25)
 
 
