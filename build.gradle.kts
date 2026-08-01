@@ -99,6 +99,17 @@ kotest {
     customGradleTask.set(true)
 }
 
+// The kotest plugin force-disables Gradle's failOnNoDiscoveredTests on every
+// test task from its own taskGraph.whenReady hook. Re-enable it afterwards so
+// a test binary with zero registered specs fails the build instead of passing.
+gradle.taskGraph.whenReady {
+    tasks.withType<org.gradle.api.tasks.testing.AbstractTestTask>().configureEach {
+        if (hasProperty("failOnNoDiscoveredTests")) {
+            setProperty("failOnNoDiscoveredTests", true)
+        }
+    }
+}
+
 kotlin {
     val hostOs = System.getProperty("os.name")
     val isArm64 = System.getProperty("os.arch") == "aarch64"

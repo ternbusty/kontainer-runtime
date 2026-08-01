@@ -35,15 +35,5 @@ jobs:
       - name: Run tests
         run: ./gradlew linuxX64Test
 
-      # Fail if the test task silently ran zero tests
-      - name: Verify tests actually ran
-        run: |
-          count=$(grep -ho '<testcase ' build/test-results/linuxX64Test/TEST-*.xml 2>/dev/null | wc -l)
-          echo "Executed test cases: $count"
-          if [ "$count" -eq 0 ]; then
-            echo "::error::No test cases were executed. Check that linuxX64Test still runs the Kotest specs."
-            exit 1
-          fi
-
       - name: Build release binary
         run: ./gradlew linkReleaseExecutableLinuxX64
