@@ -124,7 +124,7 @@ fun delete(
 
     // Delete notify socket
     try {
-        deleteNotifySocket(containerId)
+        deleteNotifySocket(rootPath, containerId)
     } catch (e: Exception) {
         Logger.warn("failed to delete notify socket: ${e.message ?: "unknown"}")
         // Continue with deletion

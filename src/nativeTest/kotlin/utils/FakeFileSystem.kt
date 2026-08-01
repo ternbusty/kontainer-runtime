@@ -53,6 +53,15 @@ class FakeFileSystem : FileSystem {
         return path in files || path in directories
     }
 
+    override fun renameFile(
+        oldPath: String,
+        newPath: String,
+    ) {
+        val content = files.remove(oldPath) ?: throw Exception("Failed to rename $oldPath to $newPath: errno=2")
+        files[newPath] = content
+        calls += "renameFile($oldPath, $newPath)"
+    }
+
     override fun removeDirectory(path: String): Boolean {
         calls += "removeDirectory($path)"
         return directories.remove(path)

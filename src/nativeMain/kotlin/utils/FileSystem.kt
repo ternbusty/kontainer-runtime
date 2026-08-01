@@ -48,6 +48,16 @@ interface FileSystem {
     fun fileExists(path: String): Boolean
 
     /**
+     * Atomically rename [oldPath] to [newPath], replacing any existing file.
+     * Both paths must be on the same filesystem (rename(2) semantics).
+     * @throws Exception if the rename fails
+     */
+    fun renameFile(
+        oldPath: String,
+        newPath: String,
+    )
+
+    /**
      * Remove an empty directory. Returns true if removed, false if it did not exist.
      * Other errors (e.g. directory not empty, permission denied) are logged as a
      * warning by the implementation but not thrown.
