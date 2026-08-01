@@ -1,8 +1,6 @@
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.kotlinSerialization)
-    // The io.kotest plugin wires the Kotest KSP symbol processor, which generates
-    // the spec-registration entry point for Kotlin/Native (no runtime reflection).
     alias(libs.plugins.kotest)
     alias(libs.plugins.ksp)
     alias(libs.plugins.ktlint)
