@@ -3,8 +3,6 @@ plugins {
     alias(libs.plugins.kotlinSerialization)
     // The io.kotest plugin wires the Kotest KSP symbol processor, which generates
     // the spec-registration entry point for Kotlin/Native (no runtime reflection).
-    // Tests run via the standard `linuxX64Test` task. The plugin's own `kotest`
-    // task has been an empty stub since 6.2, so never use it to run tests.
     alias(libs.plugins.kotest)
     alias(libs.plugins.ksp)
     alias(libs.plugins.ktlint)
@@ -92,6 +90,17 @@ val buildBootstrap = tasks.register<Copy>("buildBootstrap") {
     dependsOn(archiveBootstrap)
     from("src/nativeInterop/cinterop/bootstrap/build/libbootstrap.a")
     into(layout.buildDirectory.dir("bootstrap"))
+}
+
+// The io.kotest plugin reads this flag eagerly while Kotlin targets are being
+// created, so this block must stay above the kotlin {} block. When it sat below
+// (as it did from the 6.2.1 bump in PR #33 until PR #70), the plugin saw the
+// flag unset, skipped wiring linuxX64Test into its `kotest` task, and
+// `./gradlew kotest` passed without running a single test. With the ordering
+// right, `./gradlew kotest` works as an alias for linuxX64Test; CI calls
+// linuxX64Test directly and independently verifies that tests really ran.
+kotest {
+    customGradleTask.set(true)
 }
 
 kotlin {
