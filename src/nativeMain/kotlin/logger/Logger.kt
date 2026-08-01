@@ -67,41 +67,6 @@ object Logger {
     // Log format (text or json)
     private var logFormat: Format = Format.TEXT
 
-    // Debug log file handle (always writes to /tmp for troubleshooting)
-    private var debugLogFile: CPointer<FILE>? = null
-
-    init {
-        // Open debug log file in /tmp for persistent logging
-        // This helps troubleshoot issues where containerd cleans up log files
-
-        // Temporarily set umask to 0 to ensure the log file is created with 0666 permissions
-        // This allows both root and regular users to write to the file
-        // Note: fchmod() fails with EPERM in user namespaces, so we use umask instead
-        val oldUmask = umask(0u)
-        debugLogFile = fopen("/tmp/kontainer-runtime-debug.log", "a")
-        umask(oldUmask) // Restore original umask
-
-        if (debugLogFile != null) {
-            // Write a separator to mark new execution
-            val timestamp = getCurrentTimestamp()
-            fprintf(debugLogFile, "\n=== New execution at %s ===\n", timestamp)
-            fflush(debugLogFile)
-        } else {
-            // Log fopen() failure to stderr for debugging
-            val errNum = errno
-            val uid = getuid()
-            val gid = getgid()
-            fprintf(
-                stderr,
-                "WARNING: Failed to open /tmp/kontainer-runtime-debug.log for appending (errno=%d, uid=%u, gid=%u)\n",
-                errNum,
-                uid,
-                gid,
-            )
-            fflush(stderr)
-        }
-    }
-
     /**
      * Detect log level from environment variable KONTAINER_LOG_LEVEL
      * Falls back to build-time default (DEBUG for debug builds, INFO for release builds)
@@ -166,11 +131,16 @@ object Logger {
             }
         }
 
-        // Open new log file in append mode
-        val file = fopen(path, "a")
+        // Open new log file in append mode. O_NOFOLLOW: the runtime runs as
+        // root, so never follow a pre-planted symlink at the log path.
+        // O_CLOEXEC: don't leak the host log fd into the container process
+        // across execve.
+        val fd = open(path, O_WRONLY or O_CREAT or O_APPEND or O_NOFOLLOW or O_CLOEXEC, 0x1A4u) // 0644
+        val file = if (fd >= 0) fdopen(fd, "a") else null
         if (file == null) {
             fprintf(stderr, "[ERROR] Failed to open log file: %s\n", path)
-            perror("fopen")
+            perror("open")
+            if (fd >= 0) close(fd)
             return
         }
 
@@ -261,19 +231,6 @@ object Logger {
                         )
                         fflush(file) // Ensure immediate write
                     }
-
-                    // Always log to debug file for troubleshooting
-                    debugLogFile?.let { file ->
-                        fprintf(
-                            file,
-                            formattedMessage,
-                            timestamp,
-                            level.label,
-                            processContext,
-                            message,
-                        )
-                        fflush(file) // Ensure immediate write
-                    }
                 }
 
                 Format.JSON -> {
@@ -291,12 +248,6 @@ object Logger {
 
                     // Log to file if configured
                     logFile?.let { file ->
-                        fprintf(file, "%s", jsonMessage)
-                        fflush(file)
-                    }
-
-                    // Always log to debug file for troubleshooting
-                    debugLogFile?.let { file ->
                         fprintf(file, "%s", jsonMessage)
                         fflush(file)
                     }
