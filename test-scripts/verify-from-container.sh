@@ -254,5 +254,5 @@ echo "  ✓ Resource limits (rlimits)"
 echo "  ✓ Cgroup v2 visibility"
 echo "  ✓ Readonly rootfs"
 echo ""
-echo "Sleeping for 10 seconds for manual inspection..."
-sleep 10
+echo "Sleeping for 30 seconds so host-side and exec verification can run..."
+sleep 30
