@@ -142,15 +142,15 @@ echo ""
 # ---------------------------------------------------------------------------
 # Run bats
 # ---------------------------------------------------------------------------
-TAP_OUTPUT="$(mktemp)"
+TAP_OUTPUT="${TAP_OUTPUT:-$(mktemp)}"
 
 set +e
 RUNC="$KONTAINER_BIN" bats \
   --jobs "$BATS_JOBS" \
   --tap \
   "${TEST_FILES[@]}" \
-  > "$TAP_OUTPUT" 2>&1
-BATS_RC=$?
+  2>&1 | tee "$TAP_OUTPUT"
+BATS_RC=${PIPESTATUS[0]}
 set -e
 
 # ---------------------------------------------------------------------------

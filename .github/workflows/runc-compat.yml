@@ -76,18 +76,18 @@ jobs:
           sudo env \
             KONTAINER_BIN="$KONTAINER_BIN" \
             SUMMARY_FILE="$GITHUB_STEP_SUMMARY" \
+            TAP_OUTPUT="$PWD/tap-output.log" \
             scripts/runc-compat-test.sh \
               --runc-dir "$RUNC_REPO_DIR" \
-              --binary "$KONTAINER_BIN" \
-            | tee bats-output.log
+              --binary "$KONTAINER_BIN"
 
       # ── upload raw output ────────────────────────────────────────
-      - name: Upload bats output
+      - name: Upload bats TAP output
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: runc-bats-output
-          path: bats-output.log
+          name: runc-bats-tap-output
+          path: tap-output.log
 
       # ── report outcome in annotations ────────────────────────────
       - name: Annotate outcome
