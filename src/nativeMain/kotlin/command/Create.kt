@@ -35,6 +35,7 @@ fun create(
     containerId: String,
     bundlePath: String = ".",
     pidFile: String? = null,
+    consoleSocket: String? = null,
 ): Unit =
     memScoped {
         if (containerExists(fs, rootPath, containerId)) {
@@ -193,6 +194,11 @@ fun create(
                 setenv("_KONTAINER_ROOTFS_PATH", rootfsPath, 1)
                 setenv("_KONTAINER_NOTIFY_SOCKET", notifySocketPath, 1)
                 setenv("_KONTAINER_CONTAINER_ID", containerId, 1)
+
+                // Console socket path for PTY master fd handoff
+                if (consoleSocket != null) {
+                    setenv("_KONTAINER_CONSOLE_SOCKET", consoleSocket, 1)
+                }
 
                 // Pass any spec.linux.namespaces[].path entries to bootstrap.c
                 // so it can setns(2) into existing namespaces before the

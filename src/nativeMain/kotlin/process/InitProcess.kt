@@ -3,6 +3,9 @@ package process
 import channel.InitReceiver
 import channel.MainSender
 import channel.NotifyListener
+import console.openPty
+import console.sendMasterTo
+import console.wireStdio
 import kotlinx.cinterop.*
 import logger.Logger
 import platform.posix.*
@@ -180,15 +183,47 @@ private fun initProcessInternal(
         // execve. Done late (after init_ready) to avoid closing channel pipes early.
         syscall.closeRange(preserveFds)
 
-        // spec.process.terminal asks the runtime to wire stdin/stdout/stderr
-        // through a freshly allocated PTY and forward the master fd to a
-        // caller-supplied --console-socket. Full SCM_RIGHTS handshake is not
-        // yet implemented; emit a clear warning so users know stdio will be
-        // ordinary pipes rather than a tty.
+        // PTY allocation: when spec.process.terminal is true, allocate a
+        // pseudo-terminal pair, ship the master fd to the caller via the
+        // --console-socket (SCM_RIGHTS), and wire the slave to stdio.
+        // Placed AFTER closeRange: the PTY fds are created fresh (no stale
+        // FD_CLOEXEC), the master is sent and closed manually, and the slave
+        // is dup2'd onto 0/1/2 before execvp.
         if (spec.process.terminal) {
-            Logger.warn(
-                "spec.process.terminal=true is recognised but the PTY/console-socket " +
-                    "handshake is not yet implemented; container will run without a tty",
+            val consoleSocketPath =
+                getenv("_KONTAINER_CONSOLE_SOCKET")?.toKString()
+                    ?: run {
+                        Logger.error(
+                            "spec.process.terminal=true but --console-socket was not provided",
+                        )
+                        _exit(1)
+                        @Suppress("UNREACHABLE_CODE")
+                        return@memScoped
+                    }
+
+            val pty =
+                openPty()
+                    ?: run {
+                        Logger.error("failed to allocate pseudo-terminal")
+                        _exit(1)
+                        @Suppress("UNREACHABLE_CODE")
+                        return@memScoped
+                    }
+
+            if (!sendMasterTo(consoleSocketPath, pty.master)) {
+                Logger.error(
+                    "failed to send PTY master fd to console socket: $consoleSocketPath",
+                )
+                close(pty.master)
+                close(pty.slave)
+                _exit(1)
+            }
+            close(pty.master)
+
+            wireStdio(
+                pty.slave,
+                spec.process.consoleSize?.height,
+                spec.process.consoleSize?.width,
             )
         }
 

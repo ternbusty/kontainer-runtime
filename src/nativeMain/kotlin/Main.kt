@@ -247,6 +247,12 @@ fun main(args: Array<String>): Unit =
                 description = "PID file path",
             )
 
+            val consoleSocket by option(
+                ArgType.String,
+                fullName = "console-socket",
+                description = "Path to AF_UNIX socket for PTY master fd handoff",
+            )
+
             val containerId by argument(
                 ArgType.String,
                 description = "Container ID",
@@ -254,7 +260,7 @@ fun main(args: Array<String>): Unit =
 
             override fun execute() {
                 applyGlobalOptions()
-                create(syscall, fs, cgroup, rootPath, containerId, bundle, pidFile)
+                create(syscall, fs, cgroup, rootPath, containerId, bundle, pidFile, consoleSocket)
             }
         }
 

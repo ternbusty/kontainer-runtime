@@ -139,6 +139,7 @@ kotlin {
             create("prlimit")
             create("network")
             create("bpf")
+            create("pty")
         }
     }
 
