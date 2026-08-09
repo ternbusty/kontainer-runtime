@@ -212,4 +212,27 @@ class RealFileSystem : FileSystem {
         Logger.debug("removed directory: $path")
         return true
     }
+
+    override fun listDirectories(path: String): List<String> {
+        val dir = opendir(path) ?: return emptyList()
+        val result = mutableListOf<String>()
+        try {
+            while (true) {
+                val entry = readdir(dir) ?: break
+                val name = entry.pointed.d_name.toKString()
+                if (name == "." || name == "..") continue
+                // Only include entries that are directories (DT_DIR) or that
+                // we cannot classify from the dirent (DT_UNKNOWN — some
+                // filesystems don't fill d_type); the latter is rare in
+                // practice (state lives on tmpfs/ext4, both DT_DIR-aware).
+                val dtype = entry.pointed.d_type.toInt()
+                if (dtype == DT_DIR.toInt() || dtype == DT_UNKNOWN.toInt()) {
+                    result.add(name)
+                }
+            }
+        } finally {
+            closedir(dir)
+        }
+        return result
+    }
 }

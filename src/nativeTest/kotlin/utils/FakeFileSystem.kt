@@ -66,4 +66,15 @@ class FakeFileSystem : FileSystem {
         calls += "removeDirectory($path)"
         return directories.remove(path)
     }
+
+    override fun listDirectories(path: String): List<String> {
+        calls += "listDirectories($path)"
+        val prefix = if (path.endsWith("/")) path else "$path/"
+        return directories
+            .filter { it.startsWith(prefix) }
+            .mapNotNull { tail ->
+                val relative = tail.removePrefix(prefix)
+                if ('/' !in relative && relative.isNotEmpty()) relative else null
+            }.sorted()
+    }
 }

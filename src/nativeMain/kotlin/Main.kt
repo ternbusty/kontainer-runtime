@@ -318,6 +318,26 @@ fun main(args: Array<String>): Unit =
             }
         }
 
+        class ListCommand : Subcommand("list", "List all containers") {
+            val format by option(
+                ArgType.String,
+                fullName = "format",
+                description = "Output format (table or json)",
+            ).default("table")
+
+            val quiet by option(
+                ArgType.Boolean,
+                shortName = "q",
+                fullName = "quiet",
+                description = "Only display container IDs",
+            ).default(false)
+
+            override fun execute() {
+                applyGlobalOptions()
+                list(fs, rootPath, format, quiet)
+            }
+        }
+
         class PsCommand : Subcommand("ps", "List processes in a container") {
             val format by option(
                 ArgType.String,
@@ -381,6 +401,7 @@ fun main(args: Array<String>): Unit =
             StateCommand(),
             KillCommand(),
             DeleteCommand(),
+            ListCommand(),
             PsCommand(),
             ExecCommand(),
         )
@@ -400,6 +421,7 @@ fun main(args: Array<String>): Unit =
             println("  state <container-id>                                               Display container state")
             println("  kill <container-id> <signal>                                       Send a signal to a container")
             println("  delete [--force|-f] <container-id>                                 Delete a container")
+            println("  list [--format <table|json>] [-q]                                  List all containers")
             println("  ps [--format|-f <json|table>] <container-id>                       List processes in a container")
             println("  exec [-p <process.json>] [--pid-file <path>] [-d] <container-id> [--] [command [args...]]")
             println("                                                                         Run a process in a running container")
