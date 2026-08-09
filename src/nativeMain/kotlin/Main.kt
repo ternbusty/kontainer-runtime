@@ -421,6 +421,30 @@ fun main(args: Array<String>): Unit =
             }
         }
 
+        class EventsCommand : Subcommand("events", "Stream container resource statistics") {
+            val stats by option(
+                ArgType.Boolean,
+                fullName = "stats",
+                description = "Print a single snapshot and exit",
+            ).default(false)
+
+            val interval by option(
+                ArgType.Int,
+                fullName = "interval",
+                description = "Seconds between snapshots (default 5)",
+            ).default(5)
+
+            val containerId by argument(
+                ArgType.String,
+                description = "Container ID",
+            )
+
+            override fun execute() {
+                applyGlobalOptions()
+                events(fs, rootPath, containerId, stats, interval.toUInt())
+            }
+        }
+
         class PsCommand : Subcommand("ps", "List processes in a container") {
             val format by option(
                 ArgType.String,
@@ -488,6 +512,7 @@ fun main(args: Array<String>): Unit =
             PauseCommand(),
             ResumeCommand(),
             UpdateCommand(),
+            EventsCommand(),
             PsCommand(),
             ExecCommand(),
         )
@@ -512,6 +537,7 @@ fun main(args: Array<String>): Unit =
             println("  resume <container-id>                                              Resume a paused container")
             println("  update [-r <resources.json>] [--memory <bytes>] [--pids-limit <n>] <container-id>")
             println("                                                                         Update container resource limits")
+            println("  events [--stats] [--interval <s>] <container-id>                   Stream container resource stats")
             println("  ps [--format|-f <json|table>] <container-id>                       List processes in a container")
             println("  exec [-p <process.json>] [--pid-file <path>] [-d] <container-id> [--] [command [args...]]")
             println("                                                                         Run a process in a running container")
