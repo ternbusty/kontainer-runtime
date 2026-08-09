@@ -1,0 +1,100 @@
+name: runc bats compatibility
+
+# Runs a subset of runc's bats integration tests against
+# kontainer-runtime to track OCI CLI compatibility.
+# Test failures do NOT block the workflow — results are reported
+# as a Job Summary.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  runc-bats:
+    name: runc bats integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      # ── checkout & toolchain ──────────────────────────────────────
+      - name: Checkout kontainer-runtime
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y libseccomp-dev jq
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # ── build kontainer-runtime ───────────────────────────────────
+      - name: Build kontainer-runtime release binary
+        run: ./gradlew linkReleaseExecutableLinuxX64 --no-daemon
+
+      - name: Verify binary exists
+        run: |
+          BIN="build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe"
+          test -x "$BIN"
+          echo "KONTAINER_BIN=$(pwd)/$BIN" >> "$GITHUB_ENV"
+
+      # ── clone runc & install bats ─────────────────────────────────
+      - name: Clone runc v1.2.9 (shallow)
+        run: |
+          git clone --depth 1 --branch v1.2.9 \
+            https://github.com/opencontainers/runc "$HOME/runc"
+          echo "RUNC_REPO_DIR=$HOME/runc" >> "$GITHUB_ENV"
+
+      - name: Install bats-core
+        run: |
+          git clone --depth 1 https://github.com/bats-core/bats-core "$HOME/bats-core"
+          sudo "$HOME/bats-core/install.sh" /usr/local
+          bats --version
+
+      # ── fetch rootfs images ──────────────────────────────────────
+      - name: Fetch rootfs images (busybox / debian)
+        run: |
+          chmod +x "$HOME/runc/tests/integration/get-images.sh"
+          "$HOME/runc/tests/integration/get-images.sh" > /dev/null
+
+      # ── run bats tests ───────────────────────────────────────────
+      - name: Run runc bats integration tests
+        id: bats
+        continue-on-error: true
+        run: |
+          chmod +x scripts/runc-compat-test.sh
+          sudo env \
+            KONTAINER_BIN="$KONTAINER_BIN" \
+            SUMMARY_FILE="$GITHUB_STEP_SUMMARY" \
+            scripts/runc-compat-test.sh \
+              --runc-dir "$RUNC_REPO_DIR" \
+              --binary "$KONTAINER_BIN" \
+            | tee bats-output.log
+
+      # ── upload raw output ────────────────────────────────────────
+      - name: Upload bats output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: runc-bats-output
+          path: bats-output.log
+
+      # ── report outcome in annotations ────────────────────────────
+      - name: Annotate outcome
+        if: always()
+        run: |
+          if [ "${{ steps.bats.outcome }}" = "success" ]; then
+            echo "::notice::All runc bats tests passed"
+          else
+            echo "::warning::Some runc bats tests failed — see Job Summary for details"
+          fi
