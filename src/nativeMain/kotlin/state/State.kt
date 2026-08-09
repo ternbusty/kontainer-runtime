@@ -49,9 +49,11 @@ enum class ContainerStatus(
 
     /**
      * Check if a process can be exec'd into the container
-     * Only RUNNING containers accept exec (runc parity)
+     * CREATED and RUNNING containers accept exec (runc parity: a created
+     * container's init already holds all namespaces, so pre-start tooling
+     * may exec into it)
      */
-    fun canExec(): Boolean = this == RUNNING
+    fun canExec(): Boolean = this in setOf(CREATED, RUNNING)
 
     companion object {
         /**
@@ -111,6 +113,14 @@ data class State(
     val status: ContainerStatus,
     @SerialName("pid")
     val pid: Int? = null, // Required on Linux when status is "created" or "running"
+    // starttime (field 22 of /proc/<pid>/stat) of `pid`, recorded at create.
+    // PID + starttime uniquely identify a process incarnation, letting
+    // refreshStatus detect kernel PID reuse after an unclean stop instead of
+    // mistaking an unrelated host process for the container init.
+    // Extension field, not in the OCI spec; null in state files written by
+    // older versions (the check is skipped then).
+    @SerialName("pidStartTime")
+    val pidStartTime: Long? = null,
     @SerialName("bundle")
     val bundle: String,
     @SerialName("annotations")
@@ -274,6 +284,9 @@ fun loadState(
 
 /**
  * Create a new State object with current timestamp
+ *
+ * When [pid] is set, its /proc starttime is recorded alongside it so that
+ * [refreshStatus] can later detect PID reuse.
  */
 fun createState(
     ociVersion: String,
@@ -288,6 +301,7 @@ fun createState(
         id = containerId,
         status = status,
         pid = pid,
+        pidStartTime = pid?.let { processStartTime(it) },
         bundle = bundle,
         annotations = annotations,
         created = getCurrentTimestamp(),
@@ -372,71 +386,109 @@ fun deleteContainerDir(
 }
 
 /**
- * Check if a process is alive by reading /proc/{pid}/stat
+ * The fields of /proc/{pid}/stat the runtime cares about.
  *
- * @param pid Process ID to check
- * @return true if process exists and is not zombie/dead, false otherwise
+ * [startTime] is field 22 (starttime, in clock ticks since boot). It is
+ * fixed for the lifetime of a process, so PID + startTime uniquely identify
+ * a process incarnation — the basis of PID-reuse detection.
+ */
+internal data class ProcStat(
+    val state: Char,
+    val startTime: Long,
+)
+
+/**
+ * Parse the content of /proc/{pid}/stat.
+ *
+ * Format: pid (comm) state ppid ... — comm (field 2) can contain spaces and
+ * parentheses, so fields are located relative to the LAST ')'.
+ *
+ * @return parsed fields, or null if the content is not a valid stat line
+ */
+internal fun parseProcStat(content: String): ProcStat? {
+    val lastParen = content.lastIndexOf(')')
+    if (lastParen == -1 || lastParen + 2 >= content.length) return null
+
+    // Fields after ") ": index 0 is field 3 (state), so field 22
+    // (starttime) is at index 19.
+    val fields = content.substring(lastParen + 2).split(' ')
+    val state = fields.firstOrNull()?.firstOrNull() ?: return null
+    val startTime = fields.getOrNull(19)?.toLongOrNull() ?: return null
+    return ProcStat(state, startTime)
+}
+
+/**
+ * Read and parse /proc/{pid}/stat for a live process.
+ *
+ * @return parsed fields, or null if the process doesn't exist or the file
+ *   can't be read/parsed
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun isProcessAlive(pid: Int): Boolean {
+private fun readProcStat(pid: Int): ProcStat? {
     val statPath = "/proc/$pid/stat"
 
-    // Try to open /proc/{pid}/stat
     val file = fopen(statPath, "r")
     if (file == null) {
         // Process doesn't exist
         Logger.debug("process $pid does not exist (/proc/$pid/stat not found)")
-        return false
+        return null
     }
 
     try {
-        // Read the stat file
-        // Format: pid (comm) state ppid ...
-        // We need to parse the state field (3rd field)
         memScoped {
             val buffer = allocArray<ByteVar>(4096)
             val bytesRead = fread(buffer, 1u, 4095u, file)
             if (bytesRead == 0UL) {
                 Logger.warn("failed to read /proc/$pid/stat")
-                return false
+                return null
             }
 
             buffer[bytesRead.toInt()] = 0 // Null terminate
-            val statContent = buffer.toKString()
-
-            // Parse state: skip "pid (comm) " and get the state character
-            // comm can contain spaces and parentheses, so we need to find the last ')'
-            val lastParen = statContent.lastIndexOf(')')
-            if (lastParen == -1 || lastParen + 2 >= statContent.length) {
+            val parsed = parseProcStat(buffer.toKString())
+            if (parsed == null) {
                 Logger.warn("failed to parse /proc/$pid/stat")
-                return false
             }
-
-            // State is the character after ") "
-            val state = statContent[lastParen + 2]
-
-            Logger.debug("process $pid state: $state")
-
-            // Check if process is zombie (Z) or dead (X)
-            return when (state) {
-                'Z' -> {
-                    Logger.debug("process $pid is zombie")
-                    false
-                }
-
-                'X' -> {
-                    Logger.debug("process $pid is dead")
-                    false
-                }
-
-                else -> {
-                    // Process is alive (R, S, D, T, etc.)
-                    true
-                }
-            }
+            return parsed
         }
     } finally {
         fclose(file)
+    }
+}
+
+/**
+ * starttime (field 22 of /proc/{pid}/stat) of a live process, or null if
+ * the process doesn't exist. Recorded in [State.pidStartTime] at create and
+ * compared in [refreshStatus] to detect PID reuse.
+ */
+internal fun processStartTime(pid: Int): Long? = readProcStat(pid)?.startTime
+
+/**
+ * Check if a process is alive by reading /proc/{pid}/stat
+ *
+ * @param pid Process ID to check
+ * @return true if process exists and is not zombie/dead, false otherwise
+ */
+private fun isProcessAlive(pid: Int): Boolean {
+    val stat = readProcStat(pid) ?: return false
+
+    Logger.debug("process $pid state: ${stat.state}")
+
+    // Check if process is zombie (Z) or dead (X)
+    return when (stat.state) {
+        'Z' -> {
+            Logger.debug("process $pid is zombie")
+            false
+        }
+
+        'X' -> {
+            Logger.debug("process $pid is dead")
+            false
+        }
+
+        else -> {
+            // Process is alive (R, S, D, T, etc.)
+            true
+        }
     }
 }
 
@@ -463,6 +515,20 @@ fun State.refreshStatus(): State {
             // Check if process is actually alive
             !isProcessAlive(this.pid) -> {
                 Logger.debug("container ${this.id} process ${this.pid} is not alive, status: stopped")
+                ContainerStatus.STOPPED
+            }
+
+            // The PID is alive, but after an unclean stop the kernel may have
+            // recycled it for an unrelated process. starttime is fixed for a
+            // process's lifetime, so a mismatch with the value recorded at
+            // create proves the container init is gone — without this check,
+            // exec would join (or worse, silently skip) the namespaces of a
+            // random host process.
+            this.pidStartTime != null && processStartTime(this.pid) != this.pidStartTime -> {
+                Logger.warn(
+                    "container ${this.id} PID ${this.pid} has a different start time than recorded " +
+                        "(PID was reused by another process), status: stopped",
+                )
                 ContainerStatus.STOPPED
             }
 

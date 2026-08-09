@@ -161,6 +161,49 @@ class LinuxSyscall : Syscall {
         Logger.info("rlimits applied successfully")
     }
 
+    override fun raiseRlimits(
+        pid: Int,
+        rlimits: List<POSIXRlimit>?,
+    ) {
+        if (rlimits.isNullOrEmpty()) {
+            return
+        }
+
+        memScoped {
+            for (rlimit in rlimits) {
+                val resource = rlimitTypeToResource(rlimit.type)
+                if (resource == null) {
+                    Logger.warn("skipping unknown rlimit type: ${rlimit.type}")
+                    continue
+                }
+
+                val current = alloc<rlimit>()
+                if (prlimit_wrapper(pid, resource, null, current.ptr) != 0) {
+                    Logger.warn("failed to read rlimit ${rlimit.type} for PID $pid (errno=$errno)")
+                    continue
+                }
+                if (rlimit.hard <= current.rlim_max) {
+                    // Not a raise; the target process sets the exact values
+                    // itself, which needs no privilege.
+                    continue
+                }
+
+                val raised = alloc<rlimit>()
+                raised.rlim_max = rlimit.hard
+                // Keep the current soft value (always <= the new hard); the
+                // target process applies the spec's soft value later.
+                raised.rlim_cur = minOf(current.rlim_cur, rlimit.hard)
+
+                if (prlimit_wrapper(pid, resource, raised.ptr, null) != 0) {
+                    val errorMsg = strerror(errno)?.toKString() ?: "unknown error"
+                    Logger.warn("failed to raise rlimit ${rlimit.type} (resource=$resource) for PID $pid: $errorMsg")
+                } else {
+                    Logger.debug("raised hard rlimit ${rlimit.type} for PID $pid to ${rlimit.hard}")
+                }
+            }
+        }
+    }
+
     override fun setNoNewPrivileges() {
         Logger.debug("setting no_new_privileges")
 

@@ -25,6 +25,15 @@ class ContainerStatusTest :
             ContainerStatus.STOPPED.canKill() shouldBe false
         }
 
+        // canExec: CREATED and RUNNING
+
+        test("only CREATED and RUNNING can be exec'd into") {
+            ContainerStatus.CREATING.canExec() shouldBe false
+            ContainerStatus.CREATED.canExec() shouldBe true
+            ContainerStatus.RUNNING.canExec() shouldBe true
+            ContainerStatus.STOPPED.canExec() shouldBe false
+        }
+
         // canDelete: only STOPPED
 
         test("only STOPPED can be deleted without force") {

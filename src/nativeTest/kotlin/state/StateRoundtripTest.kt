@@ -16,6 +16,7 @@ class StateRoundtripTest :
                     id = "abc-123",
                     status = ContainerStatus.CREATED,
                     pid = 4242,
+                    pidStartTime = 123456789L,
                     bundle = "/path/to/bundle",
                     annotations = mapOf("k" to "v"),
                     created = "2026-05-10T00:00:00Z",
