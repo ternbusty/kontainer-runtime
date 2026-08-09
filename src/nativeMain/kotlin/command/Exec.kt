@@ -44,13 +44,18 @@ import utils.FileSystem
  *
  * Process topology (three processes, mirroring runc's exec shape):
  * - parent: multithreaded runtime CLI. Loads state/spec, opens the ns fds,
- *   forwards the seccomp notify FD if needed, waitpid's and propagates the
- *   exit code.
+ *   attaches the child to the container's cgroup and raises its hard
+ *   rlimits (host-context work: the host cgroupfs view and
+ *   CAP_SYS_RESOURCE in the initial user ns are both unavailable once the
+ *   child has joined the container's namespaces — and doing it here keeps
+ *   allocation-heavy Kotlin out of the forked child, where the runtime is
+ *   not fork-safe), forwards the seccomp notify FD if needed, waitpid's
+ *   and propagates the exit code.
  * - child: forked, therefore single-threaded — a requirement for
  *   setns(CLONE_NEWNS) etc., which the kernel rejects from multithreaded
- *   processes. Joins the cgroup (before any setns, while the host cgroupfs
- *   view is still visible and we still hold the privileges to write it),
- *   then joins the namespaces.
+ *   processes. Waits for the parent's cgroup/rlimit setup over a pipe
+ *   (both are inherited at fork, so they must precede the grandchild
+ *   fork), then joins the namespaces.
  * - grandchild: setns(CLONE_NEWPID) only puts CHILDREN of the caller into
  *   the pid namespace, so the child forks once more; the grandchild is the
  *   process that is actually born inside the container's pid ns. It applies
@@ -80,7 +85,7 @@ fun exec(
         }
     state = state.refreshStatus()
     if (!state.status.canExec()) {
-        Logger.error("exec: cannot exec into container in '${state.status.value}' state; container must be running")
+        Logger.error("exec: cannot exec into container in '${state.status.value}' state; container must be created or running")
         exit(1)
     }
     val initPid =
@@ -135,6 +140,18 @@ fun exec(
         nsFds[nsj.procName] = fd
     }
 
+    // The child must not fork the grandchild until the parent has attached it
+    // to the container's cgroup and raised its hard rlimits — both are
+    // inherited at fork time. A byte over this pipe is the go signal; EOF
+    // without the byte tells the child the setup failed and it must abort.
+    val setupPipe = IntArray(2)
+    setupPipe.usePinned { pinned ->
+        if (pipe(pinned.addressOf(0)) != 0) {
+            Logger.error("exec: pipe() failed (errno=$errno)")
+            exit(1)
+        }
+    }
+
     // When the seccomp profile uses SCMP_ACT_NOTIFY, the notify FD must reach
     // the OCI listener socket — a HOST path the grandchild can no longer
     // connect to once inside the container's mount namespace. Reuse the
@@ -173,16 +190,44 @@ fun exec(
         // the fork boundary — the runtime's default handler would exit(),
         // flushing stdio duplicated from the parent; only _exit() here.
         try {
-            runExecChild(syscall, cgroup, cgroupPath, spec, args, joins, nsFds, usesNotify, pidPipe, notifyMainSender, notifyInitReceiver)
+            runExecChild(syscall, spec, args, joins, nsFds, setupPipe, usesNotify, pidPipe, notifyMainSender, notifyInitReceiver)
         } catch (t: Throwable) {
             fprintf(stderr, "exec: %s\n", t.message ?: "unknown error")
         }
         _exit(1)
     }
 
-    // Parent: forward the seccomp notify FD if the profile uses one, then
-    // reap the child and propagate the exit code.
+    // Parent: attach the child to the container's cgroup and raise its hard
+    // rlimits, both from the host context — the host cgroupfs view is gone
+    // after the child's setns(mnt), raising a hard limit needs
+    // CAP_SYS_RESOURCE in the initial user ns (gone after setns(user)), and
+    // doing it here rather than in the child keeps cgroupfs writes, logging
+    // and exception machinery out of the forked child of this multithreaded
+    // process, where the Kotlin runtime is not fork-safe.
     nsFds.values.forEach { close(it) }
+    close(setupPipe[0])
+    val setupOk =
+        try {
+            cgroup.addProcess(pid, cgroupPath)
+            syscall.raiseRlimits(pid, spec.process.rlimits)
+            true
+        } catch (e: Exception) {
+            Logger.error("exec: failed to set up child (cgroup $cgroupPath): ${e.message}")
+            false
+        }
+    if (setupOk) {
+        memScoped {
+            val goByte = alloc<ByteVar>()
+            goByte.value = 1
+            if (write(setupPipe[1], goByte.ptr, 1u) != 1L) {
+                Logger.error("exec: failed to signal child (errno=$errno)")
+            }
+        }
+    }
+    close(setupPipe[1])
+
+    // Forward the seccomp notify FD if the profile uses one, then reap the
+    // child and propagate the exit code.
     if (usesNotify) {
         close(pidPipe[1])
         notifyMainSender?.close()
@@ -200,32 +245,40 @@ fun exec(
 }
 
 /**
- * Child process body: join cgroup and namespaces, fork the grandchild that
- * becomes the user command, wait for it and propagate its exit code.
+ * Child process body: wait for the parent's cgroup/rlimit setup, join the
+ * namespaces, fork the grandchild that becomes the user command, wait for
+ * it and propagate its exit code.
  * Runs single-threaded (fresh fork); exits via _exit only.
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun runExecChild(
     syscall: Syscall,
-    cgroup: Cgroup,
-    cgroupPath: String,
     spec: Spec,
     args: List<String>,
     joins: List<NsJoin>,
     nsFds: Map<String, Int>,
+    setupPipe: IntArray,
     usesNotify: Boolean,
     pidPipe: IntArray,
     notifyMainSender: MainSender?,
     notifyInitReceiver: InitReceiver?,
 ) {
     if (usesNotify) close(pidPipe[0])
+    close(setupPipe[1])
 
-    // Join the container's cgroup BEFORE any setns: the write needs the host
-    // cgroupfs view (gone after setns(mnt)) and host-side privileges (gone
-    // after setns(user)). cgroup.procs migration moves only the named
-    // process, so this must also happen before forking the grandchild, which
-    // then inherits the membership.
-    cgroup.addProcess(0, cgroupPath)
+    // Block until the parent has attached us to the container's cgroup and
+    // raised our hard rlimits (host-context work — see the parent). Both are
+    // inherited at fork, so they must be in place before the grandchild
+    // fork below. One byte = go; EOF = the parent failed and we must not
+    // run the command outside the container's limits.
+    memScoped {
+        val goByte = alloc<ByteVar>()
+        if (read(setupPipe[0], goByte.ptr, 1u) != 1L) {
+            fprintf(stderr, "exec: parent failed to set up cgroup/rlimits\n")
+            _exit(1)
+        }
+    }
+    close(setupPipe[0])
 
     // Join order matters: user first (grants the capabilities inside the
     // container's userns that authorize the remaining joins), pid last.
@@ -315,7 +368,10 @@ private fun runExecGrandchild(
 
     // rlimits dead-last: a low RLIMIT_AS applied any earlier could abort the
     // Kotlin/Native runtime itself before execve. The user process picks the
-    // limits up across exec.
+    // limits up across exec. Raising a hard limit would EPERM here (that
+    // needs CAP_SYS_RESOURCE in the initial user ns), which is why the
+    // parent already raised them via prlimit from the host context; this
+    // pass only sets the exact spec values, which is unprivileged.
     syscall.applyRlimits(0, spec.process.rlimits)
 
     memScoped {

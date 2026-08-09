@@ -70,6 +70,20 @@ interface Syscall {
         rlimits: List<POSIXRlimit>?,
     )
 
+    /**
+     * Raise the hard limits of [pid] to the spec'd values where the spec
+     * asks for MORE than the process currently has; everything else is left
+     * untouched. Raising a hard limit requires CAP_SYS_RESOURCE in the
+     * initial user namespace, so this must run from the host context —
+     * lowering (and setting soft values) needs no privilege and is left to
+     * the target process itself via [applyRlimits] right before execve.
+     * Best-effort: failures are logged, not thrown.
+     */
+    fun raiseRlimits(
+        pid: Int,
+        rlimits: List<POSIXRlimit>?,
+    )
+
     fun setNoNewPrivileges()
 
     fun closeRange(preserveFds: Int = 0)

@@ -129,6 +129,13 @@ class FakeSyscall : Syscall {
         calls += "applyRlimits(pid=$pid, rlimits=${rlimits?.map { it.type }})"
     }
 
+    override fun raiseRlimits(
+        pid: Int,
+        rlimits: List<POSIXRlimit>?,
+    ) {
+        calls += "raiseRlimits(pid=$pid, rlimits=${rlimits?.map { it.type }})"
+    }
+
     override fun setNoNewPrivileges() {
         calls += "setNoNewPrivileges()"
     }
