@@ -10,6 +10,7 @@ import namespace.calculateCloneFlags
 import platform.linux.SYS_clone
 import platform.posix.*
 import process.runMainProcess
+import rootfs.validateSysctls
 import spec.loadSpec
 import state.containerExists
 import state.getContainerDir
@@ -72,6 +73,17 @@ fun create(
             }
 
         Logger.debug("loaded spec version ${spec.ociVersion}")
+
+        // Fail-closed sysctl validation: reject any key that is not on the
+        // OCI/runc allowlist, or that requires a namespace the spec does not
+        // create (e.g. net.* without a new network namespace).
+        val sysctlErrors = validateSysctls(spec.linux?.sysctl, spec.linux?.namespaces)
+        if (sysctlErrors.isNotEmpty()) {
+            for (err in sysctlErrors) {
+                Logger.error(err)
+            }
+            exit(1)
+        }
 
         // Get absolute path of rootfs
         val rootfsPath =
