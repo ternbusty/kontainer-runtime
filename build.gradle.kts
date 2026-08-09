@@ -39,6 +39,18 @@ val generateBuildConfig =
         doLast {
             val outputDir = buildConfigDir.get().asFile
             outputDir.mkdirs()
+            val projectVersion = project.version.toString()
+            val gitCommit =
+                try {
+                    providers
+                        .exec { commandLine("git", "rev-parse", "--short", "HEAD") }
+                        .standardOutput
+                        .asText
+                        .get()
+                        .trim()
+                } catch (_: Exception) {
+                    "unknown"
+                }
             file("${outputDir.path}/BuildConfig.kt").writeText(
                 """
                 package config
@@ -49,6 +61,9 @@ val generateBuildConfig =
                  */
                 object BuildConfig {
                     const val DEFAULT_LOG_LEVEL = "$defaultLogLevel"
+                    const val VERSION = "$projectVersion"
+                    const val COMMIT = "$gitCommit"
+                    const val OCI_SPEC_VERSION = "1.0.0"
                 }
                 """.trimIndent(),
             )

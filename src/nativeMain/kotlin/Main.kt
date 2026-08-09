@@ -4,6 +4,7 @@ import channel.SocketInitReceiver
 import channel.SocketMainSender
 import channel.SocketNotifyListener
 import command.*
+import config.BuildConfig
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.toKString
@@ -520,6 +521,20 @@ fun main(args: Array<String>): Unit =
         // We split the trailing command args out before kotlinx-cli sees them.
         val execCommandArgs = mutableListOf<String>()
 
+        class SpecCommand : Subcommand("spec", "Create a new specification file") {
+            val bundle by option(
+                ArgType.String,
+                shortName = "b",
+                fullName = "bundle",
+                description = "Bundle path",
+            ).default(".")
+
+            override fun execute() {
+                applyGlobalOptions()
+                spec(bundle)
+            }
+        }
+
         class ExecCommand : Subcommand("exec", "Execute a process in a running container") {
             val processSpec by option(
                 ArgType.String,
@@ -566,7 +581,16 @@ fun main(args: Array<String>): Unit =
             EventsCommand(),
             PsCommand(),
             ExecCommand(),
+            SpecCommand(),
         )
+
+        // Handle -v / --version before the CLI parser (runc compatibility)
+        if (args.size == 1 && (args[0] == "-v" || args[0] == "--version")) {
+            println("kontainer-runtime version ${BuildConfig.VERSION}")
+            println("commit: ${BuildConfig.COMMIT}")
+            println("spec: ${BuildConfig.OCI_SPEC_VERSION}")
+            return
+        }
 
         if (args.isEmpty()) {
             println("Usage: kontainer-runtime [global-options] <command> [options] <container-id> [args...]")
