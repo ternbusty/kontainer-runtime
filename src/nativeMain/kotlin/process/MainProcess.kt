@@ -253,7 +253,10 @@ private fun runMainProcessInternal(
             }
         }
 
-        exit(0)
+        // Return control to the caller. When invoked standalone
+        // (create subcommand), main() returns and the process exits
+        // normally.  When invoked from run(), the caller continues
+        // with start + optional wait.
     }
 
 /**

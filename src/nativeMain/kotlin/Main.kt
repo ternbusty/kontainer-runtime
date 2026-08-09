@@ -9,6 +9,7 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.toKString
 import kotlinx.cli.*
 import logger.Logger
+import platform.posix._exit
 import platform.posix.exit
 import platform.posix.getenv
 import platform.posix.getpid
@@ -261,6 +262,10 @@ fun main(args: Array<String>): Unit =
             override fun execute() {
                 applyGlobalOptions()
                 create(syscall, fs, cgroup, rootPath, containerId, bundle, pidFile, consoleSocket)
+                // create() returns normally so run() can chain start().
+                // Standalone create must use _exit to bypass the Kotlin/Native
+                // runtime shutdown, which can deadlock after clone().
+                _exit(0)
             }
         }
 
@@ -299,6 +304,7 @@ fun main(args: Array<String>): Unit =
             override fun execute() {
                 applyGlobalOptions()
                 run(syscall, fs, cgroup, rootPath, containerId, bundle, pidFile, consoleSocket, detach)
+                _exit(0)
             }
         }
 

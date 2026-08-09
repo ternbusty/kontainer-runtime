@@ -264,6 +264,7 @@ fun create(
                     initSender = initSender,
                     initReceiver = initReceiver,
                 )
+                Logger.debug("runMainProcess returned, create() completing")
             }
         }
     }
