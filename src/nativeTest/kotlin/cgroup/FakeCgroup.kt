@@ -20,6 +20,13 @@ class FakeCgroup : Cgroup {
         calls += "setup(pid=$pid, cgroupPath=$cgroupPath, hasResources=${resources != null})"
     }
 
+    override fun addProcess(
+        cgroupPath: String,
+        pid: Int,
+    ) {
+        calls += "addProcess(cgroupPath=$cgroupPath, pid=$pid)"
+    }
+
     override fun cleanup(cgroupPath: String?) {
         calls += "cleanup(cgroupPath=$cgroupPath)"
     }

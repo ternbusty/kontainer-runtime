@@ -244,7 +244,7 @@ fun main(args: Array<String>): Unit =
             ).vararg()
 
             override fun execute() {
-                exec(fs, rootPath, containerId, processArgs)
+                exec(syscall, fs, cgroup, rootPath, containerId, processArgs)
             }
         }
 

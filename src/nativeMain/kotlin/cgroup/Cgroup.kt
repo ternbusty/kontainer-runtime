@@ -24,6 +24,16 @@ interface Cgroup {
     )
 
     /**
+     * Write [pid] into cgroup.procs of the existing cgroup at [cgroupPath]
+     * (relative to the cgroup root), subjecting it to the cgroup's resource
+     * limits. Throws if the cgroup does not exist or the write fails.
+     */
+    fun addProcess(
+        cgroupPath: String,
+        pid: Int,
+    )
+
+    /**
      * Best-effort removal of the cgroup directory at [cgroupPath]. Logs a warning
      * on failure (e.g. cgroup not empty) and never throws.
      */

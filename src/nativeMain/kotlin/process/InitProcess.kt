@@ -15,7 +15,6 @@ import rootfs.applySysctls
 import rootfs.pivotRoot
 import rootfs.prepareRootfs
 import rootfs.setRootfsReadonly
-import seccomp.initializeSeccomp
 import spec.Spec
 import syscall.Syscall
 
@@ -162,120 +161,13 @@ private fun initProcessInternal(
                 0
             }
 
-        // Apply rlimits to self. The main process also tries this against stage-1's
-        // PID, but stage-1 may have already cloned stage-2 by then, so stage-2 would
-        // inherit the host's defaults instead. Setting them here, on the init process
-        // itself, guarantees the container sees the spec'd values. Done while still
-        // root so RLIMIT_NICE / RLIMIT_NOFILE etc. can be raised if requested.
-        syscall.applyRlimits(0, spec.process.rlimits)
-
-        // Set no_new_privileges if specified.
-        // Prevents the process from gaining new privileges through execve. Must be set
-        // before applying capabilities.
-        if (spec.process.noNewPrivileges == true) {
-            syscall.setNoNewPrivileges()
-        }
-
-        // Load seccomp filter BEFORE dropping capabilities. seccomp(2) needs
-        // CAP_SYS_ADMIN unless PR_SET_NO_NEW_PRIVS is set, and an OCI default
-        // spec specifies seccomp without noNewPrivileges (so we cannot rely on
-        // NNP). Installing the filter here, while we still hold CAP_SYS_ADMIN,
-        // avoids the EPERM. The filter is inherited across the later capset /
-        // setuid / execve, so the container process runs under it.
-        spec.linux?.seccomp?.let { seccomp ->
-            val notifyFd = initializeSeccomp(seccomp)
+        // Drop privileges (rlimits, NNP, seccomp, capabilities, uid/gid, LSM
+        // labels). rlimits are applied here as well as by the main process:
+        // stage-1 may have already cloned stage-2 by the time main applies them
+        // against stage-1's PID, so setting them on the init process itself
+        // guarantees the container sees the spec'd values.
+        applyProcessSecurity(syscall, spec) { notifyFd ->
             syncSeccompNotifyFd(notifyFd, mainSender, initReceiver)
-        }
-
-        // Capability ordering:
-        // 1. Apply bounding set (root privilege required)
-        // 2. Set PR_SET_KEEPCAPS to preserve capabilities across setuid
-        // 3. setgroups/setgid/setuid
-        // 4. Clear PR_SET_KEEPCAPS
-        // 5. Apply effective/permitted/inheritable/ambient capabilities (as non-root user)
-        spec.process.capabilities?.let { capabilities ->
-            capability.applyBoundingSet(syscall, capabilities)
-            capability.setKeepCaps(syscall)
-        }
-
-        // Set additional groups (supplementary groups) before dropping privileges.
-        // Note: /proc/self/setgroups may be "deny" in unprivileged user namespaces (Linux 3.19+).
-        spec.process.user.additionalGids?.let { additionalGids ->
-            if (additionalGids.isNotEmpty()) {
-                Logger.debug("setting ${additionalGids.size} additional groups")
-                syscall.setAdditionalGroups(additionalGids)
-            }
-        }
-
-        // setgid must be called before setuid (once non-root, we can't setgid).
-        val targetUid = spec.process.user.uid
-        val targetGid = spec.process.user.gid
-
-        if (syscall.setgid(targetGid) != 0) {
-            perror("setgid")
-            Logger.error("Failed to set GID to $targetGid")
-            throw Exception("Failed to set GID to $targetGid")
-        }
-        if (syscall.setuid(targetUid) != 0) {
-            perror("setuid")
-            Logger.error("Failed to set UID to $targetUid")
-            throw Exception("Failed to set UID to $targetUid")
-        }
-        Logger.debug("set UID=$targetUid GID=$targetGid for container process")
-
-        // Apply remaining capabilities after setuid
-        spec.process.capabilities?.let { capabilities ->
-            capability.clearKeepCaps(syscall)
-            capability.applyCapabilities(syscall, capabilities)
-        }
-
-        // Apply AppArmor profile / SELinux exec context. Both are written to
-        // /proc/self/attr/* files and take effect on the next execve.
-        // - AppArmor: /proc/self/attr/apparmor/exec (newer) or .../exec (older);
-        //   format is "exec <profile>" or "changeprofile <profile>".
-        // - SELinux: /proc/self/attr/exec; format is the raw context label.
-        // Failure is logged but non-fatal — the LSM may not be loaded.
-        spec.process.apparmorProfile?.let { profile ->
-            val payload = "exec $profile"
-            val written = listOf(
-                "/proc/self/attr/apparmor/exec",
-                "/proc/self/attr/exec",
-            ).any { path ->
-                try {
-                    val fd = open(path, O_WRONLY)
-                    if (fd < 0) return@any false
-                    val bytes = payload.encodeToByteArray()
-                    val ok =
-                        bytes.usePinned { p ->
-                            write(fd, p.addressOf(0), bytes.size.toULong()).toInt() == bytes.size
-                        }
-                    close(fd)
-                    ok
-                } catch (_: Throwable) {
-                    false
-                }
-            }
-            if (!written) Logger.warn("failed to set apparmor profile '$profile'")
-            else Logger.debug("staged apparmor exec profile: $profile")
-        }
-        spec.process.selinuxLabel?.let { label ->
-            try {
-                val fd = open("/proc/self/attr/exec", O_WRONLY)
-                if (fd < 0) {
-                    Logger.warn("failed to open /proc/self/attr/exec for SELinux label (errno=$errno)")
-                } else {
-                    val bytes = label.encodeToByteArray()
-                    bytes.usePinned { p ->
-                        if (write(fd, p.addressOf(0), bytes.size.toULong()).toInt() != bytes.size) {
-                            Logger.warn("short write of SELinux label '$label'")
-                        }
-                    }
-                    close(fd)
-                    Logger.debug("staged SELinux exec label: $label")
-                }
-            } catch (e: Throwable) {
-                Logger.warn("failed to set SELinux label: ${e.message}")
-            }
         }
 
         mainSender.initReady()

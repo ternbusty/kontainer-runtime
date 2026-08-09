@@ -80,6 +80,21 @@ class CgroupV2(
         }
     }
 
+    override fun addProcess(
+        cgroupPath: String,
+        pid: Int,
+    ) {
+        val normalizedPath = cgroupPath.removePrefix("/")
+        val procsPath = "$CGROUP_ROOT/$normalizedPath/$CGROUP_PROCS"
+        try {
+            fs.writeTextFile(procsPath, pid.toString())
+            Logger.debug("added PID $pid to cgroup $normalizedPath")
+        } catch (e: Exception) {
+            Logger.error("failed to add PID $pid to cgroup $normalizedPath: ${e.message}")
+            throw Exception("Failed to add PID to cgroup", e)
+        }
+    }
+
     override fun cleanup(cgroupPath: String?) {
         if (cgroupPath == null) {
             Logger.debug("no cgroup path specified, skipping cleanup")
@@ -158,7 +173,7 @@ class CgroupV2(
         limit: Long,
     ) {
         // cgroup v2 file name: hugetlb.<size>.max (e.g. hugetlb.2MB.max).
-        val fileName = "hugetlb.${pageSize}.max"
+        val fileName = "hugetlb.$pageSize.max"
         val value = if (limit <= 0) "max" else limit.toString()
         writeCgroupFile("$cgroupPath/$fileName", value, fileName)
     }
