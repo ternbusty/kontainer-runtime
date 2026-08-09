@@ -36,10 +36,58 @@ To start the container
 sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe start test
 ```
 
+To create and start the container in a single step
+
+```bash
+sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe run --bundle test-bundle test
+```
+
 To get the status of the container
 
 ```bash
 sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe state test
+```
+
+To list all containers
+
+```bash
+sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe list
+```
+
+To pause the container
+
+```bash
+sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe pause test
+```
+
+To resume the container
+
+```bash
+sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe resume test
+```
+
+To update the container's resource limits
+
+```bash
+sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe update --memory 134217728 --pids-limit 100 test
+```
+
+To get a snapshot of the container's resource usage
+
+```bash
+sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe events --stats test
+```
+
+To list processes in the container
+
+```bash
+sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe ps test
+```
+
+To execute a process in the container
+
+```bash
+sudo ./build/bin/linuxX64/debugExecutable/kontainer-runtime.kexe exec test -- sh -c "echo hello"
 ```
 
 To stop the container
