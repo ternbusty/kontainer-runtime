@@ -31,7 +31,20 @@ jobs:
 
       - name: Add arm64 architecture
         if: matrix.targetArch == 'aarch64'
-        run: sudo dpkg --add-architecture arm64
+        run: |
+          sudo dpkg --add-architecture arm64
+          # The runner's default sources only carry amd64.  Pin them so apt
+          # does not try to fetch arm64 from mirrors that lack it, and add
+          # ports.ubuntu.com for the arm64 packages we actually need.
+          sudo sed -i '/^Types: deb$/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          printf '%s\n' \
+            "Types: deb" \
+            "Architectures: arm64" \
+            "URIs: http://ports.ubuntu.com/ubuntu-ports" \
+            "Suites: noble noble-updates noble-security noble-backports" \
+            "Components: main universe restricted multiverse" \
+            "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg" \
+          | sudo tee /etc/apt/sources.list.d/arm64.sources >/dev/null
 
       - name: Install dependencies
         run: |

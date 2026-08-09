@@ -160,27 +160,9 @@ kotlin {
             compileTaskProvider.configure {
                 compilerOptions.freeCompilerArgs.addAll(
                     "-linker-option",
-                    "-Wl,--as-needed",
+                    "-L/usr/lib/$triple",
                     "-linker-option",
                     "-lseccomp",
-                    // Replace K/N's bundled glibc-2.19 sysroot with a hybrid
-                    // that contains the host's glibc-2.39 libraries but the
-                    // original GCC support files (crtbegin.o / libgcc.a).
-                    // On glibc 2.34+ libpthread/libdl/librt are empty stubs
-                    // (symbols merged into libc), so --as-needed drops them.
-                    "-Xoverride-konan-properties=" +
-                        "targetSysRoot.linux_x64=/tmp/kn-hybrid/x86_64-unknown-linux-gnu/sysroot;" +
-                        // Keep lstdc++ static.  Drop -ldl/-lpthread from the
-                        // K/N flags — their symbols live in libc on 2.34+.
-                        "linkerKonanFlags.linux_x64=" +
-                        "-Bstatic -lstdc++ -Bdynamic " +
-                        "--defsym __cxa_demangle=Konan_cxa_demangle --gc-sections;" +
-                        // Static libgcc + libgcc_eh absorb the unwinding
-                        // symbols; --as-needed drops libgcc_s if nothing
-                        // else needs it.
-                        "linkerGccFlags=" +
-                        "-lgcc -lgcc_eh --as-needed -lgcc_s --no-as-needed " +
-                        "-lc -lgcc -lgcc_eh --as-needed -lgcc_s --no-as-needed",
                 )
             }
         }
