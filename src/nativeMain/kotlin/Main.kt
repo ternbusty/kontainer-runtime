@@ -17,6 +17,88 @@ import spec.loadSpec
 import syscall.LinuxSyscall
 import utils.RealFileSystem
 
+/** Exec-option flags that consume the next argument as a value. */
+private val EXEC_VALUE_FLAGS = setOf("-p", "--process", "--pid-file")
+
+/** Exec-option flags that are boolean (no following value). */
+private val EXEC_BOOL_FLAGS = setOf("-d", "--detach")
+
+/**
+ * Split trailing command arguments out of an `exec` invocation so that
+ * kotlinx-cli never sees them.
+ *
+ * The OCI exec grammar is:
+ *
+ *     runtime [global-opts] exec [exec-opts] <container-id> [--] [cmd [arg…]]
+ *
+ * Everything after the container ID (the first positional arg inside the
+ * exec subcommand) is the command to run inside the container.  A literal
+ * `--` may precede the command to guard against arguments that look like
+ * flags (e.g. `sh -c '…'`).
+ *
+ * Returns a new args array with the command args removed; the removed
+ * args are appended to [commandArgsOut].
+ */
+internal fun preprocessExecArgs(
+    args: Array<String>,
+    commandArgsOut: MutableList<String>,
+): Array<String> {
+    val execIdx = args.indexOf("exec")
+    if (execIdx < 0) return args
+
+    // Everything up to and including "exec" passes through unchanged.
+    val kept = args.slice(0..execIdx).toMutableList()
+
+    var i = execIdx + 1
+    var foundContainerId = false
+
+    while (i < args.size) {
+        if (foundContainerId) {
+            commandArgsOut.add(args[i])
+            i++
+            continue
+        }
+
+        val a = args[i]
+
+        if (a == "--") {
+            // Explicit end-of-options; everything after is command args.
+            foundContainerId = true
+            i++
+            continue
+        }
+
+        if (a in EXEC_VALUE_FLAGS) {
+            kept.add(a)
+            i++
+            if (i < args.size) {
+                kept.add(args[i])
+                i++
+            }
+        } else if (a in EXEC_BOOL_FLAGS) {
+            kept.add(a)
+            i++
+        } else if (a.startsWith("-")) {
+            // Unknown flag (likely a global option like --debug placed
+            // after the subcommand); pass through to kotlinx-cli.
+            kept.add(a)
+            i++
+        } else {
+            // First positional = container ID
+            kept.add(a)
+            foundContainerId = true
+            i++
+            // Skip an optional `--` separator between the container ID and
+            // the command; everything after it is collected below.
+            if (i < args.size && args[i] == "--") {
+                i++
+            }
+        }
+    }
+
+    return kept.toTypedArray()
+}
+
 /**
  * Kontainer Runtime - Container runtime written in Kotlin/Native
  *
@@ -255,20 +337,41 @@ fun main(args: Array<String>): Unit =
             }
         }
 
+        // Exec needs special argv handling: everything after the container ID
+        // is the command to run inside the container, but kotlinx-cli would try
+        // to parse dash-prefixed args (e.g. `sh -c '...'`) as runtime flags.
+        // We split the trailing command args out before kotlinx-cli sees them.
+        val execCommandArgs = mutableListOf<String>()
+
         class ExecCommand : Subcommand("exec", "Execute a process in a running container") {
+            val processSpec by option(
+                ArgType.String,
+                shortName = "p",
+                fullName = "process",
+                description = "Path to a process.json file with the exec process spec",
+            )
+
+            val pidFile by option(
+                ArgType.String,
+                fullName = "pid-file",
+                description = "Path to write the exec'd process PID",
+            )
+
+            val detach by option(
+                ArgType.Boolean,
+                shortName = "d",
+                fullName = "detach",
+                description = "Detach from the exec'd process (do not wait for exit)",
+            ).default(false)
+
             val containerId by argument(
                 ArgType.String,
                 description = "Container ID",
             )
 
-            val processArgs by argument(
-                ArgType.String,
-                description = "Command and arguments to run in the container",
-            ).vararg()
-
             override fun execute() {
                 applyGlobalOptions()
-                exec(syscall, fs, cgroup, rootPath, containerId, processArgs)
+                exec(syscall, fs, cgroup, rootPath, containerId, execCommandArgs, processSpec, pidFile, detach)
             }
         }
 
@@ -298,12 +401,15 @@ fun main(args: Array<String>): Unit =
             println("  kill <container-id> <signal>                                       Send a signal to a container")
             println("  delete [--force|-f] <container-id>                                 Delete a container")
             println("  ps [--format|-f <json|table>] <container-id>                       List processes in a container")
-            println("  exec <container-id> <command> [args...]                            Run a process in a running container")
+            println("  exec [-p <process.json>] [--pid-file <path>] [-d] <container-id> [--] [command [args...]]")
+            println("                                                                         Run a process in a running container")
             exit(1)
         }
 
+        val effectiveArgs = preprocessExecArgs(args, execCommandArgs)
+
         try {
-            parser.parse(args)
+            parser.parse(effectiveArgs)
         } catch (e: IllegalStateException) {
             Logger.error("error: ${e.message}")
             exit(1)

@@ -18,6 +18,7 @@ import process.applyProcessSecurity
 import process.syncSeccompNotifyFd
 import seccomp.seccompUsesNotify
 import seccomp.sendToSeccompListener
+import spec.Process
 import spec.Spec
 import spec.loadSpec
 import state.ContainerStatus
@@ -26,6 +27,7 @@ import state.loadState
 import state.refreshStatus
 import syscall.Syscall
 import utils.FileSystem
+import utils.JsonCodec
 
 /**
  * Exec command — run an additional process inside a running container by
@@ -38,9 +40,13 @@ import utils.FileSystem
  * AppArmor/SELinux labels, spec env and cwd. It is also moved into the
  * container's cgroup so resource limits apply.
  *
- * Positional argv only; no separate process.json, no TTY, and no --user /
- * --cwd / --env overrides yet — the values come from the bundle's
- * config.json.
+ * Supports `--process` (`-p`) to load the process spec from a JSON file
+ * (the OCI "process.json" convention), or positional command args to build
+ * a process spec from the bundle's config.json with overridden args.
+ * `--pid-file` writes the exec'd process's host-perspective PID.
+ * `--detach` (`-d`) returns immediately instead of waiting for the exec'd
+ * process to exit.  No TTY and no --user / --cwd / --env overrides yet —
+ * non-args values come from process.json or the bundle's config.json.
  *
  * Process topology (three processes, mirroring runc's exec shape):
  * - parent: multithreaded runtime CLI. Loads state/spec, opens the ns fds,
@@ -69,9 +75,16 @@ fun exec(
     rootPath: String,
     containerId: String,
     args: List<String>,
+    processSpecPath: String? = null,
+    pidFilePath: String? = null,
+    detach: Boolean = false,
 ) {
-    if (args.isEmpty()) {
-        Logger.error("exec: at least one command argument is required")
+    if (processSpecPath != null && args.isNotEmpty()) {
+        Logger.error("exec: --process cannot be combined with a positional command")
+        exit(1)
+    }
+    if (processSpecPath == null && args.isEmpty()) {
+        Logger.error("exec: a command is required (positional args or --process)")
         exit(1)
     }
 
@@ -95,8 +108,10 @@ fun exec(
             return
         }
 
-    // The bundle's config.json is the source of the process profile (user,
-    // capabilities, seccomp, env, cwd, ...) and of the namespace list.
+    // The bundle's config.json is the authoritative source of the namespace
+    // list and the base process profile.  When --process is given, the
+    // process profile comes from the JSON file instead — the bundle spec
+    // is still needed for namespaces, seccomp architecture, etc.
     val spec =
         try {
             loadSpec(fs, "${state.bundle}/config.json")
@@ -105,6 +120,29 @@ fun exec(
             exit(1)
             return
         }
+
+    val execProcess =
+        if (processSpecPath != null) {
+            try {
+                val p = JsonCodec.loadFromFile<Process>(fs, processSpecPath)
+                if (p.args.isEmpty()) {
+                    Logger.error("exec: process.json has no args")
+                    exit(1)
+                    return
+                }
+                p
+            } catch (e: Exception) {
+                Logger.error("exec: failed to load process spec from $processSpecPath: ${e.message}")
+                exit(1)
+                return
+            }
+        } else {
+            spec.process.copy(args = args)
+        }
+
+    // Build a spec overlay that carries the exec process profile but
+    // preserves the bundle's linux/namespace/seccomp configuration.
+    val execSpec = spec.copy(process = execProcess)
 
     // The resolved cgroup path was persisted at create time; without it we
     // cannot place the exec'd process under the container's resource limits.
@@ -152,19 +190,15 @@ fun exec(
         }
     }
 
-    // When the seccomp profile uses SCMP_ACT_NOTIFY, the notify FD must reach
-    // the OCI listener socket — a HOST path the grandchild can no longer
-    // connect to once inside the container's mount namespace. Reuse the
-    // create path's machinery: the grandchild ships the FD over a channel
-    // (like init does to the main process) and this parent forwards it.
-    // The pid pipe carries the grandchild's host-perspective pid, which the
-    // listener protocol needs in the container state JSON.
-    val usesNotify = spec.linux?.seccomp?.let { seccompUsesNotify(it) } ?: false
+    // The seccomp listener protocol (SCMP_ACT_NOTIFY) needs the grandchild's
+    // host-perspective PID; pid-file also needs it. The pipe is therefore
+    // always created — the child writes the grandchild PID, the parent reads
+    // it after the fork.
+    val usesNotify = execSpec.linux?.seccomp?.let { seccompUsesNotify(it) } ?: false
     var notifyMainSender: MainSender? = null
     var notifyMainReceiver: MainReceiver? = null
     var notifyInitSender: InitSender? = null
     var notifyInitReceiver: InitReceiver? = null
-    val pidPipe = IntArray(2)
     if (usesNotify) {
         val (ms, mr) = mainChannel()
         val (is_, ir) = initChannel()
@@ -172,11 +206,12 @@ fun exec(
         notifyMainReceiver = mr
         notifyInitSender = is_
         notifyInitReceiver = ir
-        pidPipe.usePinned { pinned ->
-            if (pipe(pinned.addressOf(0)) != 0) {
-                Logger.error("exec: pipe() failed (errno=$errno)")
-                exit(1)
-            }
+    }
+    val pidPipe = IntArray(2)
+    pidPipe.usePinned { pinned ->
+        if (pipe(pinned.addressOf(0)) != 0) {
+            Logger.error("exec: pipe() failed (errno=$errno)")
+            exit(1)
         }
     }
 
@@ -190,7 +225,7 @@ fun exec(
         // the fork boundary — the runtime's default handler would exit(),
         // flushing stdio duplicated from the parent; only _exit() here.
         try {
-            runExecChild(syscall, spec, args, joins, nsFds, setupPipe, usesNotify, pidPipe, notifyMainSender, notifyInitReceiver)
+            runExecChild(syscall, execSpec, joins, nsFds, setupPipe, usesNotify, pidPipe, notifyMainSender, notifyInitReceiver)
         } catch (t: Throwable) {
             fprintf(stderr, "exec: %s\n", t.message ?: "unknown error")
         }
@@ -209,7 +244,7 @@ fun exec(
     val setupOk =
         try {
             cgroup.addProcess(pid, cgroupPath)
-            syscall.raiseRlimits(pid, spec.process.rlimits)
+            syscall.raiseRlimits(pid, execSpec.process.rlimits)
             true
         } catch (e: Exception) {
             Logger.error("exec: failed to set up child (cgroup $cgroupPath): ${e.message}")
@@ -226,17 +261,40 @@ fun exec(
     }
     close(setupPipe[1])
 
-    // Forward the seccomp notify FD if the profile uses one, then reap the
-    // child and propagate the exit code.
+    // Read the grandchild's host-perspective PID from the child.
+    close(pidPipe[1])
+    val grandchildPid =
+        memScoped {
+            val buf = alloc<IntVar>()
+            if (read(pidPipe[0], buf.ptr, sizeOf<IntVar>().toULong()) == sizeOf<IntVar>()) {
+                buf.value
+            } else {
+                -1
+            }
+        }
+    close(pidPipe[0])
+
+    if (pidFilePath != null && grandchildPid > 0) {
+        try {
+            fs.writeTextFile(pidFilePath, grandchildPid.toString())
+        } catch (e: Exception) {
+            Logger.warn("exec: failed to write pid file $pidFilePath: ${e.message}")
+        }
+    }
+
+    // Forward the seccomp notify FD if the profile uses one.
     if (usesNotify) {
-        close(pidPipe[1])
         notifyMainSender?.close()
         notifyInitReceiver?.close()
-        forwardSeccompNotify(spec, state, containerId, pidPipe[0], notifyMainReceiver!!, notifyInitSender!!)
-        close(pidPipe[0])
+        forwardSeccompNotify(execSpec, state, containerId, grandchildPid, notifyMainReceiver!!, notifyInitSender!!)
         notifyMainReceiver.close()
         notifyInitSender.close()
     }
+
+    if (detach) {
+        exit(0)
+    }
+
     memScoped {
         val status = alloc<IntVar>()
         waitpid(pid, status.ptr, 0)
@@ -254,7 +312,6 @@ fun exec(
 private fun runExecChild(
     syscall: Syscall,
     spec: Spec,
-    args: List<String>,
     joins: List<NsJoin>,
     nsFds: Map<String, Int>,
     setupPipe: IntArray,
@@ -263,7 +320,7 @@ private fun runExecChild(
     notifyMainSender: MainSender?,
     notifyInitReceiver: InitReceiver?,
 ) {
-    if (usesNotify) close(pidPipe[0])
+    close(pidPipe[0])
     close(setupPipe[1])
 
     // Block until the parent has attached us to the container's cgroup and
@@ -296,25 +353,25 @@ private fun runExecChild(
     val grandchild = fork()
     if (grandchild < 0) _exit(1)
     if (grandchild == 0) {
+        close(pidPipe[1])
         try {
-            runExecGrandchild(syscall, spec, args, notifyMainSender, notifyInitReceiver)
+            runExecGrandchild(syscall, spec, notifyMainSender, notifyInitReceiver)
         } catch (t: Throwable) {
             fprintf(stderr, "exec: setup failed: %s\n", t.message ?: "unknown error")
         }
         _exit(1)
     }
 
-    // Report the grandchild's pid to the parent for the seccomp listener
-    // protocol. This process never joined the pid namespace itself (setns
-    // only affects children), so fork() returned the host-perspective pid.
-    if (usesNotify) {
-        memScoped {
-            val gcPid = alloc<IntVar>()
-            gcPid.value = grandchild
-            write(pidPipe[1], gcPid.ptr, sizeOf<IntVar>().toULong())
-        }
-        close(pidPipe[1])
+    // Report the grandchild's host-perspective PID to the parent. This is
+    // always sent (used for pid-file and seccomp notify), not only when
+    // usesNotify is set.  setns only affects children, so fork() returned
+    // the host-perspective pid.
+    memScoped {
+        val gcPid = alloc<IntVar>()
+        gcPid.value = grandchild
+        write(pidPipe[1], gcPid.ptr, sizeOf<IntVar>().toULong())
     }
+    close(pidPipe[1])
     notifyMainSender?.close()
     notifyInitReceiver?.close()
 
@@ -335,10 +392,10 @@ private fun runExecChild(
 private fun runExecGrandchild(
     syscall: Syscall,
     spec: Spec,
-    args: List<String>,
     notifyMainSender: MainSender?,
     notifyInitReceiver: InitReceiver?,
 ) {
+    val args = spec.process.args
     // Unlike init (which warns for bundle compatibility), a cwd that doesn't
     // exist inside the container is a hard error for exec — runc parity.
     val cwd = spec.process.cwd
@@ -395,22 +452,13 @@ private fun forwardSeccompNotify(
     spec: Spec,
     state: State,
     containerId: String,
-    pidPipeReadFd: Int,
+    grandchildPid: Int,
     mainReceiver: MainReceiver,
     initSender: InitSender,
 ) {
     try {
         val notifyFd = mainReceiver.waitForSeccompRequest()
         Logger.debug("exec: received seccomp notify FD: $notifyFd")
-
-        val gcPid =
-            memScoped {
-                val buf = alloc<IntVar>()
-                if (read(pidPipeReadFd, buf.ptr, sizeOf<IntVar>().toULong()) != sizeOf<IntVar>()) {
-                    throw Exception("failed to read exec'd process pid from child")
-                }
-                buf.value
-            }
 
         val listenerPath = spec.linux?.seccomp?.listenerPath
         if (listenerPath != null) {
@@ -419,7 +467,7 @@ private fun forwardSeccompNotify(
                     ociVersion = spec.ociVersion,
                     id = containerId,
                     status = ContainerStatus.RUNNING,
-                    pid = gcPid,
+                    pid = grandchildPid,
                     bundle = state.bundle,
                     annotations = spec.annotations,
                 )
