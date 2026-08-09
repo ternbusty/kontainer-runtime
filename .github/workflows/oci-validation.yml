@@ -39,7 +39,7 @@ jobs:
 
       - name: Build kontainer-runtime release binary
         run: |
-          ./gradlew linkReleaseExecutableLinuxX64 --no-daemon
+          ./gradlew linkReleaseExecutableLinuxX64 -PtargetArch=x86_64 --no-daemon
           sudo mkdir -p /opt/kontainer-runtime
           sudo cp build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe \
             /opt/kontainer-runtime/bin

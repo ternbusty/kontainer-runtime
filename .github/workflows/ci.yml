@@ -8,6 +8,15 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: linuxX64
+            targetArch: x86_64
+            crossPkgs: ""
+          - target: linuxArm64
+            targetArch: aarch64
+            crossPkgs: "gcc-aarch64-linux-gnu libseccomp-dev:arm64"
 
     steps:
       - name: Checkout code
@@ -20,17 +29,25 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
+      - name: Add arm64 architecture
+        if: matrix.targetArch == 'aarch64'
+        run: sudo dpkg --add-architecture arm64
+
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libseccomp-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libseccomp-dev ${{ matrix.crossPkgs }}
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
       - name: Run ktlintCheck
+        if: matrix.targetArch == 'x86_64'
         run: ./gradlew ktlintCheck
 
       - name: Run tests
+        if: matrix.targetArch == 'x86_64'
         run: ./gradlew linuxX64Test
 
       - name: Build release binary
-        run: ./gradlew linkReleaseExecutableLinuxX64
+        run: ./gradlew linkReleaseExecutable${{ matrix.target }} -PtargetArch=${{ matrix.targetArch }}

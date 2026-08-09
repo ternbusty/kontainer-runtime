@@ -34,13 +34,24 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  build-linux-x86_64:
+  build:
     needs: release-please
     if: needs.release-please.outputs.releases_created == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: write
+    strategy:
+      matrix:
+        include:
+          - target: linuxX64
+            targetArch: x86_64
+            artifactArch: amd64
+            crossPkgs: ""
+          - target: linuxArm64
+            targetArch: aarch64
+            artifactArch: arm64
+            crossPkgs: "gcc-aarch64-linux-gnu libseccomp-dev:arm64"
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -52,24 +63,26 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
+      - name: Add arm64 architecture
+        if: matrix.targetArch == 'aarch64'
+        run: sudo dpkg --add-architecture arm64
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libseccomp-dev
+          sudo apt-get install -y libseccomp-dev ${{ matrix.crossPkgs }}
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
       - name: Build release binary
-        run: ./gradlew linkReleaseExecutableLinuxX64
+        run: ./gradlew linkReleaseExecutable${{ matrix.target }} -PtargetArch=${{ matrix.targetArch }}
 
       - name: Stage binary with versioned name
         run: |
           mkdir -p dist
-          # xdperf-style naming: <binary>_<version>_<os>_<arch>
-          # tag_name is "vX.Y.Z"; version is "X.Y.Z" (no leading v)
-          cp build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe \
-             dist/kontainer-runtime_${{ needs.release-please.outputs.version }}_linux_amd64
+          cp build/bin/${{ matrix.target }}/releaseExecutable/kontainer-runtime.kexe \
+             dist/kontainer-runtime_${{ needs.release-please.outputs.version }}_linux_${{ matrix.artifactArch }}
 
       - name: Upload binary to release
         uses: softprops/action-gh-release@v3

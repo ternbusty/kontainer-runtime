@@ -1,8 +1,8 @@
 headers = seccomp.h
 headerFilter = seccomp.h
 package = libseccomp
-compilerOpts = -I/usr/include -I/usr/include/x86_64-linux-gnu
-linkerOpts = -L/usr/lib/x86_64-linux-gnu -lseccomp
+# compilerOpts and linkerOpts are injected by build.gradle.kts
+# to support both x86_64 and aarch64 multilib paths.
 
 ---
 
