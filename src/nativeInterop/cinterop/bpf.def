@@ -1,0 +1,10 @@
+headers = linux/bpf.h sys/syscall.h fcntl.h
+headerFilter = linux/bpf.h sys/syscall.h
+package = platform.linux
+compilerOpts = -D_GNU_SOURCE
+---
+
+// Expose __NR_bpf as a static-inline so Kotlin/Native can call it.
+static inline long _NR_bpf() {
+    return __NR_bpf;
+}
