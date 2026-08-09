@@ -16,7 +16,7 @@ jobs:
             crossPkgs: ""
           - target: linuxArm64
             targetArch: aarch64
-            crossPkgs: "gcc-aarch64-linux-gnu libseccomp-dev:arm64"
+            crossPkgs: "gcc-aarch64-linux-gnu libc6-dev:arm64 libseccomp-dev:arm64"
 
     steps:
       - name: Checkout code
