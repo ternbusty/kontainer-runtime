@@ -67,24 +67,23 @@ private fun runMainProcessInternal(
         // CgroupV2.resolveCgroupPath() for the rules.
         val resolvedCgroupPath = CgroupV2.resolveCgroupPath(spec.linux?.cgroupsPath, containerId)
 
-        // Setup cgroup for Stage-1 BEFORE syncing with child
-        // Stage-1 → Stage-2 are both included in the cgroup (inherited through fork)
-        cgroup.setup(stage1Pid, resolvedCgroupPath, spec.linux?.resources)
+        // Create the cgroup directory, enable controllers, and apply resource
+        // limits.  Do NOT add Stage-1's PID — Stage-1 is a short-lived bootstrap
+        // process that races against us: by the time we write its PID to
+        // cgroup.procs it may have already exited (ESRCH).  Stage-2's PID is
+        // added after we receive it via the sync pipe (see addProcess below).
+        cgroup.setup(pid = null, cgroupPath = resolvedCgroupPath, resources = spec.linux?.resources)
 
         // Attach eBPF device-cgroup program ONCE, right after the cgroup
         // directory exists. The program applies to all processes in the
-        // cgroup (including Stage-2 which inherits into the same leaf),
-        // so we must NOT call it again when Stage-2 PID arrives — a
-        // second BPF_PROG_ATTACH would stack a duplicate filter.
+        // cgroup (including Stage-2 which will be added below), so we must
+        // NOT call it again when Stage-2 PID arrives — a second
+        // BPF_PROG_ATTACH would stack a duplicate filter.
         val deviceRules = spec.linux?.resources?.devices
         if (!deviceRules.isNullOrEmpty()) {
             val cgroupDirPath = "/sys/fs/cgroup/${resolvedCgroupPath.removePrefix("/")}"
             DeviceCgroup.apply(cgroupDirPath, deviceRules)
         }
-
-        // Apply rlimits to Stage-1 BEFORE entering user namespace
-        // Rlimits are inherited: Stage-1 → Stage-2
-        syscall.applyRlimits(stage1Pid, spec.process.rlimits)
 
         // Handle UID/GID mapping if user namespace is configured
         // This must be done BEFORE receiving Stage-2 PID, as Stage-1 waits for mapping completion
@@ -151,6 +150,21 @@ private fun runMainProcessInternal(
         Logger.debug("received Stage-2 PID from bootstrap: $stage2Pid")
 
         close(syncFd)
+
+        // Place Stage-2 (the long-lived init process) into the cgroup that
+        // was prepared above.  Stage-2 is guaranteed to be alive here — it is
+        // blocked in bootstrap.c waiting for SYNC_GRANDCHILD from Stage-1.
+        if (resolvedCgroupPath.isNotEmpty()) {
+            cgroup.addProcess(stage2Pid, resolvedCgroupPath)
+        }
+
+        // Apply rlimits to Stage-2.  We target Stage-2 directly instead of
+        // Stage-1 because Stage-1 may already have exited by the time we
+        // reach this point.  prlimit64 works on any live process, and
+        // Stage-2 has not yet started the user workload (it is still waiting
+        // for the start signal), so the limits are in effect before any
+        // container process runs.
+        syscall.applyRlimits(stage2Pid, spec.process.rlimits)
 
         // Close senders and receivers that this process doesn't need
         // Keep mainReceiver and initSender - will be used to communicate with Stage-2

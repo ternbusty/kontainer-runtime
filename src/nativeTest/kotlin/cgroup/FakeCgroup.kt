@@ -13,7 +13,7 @@ class FakeCgroup : Cgroup {
     val pidsByPath: MutableMap<String, List<Int>> = mutableMapOf()
 
     override fun setup(
-        pid: Int,
+        pid: Int?,
         cgroupPath: String?,
         resources: LinuxResources?,
     ) {
