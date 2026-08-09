@@ -1,14 +1,14 @@
 [versions]
 kotlin = "2.4.10"
 kotlinxSerialization = "1.11.0"
-kotlinxCli = "0.3.6"
+clikt = "5.1.0"
 kotest = "6.2.3"
 ksp = "2.3.10"
 ktlint = "14.2.0"
 
 [libraries]
 kotlinxSerializationJson = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
-kotlinxCli = { module = "org.jetbrains.kotlinx:kotlinx-cli", version.ref = "kotlinxCli" }
+clikt = { module = "com.github.ajalt.clikt:clikt-core", version.ref = "clikt" }
 kotestAssertionsCore = { module = "io.kotest:kotest-assertions-core", version.ref = "kotest" }
 kotestFrameworkEngine = { module = "io.kotest:kotest-framework-engine", version.ref = "kotest" }
 
