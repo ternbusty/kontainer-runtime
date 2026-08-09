@@ -338,6 +338,30 @@ fun main(args: Array<String>): Unit =
             }
         }
 
+        class PauseCommand : Subcommand("pause", "Pause a running container") {
+            val containerId by argument(
+                ArgType.String,
+                description = "Container ID",
+            )
+
+            override fun execute() {
+                applyGlobalOptions()
+                pause(fs, rootPath, containerId)
+            }
+        }
+
+        class ResumeCommand : Subcommand("resume", "Resume a paused container") {
+            val containerId by argument(
+                ArgType.String,
+                description = "Container ID",
+            )
+
+            override fun execute() {
+                applyGlobalOptions()
+                resume(fs, rootPath, containerId)
+            }
+        }
+
         class PsCommand : Subcommand("ps", "List processes in a container") {
             val format by option(
                 ArgType.String,
@@ -402,6 +426,8 @@ fun main(args: Array<String>): Unit =
             KillCommand(),
             DeleteCommand(),
             ListCommand(),
+            PauseCommand(),
+            ResumeCommand(),
             PsCommand(),
             ExecCommand(),
         )
@@ -422,6 +448,8 @@ fun main(args: Array<String>): Unit =
             println("  kill <container-id> <signal>                                       Send a signal to a container")
             println("  delete [--force|-f] <container-id>                                 Delete a container")
             println("  list [--format <table|json>] [-q]                                  List all containers")
+            println("  pause <container-id>                                               Pause a running container")
+            println("  resume <container-id>                                              Resume a paused container")
             println("  ps [--format|-f <json|table>] <container-id>                       List processes in a container")
             println("  exec [-p <process.json>] [--pid-file <path>] [-d] <container-id> [--] [command [args...]]")
             println("                                                                         Run a process in a running container")
