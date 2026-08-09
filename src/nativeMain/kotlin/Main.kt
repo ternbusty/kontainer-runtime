@@ -264,6 +264,44 @@ fun main(args: Array<String>): Unit =
             }
         }
 
+        class RunCommand : Subcommand("run", "Create and start a container") {
+            val bundle by option(
+                ArgType.String,
+                shortName = "b",
+                fullName = "bundle",
+                description = "Bundle path",
+            ).default(".")
+
+            val pidFile by option(
+                ArgType.String,
+                fullName = "pid-file",
+                description = "PID file path",
+            )
+
+            val consoleSocket by option(
+                ArgType.String,
+                fullName = "console-socket",
+                description = "Path to AF_UNIX socket for PTY master fd handoff",
+            )
+
+            val detach by option(
+                ArgType.Boolean,
+                shortName = "d",
+                fullName = "detach",
+                description = "Detach from the container (do not wait for exit)",
+            ).default(false)
+
+            val containerId by argument(
+                ArgType.String,
+                description = "Container ID",
+            )
+
+            override fun execute() {
+                applyGlobalOptions()
+                run(syscall, fs, cgroup, rootPath, containerId, bundle, pidFile, consoleSocket, detach)
+            }
+        }
+
         class StartCommand : Subcommand("start", "Start a created container") {
             val containerId by argument(
                 ArgType.String,
@@ -510,6 +548,7 @@ fun main(args: Array<String>): Unit =
 
         parser.subcommands(
             CreateCommand(),
+            RunCommand(),
             StartCommand(),
             StateCommand(),
             KillCommand(),
@@ -534,6 +573,7 @@ fun main(args: Array<String>): Unit =
             println()
             println("Commands:")
             println("  create [--bundle|-b <path>] [--pid-file <path>] <container-id>    Create a new container")
+            println("  run [--bundle|-b <path>] [-d] <container-id>                      Create and start a container")
             println("  start <container-id>                                               Start a created container")
             println("  state <container-id>                                               Display container state")
             println("  kill <container-id> <signal>                                       Send a signal to a container")
