@@ -2,6 +2,7 @@ package process
 
 import cgroup.Cgroup
 import cgroup.CgroupV2
+import cgroup.DeviceCgroup
 import channel.*
 import config.KontainerConfig
 import config.saveKontainerConfig
@@ -69,6 +70,17 @@ private fun runMainProcessInternal(
         // Setup cgroup for Stage-1 BEFORE syncing with child
         // Stage-1 → Stage-2 are both included in the cgroup (inherited through fork)
         cgroup.setup(stage1Pid, resolvedCgroupPath, spec.linux?.resources)
+
+        // Attach eBPF device-cgroup program ONCE, right after the cgroup
+        // directory exists. The program applies to all processes in the
+        // cgroup (including Stage-2 which inherits into the same leaf),
+        // so we must NOT call it again when Stage-2 PID arrives — a
+        // second BPF_PROG_ATTACH would stack a duplicate filter.
+        val deviceRules = spec.linux?.resources?.devices
+        if (!deviceRules.isNullOrEmpty()) {
+            val cgroupDirPath = "/sys/fs/cgroup/${resolvedCgroupPath.removePrefix("/")}"
+            DeviceCgroup.apply(cgroupDirPath, deviceRules)
+        }
 
         // Apply rlimits to Stage-1 BEFORE entering user namespace
         // Rlimits are inherited: Stage-1 → Stage-2
@@ -241,7 +253,10 @@ private fun runMainProcessInternal(
             }
         }
 
-        exit(0)
+        // Return control to the caller. When invoked standalone
+        // (create subcommand), main() returns and the process exits
+        // normally.  When invoked from run(), the caller continues
+        // with start + optional wait.
     }
 
 /**

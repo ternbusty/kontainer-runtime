@@ -1,0 +1,37 @@
+headers = stdlib.h fcntl.h unistd.h sys/ioctl.h termios.h
+headerFilter = stdlib.h fcntl.h unistd.h sys/ioctl.h termios.h
+package = platform.pty
+compilerOpts = -D_GNU_SOURCE -D_XOPEN_SOURCE=600
+---
+
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
+#include <termios.h>
+
+// posix_openpt is in <stdlib.h> with _XOPEN_SOURCE >= 600
+static inline int pty_openpt(int flags) {
+    return posix_openpt(flags);
+}
+
+static inline int pty_grantpt(int fd) {
+    return grantpt(fd);
+}
+
+static inline int pty_unlockpt(int fd) {
+    return unlockpt(fd);
+}
+
+// ptsname_r requires _GNU_SOURCE on glibc
+static inline int pty_ptsname_r(int fd, char *buf, int buflen) {
+    return ptsname_r(fd, buf, (size_t)buflen);
+}
+
+static inline unsigned long _TIOCSWINSZ() {
+    return TIOCSWINSZ;
+}
+
+static inline unsigned long _TIOCSCTTY() {
+    return TIOCSCTTY;
+}

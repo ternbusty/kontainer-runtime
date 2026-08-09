@@ -138,6 +138,8 @@ kotlin {
             create("bootstrap")
             create("prlimit")
             create("network")
+            create("bpf")
+            create("pty")
         }
     }
 

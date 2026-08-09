@@ -10,6 +10,7 @@ import namespace.calculateCloneFlags
 import platform.linux.SYS_clone
 import platform.posix.*
 import process.runMainProcess
+import rootfs.validateSysctls
 import spec.loadSpec
 import state.containerExists
 import state.getContainerDir
@@ -34,6 +35,7 @@ fun create(
     containerId: String,
     bundlePath: String = ".",
     pidFile: String? = null,
+    consoleSocket: String? = null,
 ): Unit =
     memScoped {
         if (containerExists(fs, rootPath, containerId)) {
@@ -72,6 +74,17 @@ fun create(
             }
 
         Logger.debug("loaded spec version ${spec.ociVersion}")
+
+        // Fail-closed sysctl validation: reject any key that is not on the
+        // OCI/runc allowlist, or that requires a namespace the spec does not
+        // create (e.g. net.* without a new network namespace).
+        val sysctlErrors = validateSysctls(spec.linux?.sysctl, spec.linux?.namespaces)
+        if (sysctlErrors.isNotEmpty()) {
+            for (err in sysctlErrors) {
+                Logger.error(err)
+            }
+            exit(1)
+        }
 
         // Get absolute path of rootfs
         val rootfsPath =
@@ -182,6 +195,11 @@ fun create(
                 setenv("_KONTAINER_NOTIFY_SOCKET", notifySocketPath, 1)
                 setenv("_KONTAINER_CONTAINER_ID", containerId, 1)
 
+                // Console socket path for PTY master fd handoff
+                if (consoleSocket != null) {
+                    setenv("_KONTAINER_CONSOLE_SOCKET", consoleSocket, 1)
+                }
+
                 // Pass any spec.linux.namespaces[].path entries to bootstrap.c
                 // so it can setns(2) into existing namespaces before the
                 // stage-2 fork. Doing this in the Kotlin runtime is unreliable
@@ -246,6 +264,7 @@ fun create(
                     initSender = initSender,
                     initReceiver = initReceiver,
                 )
+                Logger.debug("runMainProcess returned, create() completing")
             }
         }
     }

@@ -165,10 +165,25 @@ data class LinuxHugepageLimit(
 )
 
 /**
+ * A device-access rule from spec.linux.resources.devices[].
+ * The cgroup v2 device controller uses eBPF to enforce these.
+ * https://github.com/opencontainers/runtime-spec/blob/main/config-linux.md#devices-1
+ */
+@Serializable
+data class LinuxDeviceCgroup(
+    val allow: Boolean,
+    val type: String? = null,
+    val major: Long? = null,
+    val minor: Long? = null,
+    val access: String? = null,
+)
+
+/**
  * Linux resource limits
  */
 @Serializable
 data class LinuxResources(
+    val devices: List<LinuxDeviceCgroup>? = null,
     val pids: LinuxPids? = null,
     val hugepageLimits: List<LinuxHugepageLimit>? = null,
     val memory: LinuxMemory? = null,

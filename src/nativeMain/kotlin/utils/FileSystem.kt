@@ -63,4 +63,10 @@ interface FileSystem {
      * warning by the implementation but not thrown.
      */
     fun removeDirectory(path: String): Boolean
+
+    /**
+     * List names of direct child directories under [path], excluding `.` and `..`.
+     * Returns an empty list if [path] does not exist or is not a directory.
+     */
+    fun listDirectories(path: String): List<String>
 }

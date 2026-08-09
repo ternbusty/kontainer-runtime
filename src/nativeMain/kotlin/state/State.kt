@@ -27,6 +27,7 @@ enum class ContainerStatus(
     CREATED("created"),
     RUNNING("running"),
     STOPPED("stopped"),
+    PAUSED("paused"),
     ;
 
     /**
@@ -54,6 +55,12 @@ enum class ContainerStatus(
      * may exec into it)
      */
     fun canExec(): Boolean = this in setOf(CREATED, RUNNING)
+
+    /** Container is running and can be paused via cgroup.freeze */
+    fun canPause(): Boolean = this == RUNNING
+
+    /** Container is paused and can be resumed */
+    fun canResume(): Boolean = this == PAUSED
 
     companion object {
         /**
@@ -552,6 +559,12 @@ fun State.refreshStatus(): State {
                         // Process is alive and running
                         Logger.debug("container ${this.id} process ${this.pid} is alive, status: running")
                         ContainerStatus.RUNNING
+                    }
+
+                    ContainerStatus.PAUSED -> {
+                        // Process alive and frozen by cgroup.freeze; keep PAUSED
+                        Logger.debug("container ${this.id} process ${this.pid} is alive, status: paused")
+                        ContainerStatus.PAUSED
                     }
                 }
             }
