@@ -362,6 +362,65 @@ fun main(args: Array<String>): Unit =
             }
         }
 
+        class UpdateCommand : Subcommand("update", "Update container resource limits") {
+            val resourcesFile by option(
+                ArgType.String,
+                shortName = "r",
+                fullName = "resources",
+                description = "Path to a JSON file with linux resources spec",
+            )
+
+            val memory by option(
+                ArgType.String,
+                fullName = "memory",
+                description = "Memory limit in bytes",
+            )
+
+            val cpuQuota by option(
+                ArgType.String,
+                fullName = "cpu-quota",
+                description = "CPU quota in microseconds",
+            )
+
+            val cpuPeriod by option(
+                ArgType.String,
+                fullName = "cpu-period",
+                description = "CPU period in microseconds",
+            )
+
+            val cpuShares by option(
+                ArgType.String,
+                fullName = "cpu-share",
+                description = "CPU shares (relative weight)",
+            )
+
+            val pidsLimit by option(
+                ArgType.String,
+                fullName = "pids-limit",
+                description = "PIDs limit",
+            )
+
+            val containerId by argument(
+                ArgType.String,
+                description = "Container ID",
+            )
+
+            override fun execute() {
+                applyGlobalOptions()
+                update(
+                    fs,
+                    rootPath,
+                    containerId,
+                    resourcesPath = resourcesFile,
+                    memory = memory?.toLongOrNull(),
+                    cpuQuota = cpuQuota?.toLongOrNull(),
+                    cpuPeriod = cpuPeriod?.toLongOrNull(),
+                    cpuShares = cpuShares?.toLongOrNull(),
+                    pidsLimit = pidsLimit?.toLongOrNull(),
+                )
+            }
+        }
+
         class PsCommand : Subcommand("ps", "List processes in a container") {
             val format by option(
                 ArgType.String,
@@ -428,6 +487,7 @@ fun main(args: Array<String>): Unit =
             ListCommand(),
             PauseCommand(),
             ResumeCommand(),
+            UpdateCommand(),
             PsCommand(),
             ExecCommand(),
         )
@@ -450,6 +510,8 @@ fun main(args: Array<String>): Unit =
             println("  list [--format <table|json>] [-q]                                  List all containers")
             println("  pause <container-id>                                               Pause a running container")
             println("  resume <container-id>                                              Resume a paused container")
+            println("  update [-r <resources.json>] [--memory <bytes>] [--pids-limit <n>] <container-id>")
+            println("                                                                         Update container resource limits")
             println("  ps [--format|-f <json|table>] <container-id>                       List processes in a container")
             println("  exec [-p <process.json>] [--pid-file <path>] [-d] <container-id> [--] [command [args...]]")
             println("                                                                         Run a process in a running container")
