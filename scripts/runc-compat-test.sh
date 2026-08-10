@@ -47,6 +47,8 @@ INCLUDE_TESTS=(
   help.bats
   version.bats
   spec.bats
+  start_detached.bats
+  tty.bats
 )
 
 # Tests that need runc-specific helper binaries or features we deliberately
@@ -61,8 +63,6 @@ EXCLUDE_TESTS=(
   idmap.bats               # needs fs-idmap helper binary (Go)
   selinux.bats             # needs SELinux enabled host
   cgroup_delegation.bats   # needs systemd + sd-helper binary (Go)
-  start_detached.bats      # needs recvtty helper binary (Go)
-  tty.bats                 # needs recvtty helper binary (Go)
 )
 
 # ---------------------------------------------------------------------------
