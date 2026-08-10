@@ -133,11 +133,11 @@ chmod +x "${INTEGRATION_DIR}/get-images.sh"
 "${INTEGRATION_DIR}/get-images.sh" >/dev/null
 
 # ---------------------------------------------------------------------------
-# Include SELinux tests when requested
+# SELinux mode: run ONLY the SELinux-specific tests
 # ---------------------------------------------------------------------------
 if [[ "$SELINUX_MODE" == "true" ]]; then
-  INCLUDE_TESTS+=("${SELINUX_TESTS[@]}")
-  echo ">>> SELinux mode enabled — including: ${SELINUX_TESTS[*]}"
+  INCLUDE_TESTS=("${SELINUX_TESTS[@]}")
+  echo ">>> SELinux mode — running only: ${SELINUX_TESTS[*]}"
 fi
 
 # ---------------------------------------------------------------------------

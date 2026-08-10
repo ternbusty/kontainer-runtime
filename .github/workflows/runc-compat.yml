@@ -139,9 +139,10 @@ jobs:
           set -eux -o pipefail
 
           # Install runtime dependencies inside the VM.
+          # libxcrypt-compat provides libcrypt.so.1 required by the Ubuntu-built binary.
           lima sudo dnf -y --setopt=install_weak_deps=False --setopt=tsflags=nodocs \
             install bats git-core jq libseccomp-devel make golang \
-                   container-selinux policycoreutils
+                   container-selinux policycoreutils libxcrypt-compat
 
           # Remount /tmp with suid to avoid SELinux nosuid_transition denials.
           lima sudo mount -o remount,suid /tmp
@@ -159,10 +160,11 @@ jobs:
         run: |
           set -eux -o pipefail
 
-          # Copy the kontainer-runtime binary.
+          # Copy the kontainer-runtime binary to /usr/local/bin so SELinux
+          # file context rules can label it (chcon in selinux.bats setup).
           limactl cp build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe \
             default:/tmp/kontainer-runtime.kexe
-          lima sudo chmod +x /tmp/kontainer-runtime.kexe
+          lima sudo install -m 0755 /tmp/kontainer-runtime.kexe /usr/local/bin/kontainer-runtime.kexe
 
           # Copy our test script.
           limactl cp scripts/runc-compat-test.sh default:/tmp/runc-compat-test.sh
@@ -185,11 +187,11 @@ jobs:
         id: bats-selinux
         run: |
           ssh -tt lima-default sudo -i env \
-            KONTAINER_BIN=/tmp/kontainer-runtime.kexe \
+            KONTAINER_BIN=/usr/local/bin/kontainer-runtime.kexe \
             TAP_OUTPUT=/tmp/selinux-tap.log \
             /tmp/runc-compat-test.sh \
               --runc-dir /tmp/runc \
-              --binary /tmp/kontainer-runtime.kexe \
+              --binary /usr/local/bin/kontainer-runtime.kexe \
               --selinux
 
       - name: Retrieve results
