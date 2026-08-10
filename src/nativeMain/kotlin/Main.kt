@@ -5,10 +5,12 @@ import cgroup.CgroupV2
 import channel.SocketInitReceiver
 import channel.SocketMainSender
 import channel.SocketNotifyListener
+import com.github.ajalt.clikt.core.CliktError
 import com.github.ajalt.clikt.core.Context
 import com.github.ajalt.clikt.core.CoreCliktCommand
-import com.github.ajalt.clikt.core.main
+import com.github.ajalt.clikt.core.UsageError
 import com.github.ajalt.clikt.core.obj
+import com.github.ajalt.clikt.core.parse
 import com.github.ajalt.clikt.core.requireObject
 import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.parameters.arguments.argument
@@ -523,20 +525,32 @@ fun main(args: Array<String>) {
     val execCommandArgs = mutableListOf<String>()
     val effectiveArgs = preprocessExecArgs(args, execCommandArgs)
 
-    KontainerRuntime(args, execCommandArgs)
-        .subcommands(
-            CreateCommand(),
-            RunCommand(),
-            StartCommand(),
-            StateCommand(),
-            KillCommand(),
-            DeleteCommand(),
-            ListCommand(),
-            PauseCommand(),
-            ResumeCommand(),
-            UpdateCommand(),
-            EventsCommand(),
-            PsCommand(),
-            ExecCommand(),
-        ).main(effectiveArgs)
+    try {
+        KontainerRuntime(args, execCommandArgs)
+            .subcommands(
+                CreateCommand(),
+                RunCommand(),
+                StartCommand(),
+                StateCommand(),
+                KillCommand(),
+                DeleteCommand(),
+                ListCommand(),
+                PauseCommand(),
+                ResumeCommand(),
+                UpdateCommand(),
+                EventsCommand(),
+                PsCommand(),
+                ExecCommand(),
+            ).parse(effectiveArgs)
+    } catch (e: UsageError) {
+        // Clikt's main() on K/N prints usage errors to stdout with exit code 0,
+        // which violates the OCI spec requirement that missing arguments produce
+        // an error (non-zero exit + stderr).  Handle it ourselves.
+        Logger.error(e.message ?: "missing required argument")
+        exit(1)
+    } catch (e: CliktError) {
+        val msg = e.message
+        Logger.error(msg ?: "CLI error")
+        exit(1)
+    }
 }
