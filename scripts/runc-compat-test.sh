@@ -65,6 +65,12 @@ EXCLUDE_TESTS=(
   cgroup_delegation.bats   # needs systemd + sd-helper binary (Go)
 )
 
+# Individual test names (regex) to skip via bats --filter-tags or grep.
+# These are tests that assert runc-internal implementation details.
+SKIP_TEST_NAMES=(
+  "runc run \\[/proc/self/exe clone\\]"  # asserts runc-dmz debug output string
+)
+
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
@@ -154,7 +160,15 @@ for tf in "${TEST_FILES[@]}"; do
   FILE_INDEX=$((FILE_INDEX + 1))
   echo ">>> [$FILE_INDEX/${#TEST_FILES[@]}] $(basename "$tf")" >&2
   set +e
-  timeout "${BATS_TEST_TIMEOUT}" env RUNC="$KONTAINER_BIN" bats --tap "$tf" 2>&1 | tee -a "$TAP_OUTPUT"
+  # Build --negative-filter regex from SKIP_TEST_NAMES (if any).
+  NEGATIVE_FILTER_ARGS=()
+  if [[ ${#SKIP_TEST_NAMES[@]} -gt 0 ]]; then
+    # Join patterns with | for a single regex alternation.
+    OLDIFS="$IFS"; IFS='|'
+    NEGATIVE_FILTER_ARGS=(--negative-filter "${SKIP_TEST_NAMES[*]}")
+    IFS="$OLDIFS"
+  fi
+  timeout "${BATS_TEST_TIMEOUT}" env RUNC="$KONTAINER_BIN" bats --tap "${NEGATIVE_FILTER_ARGS[@]}" "$tf" 2>&1 | tee -a "$TAP_OUTPUT"
   rc=${PIPESTATUS[0]}
   set -e
   if [[ $rc -ne 0 ]]; then
@@ -254,6 +268,14 @@ write_summary() {
       echo "- $t"
     done
     echo ""
+    if [[ ${#SKIP_TEST_NAMES[@]} -gt 0 ]]; then
+      echo "### Skipped individual tests (runc-specific)"
+      echo ""
+      for t in "${SKIP_TEST_NAMES[@]}"; do
+        echo "- \`$t\`"
+      done
+      echo ""
+    fi
     echo "### Excluded test files (require runc-specific helpers)"
     echo ""
     for t in "${EXCLUDE_TESTS[@]}"; do
