@@ -9,6 +9,7 @@ import platform.pty._TIOCSWINSZ
 import platform.pty.pty_grantpt
 import platform.pty.pty_openpt
 import platform.pty.pty_ptsname_r
+import platform.pty.pty_set_winsize
 import platform.pty.pty_unlockpt
 
 /**
@@ -139,15 +140,8 @@ fun wireStdio(
 
     // Set window size if specified
     if (height != null && width != null) {
-        memScoped {
-            val ws = alloc<winsize>()
-            ws.ws_row = height.toUShort()
-            ws.ws_col = width.toUShort()
-            ws.ws_xpixel = 0u
-            ws.ws_ypixel = 0u
-            if (platform.posix.ioctl(slaveFd, _TIOCSWINSZ().toULong(), ws.ptr) != 0) {
-                Logger.warn("TIOCSWINSZ failed (errno=$errno)")
-            }
+        if (pty_set_winsize(slaveFd, height.toUShort(), width.toUShort()) != 0) {
+            Logger.warn("TIOCSWINSZ failed (errno=$errno)")
         }
     }
 

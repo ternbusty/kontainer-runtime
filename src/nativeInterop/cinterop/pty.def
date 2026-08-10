@@ -35,3 +35,17 @@ static inline unsigned long _TIOCSWINSZ() {
 static inline unsigned long _TIOCSCTTY() {
     return TIOCSCTTY;
 }
+
+// Set window size on a terminal FD.
+// Wraps the ioctl(TIOCSWINSZ) call with a struct winsize so callers
+// do not depend on platform-specific field names (ws_row vs __ws_row
+// on aarch64).
+static inline int pty_set_winsize(int fd, unsigned short rows,
+                                  unsigned short cols) {
+    struct winsize ws;
+    ws.ws_row    = rows;
+    ws.ws_col    = cols;
+    ws.ws_xpixel = 0;
+    ws.ws_ypixel = 0;
+    return ioctl(fd, TIOCSWINSZ, &ws);
+}

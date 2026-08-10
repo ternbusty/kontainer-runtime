@@ -70,15 +70,24 @@ val generateBuildConfig =
         }
     }
 
+// Detect host architecture for cross-compilation support.
+// When targeting linuxArm64 from an x86_64 host, the bootstrap C library must
+// be compiled with the aarch64 cross-compiler and libseccomp must be found
+// under the aarch64 multilib prefix.
+val hostArch: String = System.getProperty("os.arch")
+val targetArch: String = (findProperty("targetArch") as? String) ?: hostArch
+val crossPrefix = if (targetArch in listOf("aarch64", "arm64")) "aarch64-linux-gnu-" else ""
+
 // Build C bootstrap library. Gradle 9 removed Project.exec() / Project.copy()
 // from inside task actions — the old `doLast { exec { ... } }` block no longer
 // compiles. Split into three sequential tasks (compile, archive, stage).
+// When cross-compiling for aarch64, use the cross-compiler toolchain.
 val compileBootstrap =
     tasks.register<Exec>("compileBootstrap") {
         workingDir = file("src/nativeInterop/cinterop/bootstrap")
         doFirst { file("$workingDir/build").mkdirs() }
         commandLine(
-            "gcc",
+            "${crossPrefix}gcc",
             "-c",
             "-fPIC",
             "-Wall",
@@ -94,7 +103,7 @@ val archiveBootstrap =
         dependsOn(compileBootstrap)
         workingDir = file("src/nativeInterop/cinterop/bootstrap")
         commandLine(
-            "ar",
+            "${crossPrefix}ar",
             "rcs",
             "build/libbootstrap.a",
             "build/bootstrap.o",
@@ -129,11 +138,25 @@ gradle.taskGraph.whenReady {
 
 kotlin {
     val hostOs = System.getProperty("os.name")
-    val isArm64 = System.getProperty("os.arch") == "aarch64"
+    if (hostOs != "Linux") {
+        throw GradleException("Host OS '$hostOs' is not supported. Only Linux is supported.")
+    }
+
+    // Register the appropriate target. When cross-compiling for arm64
+    // (via -PtargetArch=aarch64), the Kotlin/Native compiler produces
+    // a linuxArm64 binary from the x86_64 host.
     val nativeTarget =
-        when {
-            hostOs == "Linux" && !isArm64 -> linuxX64()
-            else -> throw GradleException("Host OS is not supported in Kotlin/Native.")
+        when (targetArch) {
+            "aarch64", "arm64" -> linuxArm64()
+            else -> linuxX64()
+        }
+
+    // Multilib triplet for architecture-appropriate include/lib paths.
+    val triple =
+        if (nativeTarget.name == "linuxArm64") {
+            "aarch64-linux-gnu"
+        } else {
+            "x86_64-linux-gnu"
         }
 
     nativeTarget.apply {
@@ -144,8 +167,26 @@ kotlin {
             }
         }
 
+        // linkerOpts in a .def file is the canonical way to pass flags to
+        // the final link, but it cannot vary by target architecture. Apply
+        // them on every compilation (main + test) so the value follows the
+        // active target.
+        compilations.configureEach {
+            compileTaskProvider.configure {
+                compilerOptions.freeCompilerArgs.addAll(
+                    "-linker-option",
+                    "-L/usr/lib/$triple",
+                    "-linker-option",
+                    "-lseccomp",
+                )
+            }
+        }
+
         compilations.getByName("main").cinterops {
-            create("libseccomp")
+            create("libseccomp") {
+                extraOpts("-compiler-option", "-I/usr/include")
+                extraOpts("-compiler-option", "-I/usr/include/$triple")
+            }
             create("socket")
             create("sched")
             create("closerange")
@@ -162,7 +203,7 @@ kotlin {
         nativeMain {
             dependencies {
                 implementation(libs.kotlinxSerializationJson)
-                implementation(libs.kotlinxCli)
+                implementation(libs.clikt)
             }
             // Add generated BuildConfig to source set using Provider
             kotlin.srcDir(buildConfigDir)
@@ -174,10 +215,8 @@ kotlin {
     }
 
     // Ensure BuildConfig is generated before compilation
-    targets.withType<org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget> {
-        compilations["main"].compileTaskProvider.configure {
-            dependsOn(generateBuildConfig)
-        }
+    nativeTarget.compilations.getByName("main").compileTaskProvider.configure {
+        dependsOn(generateBuildConfig)
     }
 }
 
@@ -207,7 +246,9 @@ ktlint {
     }
 }
 
-// Ensure bootstrap C library is built before cinterop
-tasks.named("cinteropBootstrapLinuxX64") {
+// Ensure bootstrap C library is built before cinterop.
+// The task name depends on the active Kotlin/Native target (e.g.
+// cinteropBootstrapLinuxX64 or cinteropBootstrapLinuxArm64).
+tasks.matching { it.name.matches(Regex("cinteropBootstrap(LinuxX64|LinuxArm64)")) }.configureEach {
     dependsOn(buildBootstrap)
 }
