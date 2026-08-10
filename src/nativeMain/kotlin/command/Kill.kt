@@ -30,6 +30,7 @@ fun kill(
     rootPath: String,
     containerId: String,
     signalStr: String,
+    all: Boolean = false,
 ) {
     Logger.info("killing container: $containerId with signal: $signalStr")
 
@@ -50,6 +51,10 @@ fun kill(
 
     // Validate status - only created or running containers can be killed
     if (!state.status.canKill()) {
+        if (all) {
+            // --all with a stopped container: succeed silently (runc compat)
+            exit(0)
+        }
         Logger.error("container not running")
         exit(1)
     }

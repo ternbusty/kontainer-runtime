@@ -14,6 +14,7 @@ import com.github.ajalt.clikt.core.parse
 import com.github.ajalt.clikt.core.requireObject
 import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.parameters.arguments.argument
+import com.github.ajalt.clikt.parameters.arguments.default
 import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.multiple
@@ -288,12 +289,13 @@ class StateCommand : CoreCliktCommand(name = "state") {
 class KillCommand : CoreCliktCommand(name = "kill") {
     override fun help(context: Context) = "Send a signal to a container"
 
+    val all by option("--all", "-a", help = "Send the signal to all processes in the container").flag()
     val containerId by argument(help = "Container ID")
-    val signal by argument(help = "Signal to send")
+    val signal by argument(help = "Signal to send").default("SIGTERM")
     val config by requireObject<GlobalConfig>()
 
     override fun run() {
-        kill(config.syscall, config.fs, config.cgroup, config.rootPath, containerId, signal)
+        kill(config.syscall, config.fs, config.cgroup, config.rootPath, containerId, signal, all)
     }
 }
 
@@ -535,7 +537,7 @@ private val SUBCOMMAND_DESCRIPTIONS =
     )
 
 private fun printRuncHelp() {
-    val name = "kontainer-runtime"
+    val name = "runc"
     println("NAME:")
     println("   $name - Open Container Initiative runtime")
     println()
@@ -557,7 +559,7 @@ private fun printRuncHelp() {
 }
 
 private fun printSubcommandHelp(subcommand: String) {
-    val name = "kontainer-runtime"
+    val name = "runc"
     val desc = SUBCOMMAND_DESCRIPTIONS[subcommand] ?: subcommand
     println("NAME:")
     println("   $name $subcommand - $desc")

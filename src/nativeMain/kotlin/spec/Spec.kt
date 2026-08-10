@@ -15,6 +15,7 @@ data class Spec(
     val root: Root,
     val process: Process = Process(args = emptyList()),
     val hostname: String? = null,
+    val domainname: String? = null,
     val mounts: List<Mount>? = null,
     val annotations: Map<String, String>? = null,
     val hooks: Hooks? = null,

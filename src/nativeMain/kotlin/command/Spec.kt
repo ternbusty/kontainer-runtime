@@ -1,6 +1,7 @@
 package command
 
-import utils.JsonCodec
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.serializer
 import utils.RealFileSystem
 
 /**
@@ -50,6 +51,7 @@ fun spec(bundlePath: String) {
                         destination = "/proc",
                         type = "proc",
                         source = "proc",
+                        options = emptyList(),
                     ),
                     spec.Mount(
                         destination = "/dev",
@@ -131,7 +133,16 @@ fun spec(bundlePath: String) {
                 ),
         )
 
-    JsonCodec.writeToFile(fs, configPath, defaultSpec, prettyPrint = true)
+    // Use explicitNulls = false so the OCI JSON schema validator doesn't
+    // reject null-typed fields (e.g. hooks, mount options).  The schema
+    // expects absent, not null.
+    val specJson =
+        Json {
+            prettyPrint = true
+            encodeDefaults = true
+            explicitNulls = false
+        }
+    fs.writeTextFile(configPath, specJson.encodeToString(serializer(), defaultSpec))
 }
 
 private val DEFAULT_CAPS =

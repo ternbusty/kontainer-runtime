@@ -215,6 +215,15 @@ private fun initProcessInternal(
             }
         }
 
+        spec.domainname?.let { domainname ->
+            if (syscall.setdomainname(domainname) != 0) {
+                perror("setdomainname")
+                Logger.warn("failed to set domainname to $domainname")
+            } else {
+                Logger.debug("set domainname to $domainname")
+            }
+        }
+
         // Create spec.linux.devices[] device nodes inside the container's /dev.
         applyLinuxDevices(syscall, spec.linux?.devices)
 
@@ -320,9 +329,8 @@ private fun initProcessInternal(
         // execvp uses PATH lookup and the environment we set above
         execvp(processArgs[0], argv)
 
-        perror("execvp")
-        Logger.error("Failed to execute ${processArgs[0]}")
-        _exit(127)
+        fprintf(stderr, "exec %s: %s\n", processArgs[0], strerror(errno))
+        _exit(255)
     }
 
 /**

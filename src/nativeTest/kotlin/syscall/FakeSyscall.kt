@@ -88,6 +88,11 @@ class FakeSyscall : Syscall {
         return ret("sethostname")
     }
 
+    override fun setdomainname(name: String): Int {
+        calls += "setdomainname(name=$name)"
+        return ret("setdomainname")
+    }
+
     override fun umask(mask: UInt): UInt {
         calls += "umask(mask=$mask)"
         return 0u

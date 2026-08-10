@@ -62,6 +62,8 @@ class LinuxSyscall : Syscall {
 
     override fun sethostname(name: String): Int = platform.posix.sethostname(name, name.length.toULong())
 
+    override fun setdomainname(name: String): Int = platform.posix.setdomainname(name, name.length.toULong())
+
     override fun umask(mask: UInt): UInt = platform.posix.umask(mask)
 
     override fun prctl(

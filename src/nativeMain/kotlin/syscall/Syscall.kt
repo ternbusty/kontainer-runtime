@@ -47,6 +47,8 @@ interface Syscall {
 
     fun sethostname(name: String): Int
 
+    fun setdomainname(name: String): Int
+
     fun umask(mask: UInt): UInt
 
     // prctl primitive (used by capabilities and similar callers)

@@ -189,6 +189,16 @@ fun exec(
     // preserves the bundle's linux/namespace/seccomp configuration.
     val execSpec = spec.copy(process = execProcess)
 
+    // Validate --cgroup subcgroup path (reject path traversal)
+    if (cgroupOverride.isNotEmpty()) {
+        val subPath = cgroupOverride.first()
+        if (subPath.contains("..")) {
+            Logger.error("exec: bad sub cgroup path \"$subPath\": .. is not a sub cgroup path")
+            exit(1)
+            return
+        }
+    }
+
     // The resolved cgroup path was persisted at create time; without it we
     // cannot place the exec'd process under the container's resource limits.
     val cgroupPath =
@@ -270,7 +280,7 @@ fun exec(
         // the fork boundary — the runtime's default handler would exit(),
         // flushing stdio duplicated from the parent; only _exit() here.
         try {
-            runExecChild(syscall, execSpec, joins, nsFds, setupPipe, usesNotify, pidPipe, notifyMainSender, notifyInitReceiver)
+            runExecChild(syscall, execSpec, joins, nsFds, setupPipe, usesNotify, pidPipe, notifyMainSender, notifyInitReceiver, preserveFds)
         } catch (t: Throwable) {
             fprintf(stderr, "exec: %s\n", t.message ?: "unknown error")
         }
@@ -364,6 +374,7 @@ private fun runExecChild(
     pidPipe: IntArray,
     notifyMainSender: MainSender?,
     notifyInitReceiver: InitReceiver?,
+    preserveFds: Int = 0,
 ) {
     close(pidPipe[0])
     close(setupPipe[1])
@@ -402,7 +413,7 @@ private fun runExecChild(
     if (grandchild == 0) {
         close(pidPipe[1])
         try {
-            runExecGrandchild(syscall, spec, notifyMainSender, notifyInitReceiver)
+            runExecGrandchild(syscall, spec, notifyMainSender, notifyInitReceiver, preserveFds)
         } catch (t: Throwable) {
             fprintf(stderr, "exec: setup failed: %s\n", t.message ?: "unknown error")
         }
@@ -441,6 +452,7 @@ private fun runExecGrandchild(
     spec: Spec,
     notifyMainSender: MainSender?,
     notifyInitReceiver: InitReceiver?,
+    preserveFds: Int = 0,
 ) {
     Logger.debug("child process in init()")
 
@@ -470,7 +482,7 @@ private fun runExecGrandchild(
 
     // Flag every inherited runtime fd CLOEXEC so nothing leaks into the user
     // process (CVE-2024-21626 hygiene).
-    syscall.closeRange(0)
+    syscall.closeRange(preserveFds)
 
     // rlimits dead-last: a low RLIMIT_AS applied any earlier could abort the
     // Kotlin/Native runtime itself before execve. The user process picks the
@@ -487,8 +499,11 @@ private fun runExecGrandchild(
         args.forEachIndexed { i, a -> argv[i] = a.cstr.ptr }
         argv[args.size] = null
         execvp(args[0], argv)
-        fprintf(stderr, "exec: execvp(%s) failed: %s\n", args[0], strerror(errno))
-        _exit(if (errno == ENOENT) 127 else 126)
+        // runc surfaces execve errors as exit code 255 (not the traditional
+        // 127/126) so the caller can distinguish "runtime error" from
+        // "container process exited with code N".
+        fprintf(stderr, "exec %s: %s\n", args[0], strerror(errno))
+        _exit(255)
     }
 }
 

@@ -813,6 +813,26 @@ fun applySpecMounts(
         // The target is relative to the future container root; the actual filesystem
         // path before pivot_root is rootfsPath + destination.
         val target = rootfsPath + m.destination
+
+        // For tmpfs mounts: capture the existing directory's permissions before
+        // mounting so we can restore them when no explicit mode= option was given.
+        // This matches runc behaviour — see https://github.com/opencontainers/runc/issues/3911
+        // and https://github.com/opencontainers/runc/issues/3952.
+        var originalMode: UInt? = null
+        if (fsType == "tmpfs") {
+            val hasModeOption = m.options?.any { it.startsWith("mode=") } ?: false
+            if (!hasModeOption && access(target, F_OK) == 0) {
+                memScoped {
+                    val st = alloc<stat>()
+                    if (stat(target, st.ptr) == 0) {
+                        // Capture the full permission bits (including setuid/setgid/sticky).
+                        originalMode = st.st_mode and 0xFFFu
+                        Logger.debug("tmpfs ${m.destination}: captured original mode $originalMode")
+                    }
+                }
+            }
+        }
+
         mkdirP(target)
         val rc =
             syscall.mount(
@@ -831,6 +851,17 @@ fun applySpecMounts(
             continue
         }
         Logger.debug("mounted ${m.destination} (type=$fsType, flags=${parsed.flags})")
+
+        // For tmpfs: restore the original directory permissions when no mode=
+        // option was specified. The tmpfs default root mode is 01777, but when
+        // the mount target already existed, runc preserves its permissions.
+        if (originalMode != null) {
+            if (chmod(target, originalMode) != 0) {
+                Logger.warn("failed to chmod tmpfs ${m.destination} to original mode (errno=$errno)")
+            } else {
+                Logger.debug("restored original mode on tmpfs ${m.destination}")
+            }
+        }
 
         // Bind-remount once more with the requested flags. The kernel ignores flag
         // bits other than MS_BIND/MS_REC on the initial bind mount; MS_RDONLY etc.

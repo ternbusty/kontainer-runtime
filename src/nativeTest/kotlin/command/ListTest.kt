@@ -61,11 +61,15 @@ class ListTest :
         test("list in json format prints a JSON array") {
             val fs = FakeFileSystem()
             stateFixture("j1", bundle = "/b/j1").save(fs, rootPath)
+            // Provide a config.json so toListEntry can resolve rootfs
+            fs.createDirectories("/b/j1")
+            fs.writeTextFile("/b/j1/config.json", """{"ociVersion":"1.0.0","root":{"path":"rootfs"}}""")
 
             val output = formatContainerList(fs, rootPath, "json", quiet = false)
             output shouldContain "\"id\""
             output shouldContain "\"j1\""
             output shouldContain "\"status\""
+            output shouldContain "\"rootfs\""
         }
 
         test("list skips containers with broken state.json") {
