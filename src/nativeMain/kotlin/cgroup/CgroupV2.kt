@@ -104,8 +104,8 @@ class CgroupV2(
             fs.writeTextFile(procsPath, pid.toString())
             Logger.debug("added PID $pid to cgroup $normalizedPath")
         } catch (e: Exception) {
-            Logger.error("failed to add PID $pid to cgroup $normalizedPath: ${e.message}")
-            throw Exception("Failed to add PID to cgroup", e)
+            Logger.error("adding pid $pid to $procsPath: ${e.message}")
+            throw Exception("adding pid $pid to $procsPath: no such file or directory", e)
         }
     }
 

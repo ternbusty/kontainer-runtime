@@ -207,7 +207,7 @@ fun exec(
 
     // The resolved cgroup path was persisted at create time; without it we
     // cannot place the exec'd process under the container's resource limits.
-    val cgroupPath =
+    val baseCgroupPath =
         try {
             loadKontainerConfig(fs, rootPath, containerId).cgroupPath
         } catch (e: Exception) {
@@ -215,11 +215,21 @@ fun exec(
             exit(1)
             return
         }
-    if (cgroupPath == null) {
+    if (baseCgroupPath == null) {
         Logger.error("exec: no cgroup path recorded for container $containerId")
         exit(1)
         return
     }
+
+    // Append the --cgroup subcgroup path (if given). A leading "/" means
+    // "relative to the container's cgroup root", not an absolute host path.
+    val cgroupPath =
+        if (cgroupOverride.isNotEmpty()) {
+            val sub = cgroupOverride.first().removePrefix("/")
+            if (sub.isEmpty()) baseCgroupPath else "$baseCgroupPath/$sub"
+        } else {
+            baseCgroupPath
+        }
 
     // Join the namespaces the SPEC defines, not whatever exists under
     // /proc/<pid>/ns/ (an entry exists there for every type; setns into our
