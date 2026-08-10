@@ -3,7 +3,7 @@
 # kontainer-runtime.  Designed to work both locally and inside CI.
 #
 # Usage:
-#   sudo ./scripts/runc-compat-test.sh [--runc-dir DIR] [--binary PATH]
+#   sudo ./scripts/runc-compat-test.sh [--runc-dir DIR] [--binary PATH] [--selinux]
 #
 # Environment variables (all optional):
 #   RUNC_REPO_DIR  — path to an existing runc checkout (skips clone)
@@ -27,6 +27,7 @@ KONTAINER_BIN="${KONTAINER_BIN:-${PROJECT_ROOT}/build/bin/linuxX64/releaseExecut
 SUMMARY_FILE="${SUMMARY_FILE:-}"
 BATS_JOBS="${BATS_JOBS:-1}"
 BATS_TEST_TIMEOUT="${BATS_TEST_TIMEOUT:-300}"
+SELINUX_MODE=false
 
 # ---------------------------------------------------------------------------
 # Test file lists
@@ -61,8 +62,14 @@ EXCLUDE_TESTS=(
   hooks_so.bats            # needs a Go .so hook plugin
   mounts_sshfs.bats        # needs sshfs
   idmap.bats               # needs fs-idmap helper binary (Go)
-  selinux.bats             # needs SELinux enabled host
+  selinux.bats             # needs SELinux enabled host (use --selinux)
   cgroup_delegation.bats   # needs systemd + sd-helper binary (Go)
+)
+
+# SELinux-specific tests — only included with --selinux flag (requires
+# an SELinux-enabled host such as Fedora).
+SELINUX_TESTS=(
+  selinux.bats
 )
 
 # Individual test names (regex) to skip via bats --filter-tags or grep.
@@ -78,6 +85,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --runc-dir)  RUNC_REPO_DIR="$2"; shift 2 ;;
     --binary)    KONTAINER_BIN="$2"; shift 2 ;;
+    --selinux)   SELINUX_MODE=true; shift ;;
     *)           echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -123,6 +131,14 @@ fi
 echo ">>> Fetching rootfs images ..."
 chmod +x "${INTEGRATION_DIR}/get-images.sh"
 "${INTEGRATION_DIR}/get-images.sh" >/dev/null
+
+# ---------------------------------------------------------------------------
+# SELinux mode: run ONLY the SELinux-specific tests
+# ---------------------------------------------------------------------------
+if [[ "$SELINUX_MODE" == "true" ]]; then
+  INCLUDE_TESTS=("${SELINUX_TESTS[@]}")
+  echo ">>> SELinux mode — running only: ${SELINUX_TESTS[*]}"
+fi
 
 # ---------------------------------------------------------------------------
 # Build the list of test files to run
