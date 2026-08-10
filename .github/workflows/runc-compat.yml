@@ -100,3 +100,115 @@ jobs:
           else
             echo "::warning::Some runc bats tests failed — see Job Summary for details"
           fi
+
+  # ── SELinux tests via Lima + Fedora VM ─────────────────────────
+  runc-bats-selinux:
+    name: runc bats SELinux (Fedora)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout kontainer-runtime
+        uses: actions/checkout@v7
+
+      - name: Download kontainer-runtime binary
+        uses: actions/download-artifact@v7
+        with:
+          name: kontainer-runtime-x86_64
+          path: build/bin/linuxX64/releaseExecutable
+
+      - name: Make binary executable
+        run: chmod +x build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe
+
+      # ── Lima VM setup ────────────────────────────────────────────
+      - name: Set up Lima
+        uses: lima-vm/lima-actions/setup@v1
+        id: lima-setup
+
+      - name: Cache Lima VM image
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/lima
+          key: lima-fedora-${{ steps.lima-setup.outputs.version }}
+
+      - name: Start Fedora VM
+        run: limactl start --plain --name=default template://fedora
+
+      - name: Provision VM
+        run: |
+          set -eux -o pipefail
+
+          # Install runtime dependencies inside the VM.
+          lima sudo dnf -y --setopt=install_weak_deps=False --setopt=tsflags=nodocs \
+            install bats git-core jq libseccomp-devel make golang \
+                   container-selinux policycoreutils
+
+          # Remount /tmp with suid to avoid SELinux nosuid_transition denials.
+          lima sudo mount -o remount,suid /tmp
+
+      - name: Show guest info
+        run: |
+          set -eux -o pipefail
+          lima uname -a
+          lima cat /etc/os-release
+          lima sestatus
+          lima rpm -q container-selinux
+
+      # ── Copy files into the VM ───────────────────────────────────
+      - name: Copy binary and test files into VM
+        run: |
+          set -eux -o pipefail
+
+          # Copy the kontainer-runtime binary.
+          limactl cp build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe \
+            default:/tmp/kontainer-runtime.kexe
+          lima sudo chmod +x /tmp/kontainer-runtime.kexe
+
+          # Copy our test script.
+          limactl cp scripts/runc-compat-test.sh default:/tmp/runc-compat-test.sh
+          lima sudo chmod +x /tmp/runc-compat-test.sh
+
+      - name: Clone runc and build helpers in VM
+        run: |
+          set -eux -o pipefail
+
+          # Clone runc inside the VM.
+          lima git clone --depth 1 --branch v1.2.9 \
+            https://github.com/opencontainers/runc /tmp/runc
+
+          # Build test helpers.
+          lima bash -c 'cd /tmp/runc && go build -o tests/cmd/recvtty/recvtty ./tests/cmd/recvtty/'
+          lima bash -c 'cd /tmp/runc && go build -o tests/cmd/remap-rootfs/remap-rootfs ./tests/cmd/remap-rootfs/'
+
+      # ── Run SELinux bats tests ───────────────────────────────────
+      - name: Run runc bats SELinux tests
+        id: bats-selinux
+        run: |
+          ssh -tt lima-default sudo -i env \
+            KONTAINER_BIN=/tmp/kontainer-runtime.kexe \
+            TAP_OUTPUT=/tmp/selinux-tap.log \
+            /tmp/runc-compat-test.sh \
+              --runc-dir /tmp/runc \
+              --binary /tmp/kontainer-runtime.kexe \
+              --selinux
+
+      - name: Retrieve results
+        if: always()
+        run: |
+          limactl cp default:/tmp/selinux-tap.log selinux-tap.log || true
+
+      - name: Upload SELinux bats TAP output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: runc-bats-selinux-tap-output
+          path: selinux-tap.log
+
+      - name: Annotate outcome
+        if: always()
+        run: |
+          if [ "${{ steps.bats-selinux.outcome }}" = "success" ]; then
+            echo "::notice::All SELinux bats tests passed"
+          else
+            echo "::warning::SELinux bats tests failed — see Job Summary for details"
+          fi
