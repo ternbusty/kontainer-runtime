@@ -3,7 +3,9 @@ name: CI
 on:
   pull_request:
     branches: [ main ]
-  workflow_call:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -64,3 +66,25 @@ jobs:
 
       - name: Build release binary
         run: ./gradlew linkReleaseExecutable${{ matrix.target }} -PtargetArch=${{ matrix.targetArch }}
+
+      - name: Upload x86_64 binary
+        if: matrix.targetArch == 'x86_64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: kontainer-runtime-x86_64
+          path: build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe
+          retention-days: 1
+
+  # ── Downstream test suites (reuse the x86_64 binary built above) ──
+
+  integration:
+    needs: build
+    uses: ./.github/workflows/integration.yml
+
+  oci-validation:
+    needs: build
+    uses: ./.github/workflows/oci-validation.yml
+
+  runc-bats:
+    needs: build
+    uses: ./.github/workflows/runc-compat.yml

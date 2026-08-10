@@ -1,15 +1,10 @@
 name: OCI runtime-tools validation
 
-# Builds kontainer-runtime, then runs the OCI runtime-spec validation suite
-# (opencontainers/runtime-tools) against the resulting binary. Modelled on
-# takoyaki's oci-validation workflow.
+# Runs the OCI runtime-spec validation suite (opencontainers/runtime-tools)
+# against the kontainer-runtime binary built by the CI workflow.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
+  workflow_call:
 
 jobs:
   validate:
@@ -19,31 +14,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Go and TAP tooling
-        run: |
-          # GitHub-hosted runners occasionally ship with broken Microsoft
-          # third-party apt repos (403 on InRelease); a single failed source
-          # shouldn't fail the whole workflow, so tolerate `apt-get update`.
-          sudo apt-get update || true
-          sudo apt-get install -y golang-go make perl libseccomp-dev
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v5
+      - name: Download kontainer-runtime binary
+        uses: actions/download-artifact@v7
         with:
-          distribution: 'temurin'
-          java-version: '17'
-          cache: 'gradle'
+          name: kontainer-runtime-x86_64
+          path: build/bin/linuxX64/releaseExecutable
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      - name: Build kontainer-runtime release binary
+      - name: Install kontainer-runtime
         run: |
-          ./gradlew linkReleaseExecutableLinuxX64 -PtargetArch=x86_64 --no-daemon
+          chmod +x build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe
           sudo mkdir -p /opt/kontainer-runtime
           sudo cp build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe \
             /opt/kontainer-runtime/bin
           sudo chmod +x /opt/kontainer-runtime/bin
+
+      - name: Install Go and TAP tooling
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y golang-go make perl libseccomp-dev
 
       - name: Clone and build runtime-tools validation suite
         run: |
@@ -95,15 +83,9 @@ jobs:
           #               container whose process (`true`) has already exited.
           #               The OCI spec REQUIRES Kill on a stopped container to
           #               error, so every spec-compliant runtime fails it.
-          #   linux_ns_path -- requires setns() into mount/pid namespaces by
-          #               path. mount-ns setns is rejected by the kernel on a
-          #               multi-threaded process (Kotlin/Native ships with GC
-          #               threads); pid-ns setns must happen before the bootstrap
-          #               clone of stage-2. Both need bootstrap.c-level rework.
           #   process_rlimits -- Go's runtime auto-raises RLIMIT_NOFILE soft to
           #               hard during /runtimetest startup, masking the value we
           #               set (3000); only NOFILE is affected. Not a runtime bug.
-          #               (takoyaki has the same behaviour: rc=0 / empty TAP.)
           SKIP_BROKEN_PATTERN='^(pidfile|process_rlimits)$'
           for t in validation/*/*.t; do
             name=$(basename "$t" .t)
@@ -180,9 +162,6 @@ jobs:
               done
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-          # Gate the workflow on any failing/erroring test. Tests we deliberately
-          # don't implement (or that fail upstream regardless of runtime) are in
-          # SKIP_BROKEN_PATTERN above with a per-entry justification.
           if [ "$FAIL" -gt 0 ] || [ "$TIMEOUT" -gt 0 ] || [ "$ERROR" -gt 0 ]; then
             echo "::error::validation failed: FAIL=$FAIL TIMEOUT=$TIMEOUT ERROR=$ERROR"
             exit 1

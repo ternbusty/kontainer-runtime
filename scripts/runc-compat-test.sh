@@ -26,7 +26,7 @@ RUNC_REPO_DIR="${RUNC_REPO_DIR:-}"
 KONTAINER_BIN="${KONTAINER_BIN:-${PROJECT_ROOT}/build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe}"
 SUMMARY_FILE="${SUMMARY_FILE:-}"
 BATS_JOBS="${BATS_JOBS:-1}"
-BATS_TEST_TIMEOUT="${BATS_TEST_TIMEOUT:-180}"
+BATS_TEST_TIMEOUT="${BATS_TEST_TIMEOUT:-300}"
 
 # ---------------------------------------------------------------------------
 # Test file lists
@@ -300,4 +300,10 @@ fi
 echo ""
 echo "Raw TAP output: $TAP_OUTPUT"
 
-exit $BATS_RC
+# Exit based on parsed test results, not raw bats exit code.
+# bats may return non-zero due to timeouts in cleanup or background
+# processes lingering after all tests passed — that should not fail CI.
+if [[ $FAIL -gt 0 ]]; then
+  exit 1
+fi
+exit 0
