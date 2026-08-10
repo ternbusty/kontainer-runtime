@@ -1,11 +1,16 @@
 package command
 
 import config.loadKontainerConfig
-import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.*
 import kotlinx.serialization.Serializable
 import logger.Logger
+import platform.linux.IN_CLOEXEC
+import platform.linux.IN_DELETE_SELF
+import platform.linux.inotify_add_watch
+import platform.linux.inotify_init1
 import platform.posix.*
 import state.containerExists
+import state.getContainerDir
 import utils.FileSystem
 import utils.JsonCodec
 
@@ -46,6 +51,32 @@ fun events(
 
     val cgDir = "/sys/fs/cgroup/${cgroupPath.removePrefix("/")}"
 
+    // Set up inotify to watch the container's state file for deletion.
+    // When `runc delete` removes the state directory, IN_DELETE_SELF
+    // fires and poll() returns immediately — no polling needed.
+    val statePath = "${getContainerDir(rootPath, containerId)}/state.json"
+    val ifd = inotify_init1(IN_CLOEXEC)
+    if (ifd >= 0) {
+        inotify_add_watch(ifd, statePath, IN_DELETE_SELF.toUInt())
+    }
+
+    try {
+        eventsLoop(fs, rootPath, containerId, cgDir, stats, intervalMs, ifd)
+    } finally {
+        if (ifd >= 0) close(ifd)
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+private fun eventsLoop(
+    fs: FileSystem,
+    rootPath: String,
+    containerId: String,
+    cgDir: String,
+    stats: Boolean,
+    intervalMs: Long,
+    ifd: Int,
+) {
     // Track oom counter so we can emit {"type":"oom"} events when it
     // increments. cgroup v2 exposes this in memory.events as "oom <N>".
     var lastOomCount = readOomCount(fs, cgDir)
@@ -71,17 +102,25 @@ fun events(
 
         if (stats) break
 
-        // Sleep for the interval, but check for container deletion every
-        // 500ms so we exit promptly when the container is removed (runc
-        // uses an eventfd that fires immediately; we poll instead).
-        var remaining = intervalMs
-        while (remaining > 0) {
-            val chunk = minOf(remaining, 500L)
-            usleep((chunk * 1000).toUInt())
-            remaining -= chunk
-            if (!containerExists(fs, rootPath, containerId)) {
-                return
+        // Wait for either:
+        //   (a) the interval to elapse (poll timeout), or
+        //   (b) the container state file to be deleted (inotify event).
+        // This mirrors runc's use of eventfd for instant exit on
+        // container deletion.
+        if (ifd >= 0) {
+            memScoped {
+                val pfd = alloc<pollfd>()
+                pfd.fd = ifd
+                pfd.events = POLLIN.toShort()
+                val ret = poll(pfd.ptr, 1u, intervalMs.toInt())
+                if (ret > 0) {
+                    // inotify fired — state file deleted, exit now.
+                    return
+                }
             }
+        } else {
+            // Fallback when inotify is unavailable (shouldn't happen on Linux).
+            usleep((intervalMs * 1000).toUInt())
         }
     }
 }

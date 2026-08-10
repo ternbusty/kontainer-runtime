@@ -196,6 +196,7 @@ kotlin {
             create("network")
             create("bpf")
             create("pty")
+            create("inotify")
         }
     }
 
