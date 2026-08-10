@@ -26,8 +26,10 @@ import kotlinx.cinterop.toKString
 import logger.Logger
 import platform.posix._exit
 import platform.posix.exit
+import platform.posix.fprintf
 import platform.posix.getenv
 import platform.posix.getpid
+import platform.posix.stderr
 import process.runInitProcess
 import spec.loadSpec
 import syscall.LinuxSyscall
@@ -712,7 +714,7 @@ fun main(args: Array<String>) {
         if (subcommand != null && subcommand in SUBCOMMAND_NAMES) {
             printSubcommandHelp(subcommand)
         } else if (subcommand != null && subcommand !in SUBCOMMAND_NAMES) {
-            Logger.error("No help topic for '$subcommand'")
+            fprintf(stderr, "No help topic for '%s'\n", subcommand)
             exit(1)
             return
         } else {

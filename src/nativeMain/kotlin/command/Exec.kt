@@ -161,7 +161,11 @@ fun exec(
                 return
             }
         } else {
-            spec.process.copy(args = args)
+            // runc defaults exec to terminal=false (non-TTY) unless --tty
+            // is explicitly passed. Without this, inheriting terminal=true
+            // from the container's spec causes a PTY to be allocated for
+            // every exec, breaking --preserve-fds and non-interactive use.
+            spec.process.copy(args = args, terminal = tty)
         }
 
     // Apply CLI overrides to the exec process spec
@@ -187,7 +191,9 @@ fun exec(
         }
         execProcess = execProcess.copy(user = execProcess.user.copy(additionalGids = existingGids))
     }
-    if (tty) {
+    // For --process, apply --tty override (the JSON file's terminal
+    // value is the default; --tty forces it on).
+    if (processSpecPath != null && tty) {
         execProcess = execProcess.copy(terminal = true)
     }
 
@@ -199,7 +205,7 @@ fun exec(
     if (cgroupOverride.isNotEmpty()) {
         val subPath = cgroupOverride.first()
         if (subPath.contains("..")) {
-            Logger.error("exec: bad sub cgroup path \"$subPath\": .. is not a sub cgroup path")
+            fprintf(stderr, "exec failed: invalid sub-cgroup path \"%s\": .. is not a sub cgroup path\n", subPath)
             exit(1)
             return
         }
@@ -286,26 +292,6 @@ fun exec(
         }
     }
 
-    // Open the container's root directory BEFORE the fork (while we can
-    // still see /proc/<initPid>/root from the host mount namespace).
-    // After the child joins the container's mount namespace, it uses
-    // fchdir + chroot to enter the container's root filesystem. Without
-    // this, /proc/sys/kernel/domainname etc. are not visible because the
-    // exec process's filesystem root is still the host root.
-    val hasMount = joins.any { it.ociType == "mount" }
-    val rootFd =
-        if (hasMount) {
-            val fd = open("/proc/$initPid/root", O_RDONLY or O_CLOEXEC or O_DIRECTORY)
-            if (fd < 0) {
-                Logger.error("exec: failed to open /proc/$initPid/root (errno=$errno)")
-                nsFds.values.forEach { close(it) }
-                exit(1)
-            }
-            fd
-        } else {
-            -1
-        }
-
     // For detached exec with terminal, connect to the external console
     // socket from the host context (before forking into the container's
     // namespaces where the host path would be unreachable).
@@ -341,7 +327,6 @@ fun exec(
                 notifyInitReceiver,
                 preserveFds,
                 consoleSocketFd,
-                rootFd,
             )
         } catch (t: Throwable) {
             fprintf(stderr, "exec: %s\n", t.message ?: "unknown error")
@@ -349,7 +334,6 @@ fun exec(
         _exit(1)
     }
     if (consoleSocketFd >= 0) close(consoleSocketFd)
-    if (rootFd >= 0) close(rootFd)
 
     // Parent: attach the child to the container's cgroup and raise its hard
     // rlimits, both from the host context — the host cgroupfs view is gone
@@ -362,17 +346,13 @@ fun exec(
     close(setupPipe[0])
     val setupOk =
         try {
-            // exec --cgroup creates subcgroup directories on demand, just
-            // like runc. setup() creates and enables controllers; addProcess
-            // just writes to cgroup.procs. We call setup with null pid first
-            // to create the directory and propagate controllers, then
-            // addProcess to move the child into it.
-            cgroup.setup(pid = null, cgroupPath = cgroupPath, resources = null)
             cgroup.addProcess(pid, cgroupPath)
             syscall.raiseRlimits(pid, execSpec.process.rlimits)
             true
         } catch (e: Exception) {
-            Logger.error("exec: failed to set up child (cgroup $cgroupPath): ${e.message}")
+            // Write the error to stderr so it appears in bats test output.
+            // runc surfaces cgroup addProcess errors this way.
+            fprintf(stderr, "exec failed: %s\n", e.message ?: "unknown error")
             false
         }
     if (setupOk) {
@@ -453,7 +433,6 @@ private fun runExecChild(
     notifyInitReceiver: InitReceiver?,
     preserveFds: Int = 0,
     consoleSocketFd: Int = -1,
-    rootFd: Int = -1,
 ) {
     close(pidPipe[0])
     close(setupPipe[1])
@@ -478,6 +457,15 @@ private fun runExecChild(
     // container's userns that authorize the remaining joins), pid last.
     // The CLONE_NEW* nstype guard makes the kernel verify each fd is the
     // namespace type we think it is.
+    //
+    // setns(CLONE_NEWNS) also changes the process's root and CWD to the
+    // root of the new mount namespace (done by the kernel's mntns_install).
+    // After pivot_root by the container's init process, the mount
+    // namespace root IS the container's rootfs, so no explicit chroot is
+    // needed — unlike the init path which uses pivot_root. Attempting
+    // fchdir(rootFd)+chroot to the same inode via a different dentry
+    // (e.g. from /proc/<pid>/root opened in the host namespace) would
+    // break mount-point resolution, making /proc invisible.
     for (nsj in joins) {
         val fd = nsFds[nsj.procName] ?: continue
         if (syscall.setns(fd, nsj.cloneFlag) != 0) {
@@ -486,23 +474,6 @@ private fun runExecChild(
         }
     }
     nsFds.values.forEach { close(it) }
-
-    // After joining the mount namespace, change root to the container's
-    // rootfs. Without this the process's filesystem root is still the host
-    // root, and paths like /proc/sys/kernel/domainname are invisible.
-    // The rootFd was opened BEFORE the fork while /proc/<initPid>/root was
-    // still reachable from the host mount namespace.
-    if (rootFd >= 0) {
-        if (fchdir(rootFd) != 0) {
-            fprintf(stderr, "exec: fchdir(rootFd) failed: %s\n", strerror(errno))
-            _exit(1)
-        }
-        close(rootFd)
-        if (chroot(".") != 0) {
-            fprintf(stderr, "exec: chroot(\".\") failed: %s\n", strerror(errno))
-            _exit(1)
-        }
-    }
 
     // PTY allocation: after joining the container's namespaces (so we are
     // inside the container's mount namespace with access to its /dev/pts),

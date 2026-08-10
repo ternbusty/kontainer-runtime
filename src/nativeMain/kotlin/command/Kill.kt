@@ -66,7 +66,7 @@ fun kill(
                 false
             }
         if (!hasRemainingProcs) {
-            Logger.error("container not running")
+            fprintf(stderr, "container not running\n")
             exit(1)
         }
         // Fall through to cgroup-based kill below.

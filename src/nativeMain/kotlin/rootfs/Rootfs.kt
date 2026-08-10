@@ -75,122 +75,126 @@ fun prepareRootfs(
     }
     Logger.debug("rootfs bind mounted successfully")
 
-    // Mount /proc if it exists in rootfs
+    // Mount /proc — create the mount point if the rootfs doesn't include it
+    // (e.g. the docker-library/busybox tar has no /proc directory).
     val procPath = "$rootfsPath/proc"
-    if (access(procPath, F_OK) == 0) {
-        if (syscall.mount(
-                source = "proc",
-                target = procPath,
-                fstype = "proc",
-                flags = (MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong(),
-            ) != 0
-        ) {
-            val errNum = errno
-            perror("mount /proc")
-            Logger.error("failed to mount /proc (errno=$errNum)")
-            throw Exception("Failed to mount /proc (errno=$errNum)")
-        }
-        Logger.debug("mounted /proc")
+    if (access(procPath, F_OK) != 0) {
+        mkdir(procPath, 0x1EDu) // 0755
     }
+    if (syscall.mount(
+            source = "proc",
+            target = procPath,
+            fstype = "proc",
+            flags = (MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong(),
+        ) != 0
+    ) {
+        val errNum = errno
+        perror("mount /proc")
+        Logger.error("failed to mount /proc (errno=$errNum)")
+        throw Exception("Failed to mount /proc (errno=$errNum)")
+    }
+    Logger.debug("mounted /proc")
 
-    // Mount /dev if it exists in rootfs
+    // Mount /dev — create the mount point if missing (e.g. busybox rootfs).
     val devPath = "$rootfsPath/dev"
-    if (access(devPath, F_OK) == 0) {
-        if (syscall.mount(
-                source = "tmpfs",
-                target = devPath,
-                fstype = "tmpfs",
-                flags = (MS_NOSUID or MS_NOEXEC).toULong(),
-                data = "mode=755",
-            ) != 0
-        ) {
-            val errNum = errno
-            perror("mount /dev")
-            Logger.error("failed to mount /dev (errno=$errNum)")
-            throw Exception("Failed to mount /dev (errno=$errNum)")
-        }
-        Logger.debug("mounted /dev")
-
-        createDeviceNodes(syscall, devPath)
+    if (access(devPath, F_OK) != 0) {
+        mkdir(devPath, 0x1EDu) // 0755
     }
+    if (syscall.mount(
+            source = "tmpfs",
+            target = devPath,
+            fstype = "tmpfs",
+            flags = (MS_NOSUID or MS_NOEXEC).toULong(),
+            data = "mode=755",
+        ) != 0
+    ) {
+        val errNum = errno
+        perror("mount /dev")
+        Logger.error("failed to mount /dev (errno=$errNum)")
+        throw Exception("Failed to mount /dev (errno=$errNum)")
+    }
+    Logger.debug("mounted /dev")
 
-    // Mount /sys if it exists in rootfs
+    createDeviceNodes(syscall, devPath)
+
+    // Mount /sys — create the mount point if missing (e.g. busybox rootfs).
     val sysPath = "$rootfsPath/sys"
-    if (access(sysPath, F_OK) == 0) {
-        if (syscall.mount(
-                source = "sysfs",
-                target = sysPath,
-                fstype = "sysfs",
-                flags = (MS_NOSUID or MS_NODEV or MS_NOEXEC or MS_RDONLY).toULong(),
-            ) != 0
-        ) {
-            val errNum = errno
-            perror("mount /sys")
-            Logger.error("failed to mount /sys (errno=$errNum)")
-            throw Exception("Failed to mount /sys (errno=$errNum)")
-        }
-        Logger.debug("mounted /sys")
+    if (access(sysPath, F_OK) != 0) {
+        mkdir(sysPath, 0x1EDu) // 0755
+    }
+    if (syscall.mount(
+            source = "sysfs",
+            target = sysPath,
+            fstype = "sysfs",
+            flags = (MS_NOSUID or MS_NODEV or MS_NOEXEC or MS_RDONLY).toULong(),
+        ) != 0
+    ) {
+        val errNum = errno
+        perror("mount /sys")
+        Logger.error("failed to mount /sys (errno=$errNum)")
+        throw Exception("Failed to mount /sys (errno=$errNum)")
+    }
+    Logger.debug("mounted /sys")
 
-        // Mount /sys/fs/cgroup if cgroup v2 is available.
-        // We bind mount the container's specific cgroup path instead of the whole
-        // /sys/fs/cgroup so the container only sees its own cgroup. See
-        // runc/libcontainer/rootfs_linux.go:mountCgroupV2().
-        val cgroupMountPath = "$rootfsPath/sys/fs/cgroup"
-        if (access("/sys/fs/cgroup/cgroup.controllers", F_OK) == 0) {
-            Logger.debug("setting up /sys/fs/cgroup (cgroup v2)")
+    // Mount /sys/fs/cgroup if cgroup v2 is available.
+    // We bind mount the container's specific cgroup path instead of the whole
+    // /sys/fs/cgroup so the container only sees its own cgroup. See
+    // runc/libcontainer/rootfs_linux.go:mountCgroupV2().
+    val cgroupMountPath = "$rootfsPath/sys/fs/cgroup"
+    if (access("/sys/fs/cgroup/cgroup.controllers", F_OK) == 0) {
+        Logger.debug("setting up /sys/fs/cgroup (cgroup v2)")
 
-            val containerCgroupPath = getContainerCgroupPath()
-            if (containerCgroupPath != null) {
-                val cgroupSourcePath = "/sys/fs/cgroup$containerCgroupPath"
-                Logger.debug("container cgroup source path: $cgroupSourcePath")
+        val containerCgroupPath = getContainerCgroupPath()
+        if (containerCgroupPath != null) {
+            val cgroupSourcePath = "/sys/fs/cgroup$containerCgroupPath"
+            Logger.debug("container cgroup source path: $cgroupSourcePath")
 
-                if (access(cgroupSourcePath, F_OK) != 0) {
-                    Logger.warn("container cgroup path does not exist: $cgroupSourcePath")
-                } else {
-                    if (access(cgroupMountPath, F_OK) != 0) {
-                        if (mkdir(cgroupMountPath, 0x1EDu) != 0) { // 0755
-                            val errNum = errno
-                            Logger.warn("failed to create /sys/fs/cgroup directory (errno=$errNum)")
-                        }
+            if (access(cgroupSourcePath, F_OK) != 0) {
+                Logger.warn("container cgroup path does not exist: $cgroupSourcePath")
+            } else {
+                if (access(cgroupMountPath, F_OK) != 0) {
+                    if (mkdir(cgroupMountPath, 0x1EDu) != 0) { // 0755
+                        val errNum = errno
+                        Logger.warn("failed to create /sys/fs/cgroup directory (errno=$errNum)")
                     }
+                }
 
-                    // Bind mount the container's cgroup path to /sys/fs/cgroup so the
-                    // container sees its own cgroup as the root of the hierarchy.
+                // Bind mount the container's cgroup path to /sys/fs/cgroup so the
+                // container sees its own cgroup as the root of the hierarchy.
+                if (syscall.mount(
+                        source = cgroupSourcePath,
+                        target = cgroupMountPath,
+                        fstype = null,
+                        flags = (MS_BIND or MS_REC).toULong(),
+                    ) != 0
+                ) {
+                    val errNum = errno
+                    perror("bind mount $cgroupSourcePath")
+                    Logger.warn("failed to bind mount container cgroup (errno=$errNum)")
+                } else {
+                    Logger.debug("bind mounted container cgroup to /sys/fs/cgroup")
+
+                    // Remount as readonly
                     if (syscall.mount(
-                            source = cgroupSourcePath,
+                            source = null,
                             target = cgroupMountPath,
                             fstype = null,
-                            flags = (MS_BIND or MS_REC).toULong(),
+                            flags = (MS_BIND or MS_REMOUNT or MS_RDONLY or MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong(),
                         ) != 0
                     ) {
                         val errNum = errno
-                        perror("bind mount $cgroupSourcePath")
-                        Logger.warn("failed to bind mount container cgroup (errno=$errNum)")
+                        perror("remount /sys/fs/cgroup readonly")
+                        Logger.warn("failed to remount /sys/fs/cgroup readonly (errno=$errNum)")
                     } else {
-                        Logger.debug("bind mounted container cgroup to /sys/fs/cgroup")
-
-                        // Remount as readonly
-                        if (syscall.mount(
-                                source = null,
-                                target = cgroupMountPath,
-                                fstype = null,
-                                flags = (MS_BIND or MS_REMOUNT or MS_RDONLY or MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong(),
-                            ) != 0
-                        ) {
-                            val errNum = errno
-                            perror("remount /sys/fs/cgroup readonly")
-                            Logger.warn("failed to remount /sys/fs/cgroup readonly (errno=$errNum)")
-                        } else {
-                            Logger.debug("remounted /sys/fs/cgroup as readonly")
-                        }
+                        Logger.debug("remounted /sys/fs/cgroup as readonly")
                     }
                 }
-            } else {
-                Logger.warn("could not determine container cgroup path, skipping /sys/fs/cgroup mount")
             }
         } else {
-            Logger.debug("cgroup v2 not available on host, skipping /sys/fs/cgroup mount")
+            Logger.warn("could not determine container cgroup path, skipping /sys/fs/cgroup mount")
         }
+    } else {
+        Logger.debug("cgroup v2 not available on host, skipping /sys/fs/cgroup mount")
     }
 }
 
