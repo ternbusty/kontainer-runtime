@@ -386,14 +386,49 @@ class EventsCommand : CoreCliktCommand(name = "events") {
     val stats by option("--stats", help = "Print a single snapshot and exit").flag()
     val interval by option(
         "--interval",
-        help = "Seconds between snapshots (default 5)",
-    ).int().default(5)
+        help = "Interval between snapshots (Go duration, e.g. 5s, 100ms). Default 5s.",
+    ).default("5s")
     val containerId by argument(help = "Container ID")
     val config by requireObject<GlobalConfig>()
 
     override fun run() {
-        events(config.fs, config.rootPath, containerId, stats, interval.toUInt())
+        events(config.fs, config.rootPath, containerId, stats, parseDurationMs(interval))
     }
+}
+
+/**
+ * Parse a Go-style duration string into milliseconds.
+ * Supports: "100ms", "1s", "5s", "1m", "500us", bare number (seconds).
+ */
+private fun parseDurationMs(input: String): Long {
+    val s = input.trim()
+
+    // Try bare integer (seconds, for backward compat)
+    s.toLongOrNull()?.let { return it * 1000 }
+
+    // Go duration suffixes
+    if (s.endsWith("ms")) {
+        s.removeSuffix("ms").toLongOrNull()?.let { return it }
+    }
+    if (s.endsWith("us") || s.endsWith("µs")) {
+        val v = s.removeSuffix("us").removeSuffix("µs").toLongOrNull()
+        if (v != null) return maxOf(v / 1000, 1)
+    }
+    if (s.endsWith("ns")) {
+        s.removeSuffix("ns").toLongOrNull()?.let { return maxOf(it / 1_000_000, 1) }
+    }
+    if (s.endsWith("m") && !s.endsWith("ms")) {
+        s.removeSuffix("m").toLongOrNull()?.let { return it * 60_000 }
+    }
+    if (s.endsWith("h")) {
+        s.removeSuffix("h").toLongOrNull()?.let { return it * 3_600_000 }
+    }
+    if (s.endsWith("s") && !s.endsWith("ms") && !s.endsWith("us") && !s.endsWith("ns") && !s.endsWith("µs")) {
+        s.removeSuffix("s").toLongOrNull()?.let { return it * 1000 }
+    }
+
+    // Fallback: default 5 seconds
+    return 5000
 }
 
 class PsCommand : CoreCliktCommand(name = "ps") {

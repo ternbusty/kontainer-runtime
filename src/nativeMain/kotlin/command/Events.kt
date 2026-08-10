@@ -1,10 +1,11 @@
 package command
 
 import config.loadKontainerConfig
+import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.serialization.Serializable
 import logger.Logger
-import platform.posix.exit
-import platform.posix.sleep
+import platform.posix.*
+import state.containerExists
 import utils.FileSystem
 import utils.JsonCodec
 
@@ -13,18 +14,19 @@ import utils.JsonCodec
  *
  * Reads memory, CPU, and PID stats from the cgroup v2 filesystem and
  * prints one JSON object per snapshot. With `--stats` (one-shot) it
- * prints a single snapshot and exits; otherwise it loops at [intervalSec].
+ * prints a single snapshot and exits; otherwise it loops at [intervalMs].
  *
  * Output format (JSON Lines):
  *
  *     {"id":"ct1","type":"stats","data":{"memory":{...},"cpu":{...},"pids":{...}}}
  */
+@OptIn(ExperimentalForeignApi::class)
 fun events(
     fs: FileSystem,
     rootPath: String,
     containerId: String,
     stats: Boolean,
-    intervalSec: UInt,
+    intervalMs: Long,
 ) {
     val config =
         try {
@@ -45,12 +47,23 @@ fun events(
     val cgDir = "/sys/fs/cgroup/${cgroupPath.removePrefix("/")}"
 
     while (true) {
+        // Check if the container still exists. Once deleted, exit cleanly.
+        if (!containerExists(fs, rootPath, containerId)) {
+            break
+        }
+
         val snapshot = buildSnapshot(fs, cgDir, containerId)
         println(JsonCodec.encode(snapshot))
+        fflush(stdout)
 
         if (stats) break
 
-        sleep(intervalSec)
+        // Sleep for the interval. Use usleep for sub-second precision.
+        if (intervalMs >= 1000) {
+            sleep((intervalMs / 1000).toUInt())
+        } else {
+            usleep((intervalMs * 1000).toUInt())
+        }
     }
 }
 

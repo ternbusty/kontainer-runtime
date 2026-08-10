@@ -100,6 +100,20 @@ fun delete(
                 } catch (_: Exception) {
                     null
                 }
+
+            // If the container is paused (frozen), thaw it before sending
+            // SIGKILL — the kernel holds signals pending on frozen processes.
+            if (state.status == ContainerStatus.PAUSED && cgPath != null) {
+                val normalizedPath = cgPath.removePrefix("/")
+                val freezePath = "/sys/fs/cgroup/$normalizedPath/cgroup.freeze"
+                try {
+                    fs.writeTextFile(freezePath, "0")
+                    Logger.debug("thawed paused container before kill")
+                } catch (_: Exception) {
+                    Logger.debug("could not thaw container (may not be frozen)")
+                }
+            }
+
             if (cgPath != null) {
                 try {
                     val pids = cgroup.getPids(cgPath)
