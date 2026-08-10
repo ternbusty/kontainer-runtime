@@ -26,7 +26,9 @@ import syscall.Syscall
  * Init process (Stage-2 / PID 1 in container)
  *
  * This process runs as PID 1 in the new PID namespace (if configured).
- * It is created by bootstrap.c Stage-1 using CLONE_PARENT.
+ * It is created by bootstrap.c Stage-1 using CLONE_PARENT, which makes
+ * its parent the main process (not Stage-1).  This allows the main
+ * process to waitpid on it for exit-code forwarding.
  *
  * This process:
  * - Runs as PID 1 in the container

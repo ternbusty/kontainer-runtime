@@ -7,7 +7,6 @@ import channel.mainChannel
 import kotlinx.cinterop.*
 import logger.Logger
 import namespace.calculateCloneFlags
-import platform.linux.SYS_clone
 import platform.posix.*
 import process.runMainProcess
 import rootfs.validateSysctls
@@ -155,11 +154,17 @@ fun create(
         exePathBuf[exePathLen.toInt()] = 0.toByte() // null terminate
         Logger.debug("executable path: ${exePathBuf.toKString()}")
 
-        // Clone with CLONE_PARENT and exec to trigger bootstrap constructor
-        when (val stage1Pid = cloneWithParent()) {
+        // Fork and exec to trigger bootstrap constructor.
+        // We use a plain fork() (not CLONE_PARENT) so that Stage-1 becomes a
+        // child of this process.  bootstrap.c's clone_parent() then creates
+        // Stage-2 with CLONE_PARENT, which makes Stage-2's parent = Stage-1's
+        // parent = this process.  The result: both Stage-1 and Stage-2 are
+        // children of the main process, and waitpid works for exit-code
+        // forwarding in foreground mode (runc uses the same architecture).
+        when (val stage1Pid = fork()) {
             -1 -> {
-                perror("clone")
-                Logger.error("Failed to clone with CLONE_PARENT")
+                perror("fork")
+                Logger.error("Failed to fork Stage-1")
                 close(syncFds[0])
                 close(syncFds[1])
                 notifyListener.close()
@@ -264,24 +269,17 @@ fun create(
                     initSender = initSender,
                     initReceiver = initReceiver,
                 )
-                Logger.debug("runMainProcess returned, create() completing")
+
+                // Reap Stage-1 to avoid zombies. Stage-1 exits after the
+                // bootstrap sync protocol completes, which is well before
+                // runMainProcess returns. Use WNOHANG as a safety measure —
+                // if Stage-1 is somehow still running we don't block.
+                val rc = waitpid(stage1Pid, null, WNOHANG)
+                if (rc == 0) {
+                    // Stage-1 hasn't exited yet — do a blocking wait.
+                    waitpid(stage1Pid, null, 0)
+                }
+                Logger.debug("reaped Stage-1 (pid=$stage1Pid)")
             }
         }
     }
-
-/**
- * Clone with CLONE_PARENT flag using raw syscall
- * Makes the child process a sibling of the caller (same parent)
- *
- * This ensures Stage-1 becomes a sibling of Create.kt (both children of containerd-shim)
- * When Stage-1 exits, it won't become a zombie waiting for Create.kt to reap it
- *
- * @return PID of cloned child on success, -1 on error
- */
-@OptIn(ExperimentalForeignApi::class)
-private fun cloneWithParent(): Int {
-    // CLONE_PARENT = 0x00008000
-    // syscall(SYS_clone, flags, child_stack, parent_tid, child_tid, tls)
-    val pid = syscall(SYS_clone.toLong(), SIGCHLD.toLong() or 0x00008000L, 0L, 0L, 0L, 0L)
-    return pid.toInt()
-}

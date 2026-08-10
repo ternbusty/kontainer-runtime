@@ -155,9 +155,12 @@ static unsigned int getenv_uint_hex(const char *name) {
  * This makes the child process a sibling of the caller, not a child.
  *
  * When Stage-1 calls this to create Stage-2:
- * - Stage-2's parent becomes Stage-1's parent (containerd-shim)
- * - Stage-1 and Stage-2 are siblings
- * - When Stage-1 exits, Stage-2 is not affected
+ * - Stage-2's parent becomes Stage-1's parent (the main process)
+ * - Both Stage-1 and Stage-2 are children of the main process
+ * - The main process can waitpid on Stage-2 for exit-code forwarding
+ *
+ * This mirrors runc's nsexec architecture where clone_parent() makes the
+ * init process a child of the Go runtime process.
  *
  * Returns: PID of cloned child on success, -1 on error
  */

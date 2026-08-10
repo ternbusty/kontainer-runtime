@@ -29,10 +29,11 @@ import utils.FileSystem
  * the runtime creates an internal console socket, accepts the PTY master
  * from the container, and relays I/O between the master and stdio.
  *
- * Because bootstrap.c clones Stage-2 with CLONE_PARENT, Stage-2's
- * parent is the main process, so waitpid works for exit-code forwarding.
- * Foreground mode uses waitpid to capture the container exit code and
- * exits with it.
+ * Create.kt uses a plain fork() for Stage-1, and bootstrap.c clones
+ * Stage-2 with CLONE_PARENT.  This makes Stage-2 a child of the main
+ * process (matching runc's architecture), so waitpid works for
+ * exit-code forwarding.  Foreground mode uses waitpid to capture the
+ * container exit code and exits with it.
  */
 @OptIn(ExperimentalForeignApi::class)
 fun run(
@@ -136,8 +137,9 @@ fun run(
         }
 
     // Wait for the container's init process to exit and capture its exit code.
-    // Stage-2 (init) is a child of the main process (due to CLONE_PARENT in
-    // bootstrap.c), so waitpid works here.
+    // Stage-2 (init) is a child of the main process: Create.kt fork()s
+    // Stage-1 (child of main), then bootstrap.c clone_parent()s Stage-2
+    // (parent = Stage-1's parent = main).  waitpid works here.
     val containerExitCode =
         if (initPid > 0) {
             waitForProcessExit(initPid)
@@ -173,9 +175,10 @@ fun run(
 /**
  * Wait for the container init process to exit and return its exit code.
  *
- * Stage-2 (the container init) is a child of the main process (due to
- * CLONE_PARENT in bootstrap.c), so waitpid(2) works here. We try waitpid
- * first; if that fails (ECHILD — process already reaped), we fall back to
+ * Stage-2 (the container init) is a child of the main process: Create.kt
+ * uses fork() for Stage-1, and bootstrap.c uses CLONE_PARENT for Stage-2,
+ * so Stage-2's parent = Stage-1's parent = main process.  waitpid(2) works
+ * here.  If it fails (ECHILD — process already reaped), we fall back to
  * polling with kill(pid, 0).
  *
  * @return the process's exit code, or 0 if it couldn't be determined
