@@ -301,6 +301,28 @@ private fun initProcessInternal(
         // We re-open it after start if terminal mode is active.
         Logger.debug("waiting for start signal...")
         Logger.closeRedirect()
+
+        // Explicitly close all leaked FDs before blocking in "created"
+        // state.  closeRange (above) only sets CLOEXEC which fires at
+        // execve, but tools like runc's FD-leak test inspect
+        // /proc/$pid/fd while we're blocked here — before execve.  Close
+        // everything except stdio (0-2) and the notify listener socket.
+        val keepFd = notifyListener.fd()
+        val dir = opendir("/proc/self/fd")
+        if (dir != null) {
+            val leaked = mutableListOf<Int>()
+            while (true) {
+                val entry = readdir(dir) ?: break
+                val fd =
+                    entry.pointed.d_name
+                        .toKString()
+                        .toIntOrNull() ?: continue
+                if (fd >= 3 && fd != keepFd) leaked.add(fd)
+            }
+            closedir(dir) // closes its own internal fd
+            for (fd in leaked) close(fd) // EBADF on dir-fd is harmless
+        }
+
         notifyListener.waitForContainerStart()
         // Reopen Logger redirect for any post-start log messages.
         // The PTY slave is already wired to stdio, so dup stderr again
