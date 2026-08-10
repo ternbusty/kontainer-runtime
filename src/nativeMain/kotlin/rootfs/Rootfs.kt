@@ -155,12 +155,18 @@ fun prepareRootfs(
             }
         }
 
-        // Determine mount flags from the spec's cgroup mount options.
+        // Determine mount flags and data from the spec's cgroup mount options.
+        // Options like nosuid/nodev/noexec/ro are mount flags; anything else
+        // becomes the data string passed to mount(2) (e.g. nsdelegate).
+        // runc passes m.Data verbatim — we mirror that behavior.
         val cgroupMount = specMounts?.find { it.destination == "/sys/fs/cgroup" }
+        val flagNames =
+            setOf("nosuid", "nodev", "noexec", "relatime", "ro", "rw", "sync", "async", "dirsync", "noatime", "nodiratime", "strictatime")
         val cgroupReadonly = cgroupMount?.options?.contains("ro") ?: true
         val cgroupFlags =
             (MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong() or
                 (if (cgroupReadonly) MS_RDONLY.toULong() else 0uL)
+        val cgroupData = cgroupMount?.options?.filter { it !in flagNames }?.joinToString(",") ?: ""
 
         // Try direct cgroup2 mount first (runc's primary path).
         val directRc =
@@ -169,7 +175,7 @@ fun prepareRootfs(
                 target = cgroupMountPath,
                 fstype = "cgroup2",
                 flags = cgroupFlags,
-                data = "nsdelegate,memory_recursiveprot",
+                data = cgroupData,
             )
         if (directRc == 0) {
             Logger.debug("mounted cgroup2 filesystem at /sys/fs/cgroup (direct)")
