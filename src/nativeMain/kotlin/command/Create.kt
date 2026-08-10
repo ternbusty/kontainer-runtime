@@ -189,6 +189,13 @@ fun create(
                 // Set clone flags as hex string (e.g., "10000000" for CLONE_NEWUSER)
                 val cloneFlagsHex = cloneFlags.toUInt().toString(16)
                 setenv("_KONTAINER_CLONE_FLAGS", cloneFlagsHex, 1)
+
+                // Forward debug logging to bootstrap.c — it checks for the
+                // existence of _KONTAINER_DEBUG before emitting diagnostics.
+                val logLevel = getenv("KONTAINER_LOG_LEVEL")?.toKString()?.uppercase()
+                if (logLevel == "DEBUG" || logLevel == "TRACE") {
+                    setenv("_KONTAINER_DEBUG", "1", 1)
+                }
                 // Enable bootstrap mode
                 setenv("_KONTAINER_IS_BOOTSTRAP", "1", 1)
                 setenv("_KONTAINER_SYNCPIPE", syncPipeStr, 1)
