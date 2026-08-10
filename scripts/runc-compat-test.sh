@@ -26,7 +26,7 @@ RUNC_REPO_DIR="${RUNC_REPO_DIR:-}"
 KONTAINER_BIN="${KONTAINER_BIN:-${PROJECT_ROOT}/build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe}"
 SUMMARY_FILE="${SUMMARY_FILE:-}"
 BATS_JOBS="${BATS_JOBS:-1}"
-BATS_TEST_TIMEOUT="${BATS_TEST_TIMEOUT:-120}"
+BATS_TEST_TIMEOUT="${BATS_TEST_TIMEOUT:-180}"
 
 # ---------------------------------------------------------------------------
 # Test file lists
@@ -141,19 +141,29 @@ echo "    Binary: $KONTAINER_BIN"
 echo ""
 
 # ---------------------------------------------------------------------------
-# Run bats
+# Run bats — one file at a time with a per-file timeout so a single
+# hanging test doesn't block the entire suite.
 # ---------------------------------------------------------------------------
 TAP_OUTPUT="${TAP_OUTPUT:-$(mktemp)}"
+BATS_RC=0
 
-set +e
-RUNC="$KONTAINER_BIN" bats \
-  --jobs "$BATS_JOBS" \
-  --tap \
-  --timeout "$BATS_TEST_TIMEOUT" \
-  "${TEST_FILES[@]}" \
-  2>&1 | tee "$TAP_OUTPUT"
-BATS_RC=${PIPESTATUS[0]}
-set -e
+: > "$TAP_OUTPUT"  # truncate
+
+FILE_INDEX=0
+for tf in "${TEST_FILES[@]}"; do
+  FILE_INDEX=$((FILE_INDEX + 1))
+  echo ">>> [$FILE_INDEX/${#TEST_FILES[@]}] $(basename "$tf")" >&2
+  set +e
+  timeout "${BATS_TEST_TIMEOUT}" env RUNC="$KONTAINER_BIN" bats --tap "$tf" 2>&1 | tee -a "$TAP_OUTPUT"
+  rc=${PIPESTATUS[0]}
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    BATS_RC=1
+    if [[ $rc -eq 124 ]]; then
+      echo "# TIMEOUT: $(basename "$tf") exceeded ${BATS_TEST_TIMEOUT}s" | tee -a "$TAP_OUTPUT"
+    fi
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # Parse TAP output
