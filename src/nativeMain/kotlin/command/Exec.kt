@@ -362,6 +362,12 @@ fun exec(
     close(setupPipe[0])
     val setupOk =
         try {
+            // exec --cgroup creates subcgroup directories on demand, just
+            // like runc. setup() creates and enables controllers; addProcess
+            // just writes to cgroup.procs. We call setup with null pid first
+            // to create the directory and propagate controllers, then
+            // addProcess to move the child into it.
+            cgroup.setup(pid = null, cgroupPath = cgroupPath, resources = null)
             cgroup.addProcess(pid, cgroupPath)
             syscall.raiseRlimits(pid, execSpec.process.rlimits)
             true
