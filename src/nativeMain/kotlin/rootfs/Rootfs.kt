@@ -138,70 +138,90 @@ fun prepareRootfs(
     Logger.debug("mounted /sys")
 
     // Mount /sys/fs/cgroup if cgroup v2 is available.
-    // We bind mount the container's specific cgroup path instead of the whole
-    // /sys/fs/cgroup so the container only sees its own cgroup. See
-    // runc/libcontainer/rootfs_linux.go:mountCgroupV2().
+    // Like runc (mountCgroupV2), first try mounting a fresh cgroup2 filesystem.
+    // With CLONE_NEWCGROUP (unshared by Stage-2 after cgroup assignment), the
+    // cgroup2 mount automatically shows only the container's cgroup subtree,
+    // giving the container full subcgroup management (mkdir, subtree_control).
+    // If that fails (EPERM in user namespace without cgroupns), fall back to a
+    // bind mount of the container's specific cgroup path.
     val cgroupMountPath = "$rootfsPath/sys/fs/cgroup"
     if (access("/sys/fs/cgroup/cgroup.controllers", F_OK) == 0) {
         Logger.debug("setting up /sys/fs/cgroup (cgroup v2)")
 
-        val containerCgroupPath = getContainerCgroupPath()
-        if (containerCgroupPath != null) {
-            val cgroupSourcePath = "/sys/fs/cgroup$containerCgroupPath"
-            Logger.debug("container cgroup source path: $cgroupSourcePath")
-
-            if (access(cgroupSourcePath, F_OK) != 0) {
-                Logger.warn("container cgroup path does not exist: $cgroupSourcePath")
-            } else {
-                if (access(cgroupMountPath, F_OK) != 0) {
-                    if (mkdir(cgroupMountPath, 0x1EDu) != 0) { // 0755
-                        val errNum = errno
-                        Logger.warn("failed to create /sys/fs/cgroup directory (errno=$errNum)")
-                    }
-                }
-
-                // Bind mount the container's cgroup path to /sys/fs/cgroup so the
-                // container sees its own cgroup as the root of the hierarchy.
-                if (syscall.mount(
-                        source = cgroupSourcePath,
-                        target = cgroupMountPath,
-                        fstype = null,
-                        flags = (MS_BIND or MS_REC).toULong(),
-                    ) != 0
-                ) {
-                    val errNum = errno
-                    perror("bind mount $cgroupSourcePath")
-                    Logger.warn("failed to bind mount container cgroup (errno=$errNum)")
-                } else {
-                    Logger.debug("bind mounted container cgroup to /sys/fs/cgroup")
-
-                    // Check the spec's cgroup mount options. If "ro" is present
-                    // (the default), remount as readonly. If the spec's mount
-                    // was modified to remove "ro" (set_cgroup_mount_writable),
-                    // leave it writable.
-                    val cgroupMount = specMounts?.find { it.destination == "/sys/fs/cgroup" }
-                    val cgroupReadonly = cgroupMount?.options?.contains("ro") ?: true
-                    if (cgroupReadonly) {
-                        if (syscall.mount(
-                                source = null,
-                                target = cgroupMountPath,
-                                fstype = null,
-                                flags = (MS_BIND or MS_REMOUNT or MS_RDONLY or MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong(),
-                            ) != 0
-                        ) {
-                            val errNum = errno
-                            perror("remount /sys/fs/cgroup readonly")
-                            Logger.warn("failed to remount /sys/fs/cgroup readonly (errno=$errNum)")
-                        } else {
-                            Logger.debug("remounted /sys/fs/cgroup as readonly")
-                        }
-                    } else {
-                        Logger.debug("/sys/fs/cgroup left writable per spec mount options")
-                    }
-                }
+        if (access(cgroupMountPath, F_OK) != 0) {
+            if (mkdir(cgroupMountPath, 0x1EDu) != 0) { // 0755
+                val errNum = errno
+                Logger.warn("failed to create /sys/fs/cgroup directory (errno=$errNum)")
             }
+        }
+
+        // Determine mount flags from the spec's cgroup mount options.
+        val cgroupMount = specMounts?.find { it.destination == "/sys/fs/cgroup" }
+        val cgroupReadonly = cgroupMount?.options?.contains("ro") ?: true
+        val cgroupFlags =
+            (MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong() or
+                (if (cgroupReadonly) MS_RDONLY.toULong() else 0uL)
+
+        // Try direct cgroup2 mount first (runc's primary path).
+        val directRc =
+            syscall.mount(
+                source = "cgroup2",
+                target = cgroupMountPath,
+                fstype = "cgroup2",
+                flags = cgroupFlags,
+                data = "nsdelegate,memory_recursiveprot",
+            )
+        if (directRc == 0) {
+            Logger.debug("mounted cgroup2 filesystem at /sys/fs/cgroup (direct)")
         } else {
-            Logger.warn("could not determine container cgroup path, skipping /sys/fs/cgroup mount")
+            val directErrno = errno
+            Logger.debug("direct cgroup2 mount failed (errno=$directErrno), falling back to bind mount")
+
+            // Fall back to bind mount of the container's cgroup path.
+            val containerCgroupPath = getContainerCgroupPath()
+            if (containerCgroupPath != null) {
+                val cgroupSourcePath = "/sys/fs/cgroup$containerCgroupPath"
+                Logger.debug("container cgroup source path: $cgroupSourcePath")
+
+                if (access(cgroupSourcePath, F_OK) != 0) {
+                    Logger.warn("container cgroup path does not exist: $cgroupSourcePath")
+                } else {
+                    if (syscall.mount(
+                            source = cgroupSourcePath,
+                            target = cgroupMountPath,
+                            fstype = null,
+                            flags = (MS_BIND or MS_REC).toULong(),
+                        ) != 0
+                    ) {
+                        val errNum = errno
+                        perror("bind mount $cgroupSourcePath")
+                        Logger.warn("failed to bind mount container cgroup (errno=$errNum)")
+                    } else {
+                        Logger.debug("bind mounted container cgroup to /sys/fs/cgroup")
+
+                        // Apply readonly if the spec requires it.
+                        if (cgroupReadonly) {
+                            if (syscall.mount(
+                                    source = null,
+                                    target = cgroupMountPath,
+                                    fstype = null,
+                                    flags = (MS_BIND or MS_REMOUNT or MS_RDONLY or MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong(),
+                                ) != 0
+                            ) {
+                                val errNum = errno
+                                perror("remount /sys/fs/cgroup readonly")
+                                Logger.warn("failed to remount /sys/fs/cgroup readonly (errno=$errNum)")
+                            } else {
+                                Logger.debug("remounted /sys/fs/cgroup as readonly")
+                            }
+                        } else {
+                            Logger.debug("/sys/fs/cgroup left writable per spec mount options")
+                        }
+                    }
+                }
+            } else {
+                Logger.warn("could not determine container cgroup path, skipping /sys/fs/cgroup mount")
+            }
         }
     } else {
         Logger.debug("cgroup v2 not available on host, skipping /sys/fs/cgroup mount")
