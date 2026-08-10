@@ -21,6 +21,7 @@ fun spec(bundlePath: String) {
             root = spec.Root(path = "rootfs", readonly = true),
             process =
                 spec.Process(
+                    terminal = true,
                     args = listOf("sh"),
                     env =
                         listOf(

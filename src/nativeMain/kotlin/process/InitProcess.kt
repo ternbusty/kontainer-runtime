@@ -172,23 +172,22 @@ private fun initProcessInternal(
             syncSeccompNotifyFd(notifyFd, mainSender, initReceiver)
         }
 
-        mainSender.initReady()
-        Logger.debug("sent init ready signal")
-
-        mainSender.close()
-        initReceiver.close()
-
         // Cleanup extra file descriptors to prevent FD leaks (CVE-2024-21626).
         // This sets FD_CLOEXEC on all FDs >= 3 + preserveFds so they're auto-closed at
-        // execve. Done late (after init_ready) to avoid closing channel pipes early.
+        // execve.  Channel fds remain usable (CLOEXEC only fires at execve, not
+        // during read/write), so initReady() below still works.
         syscall.closeRange(preserveFds)
 
         // PTY allocation: when spec.process.terminal is true, allocate a
         // pseudo-terminal pair, ship the master fd to the caller via the
         // --console-socket (SCM_RIGHTS), and wire the slave to stdio.
-        // Placed AFTER closeRange: the PTY fds are created fresh (no stale
-        // FD_CLOEXEC), the master is sent and closed manually, and the slave
-        // is dup2'd onto 0/1/2 before execvp.
+        //
+        // This MUST happen BEFORE initReady: the OCI spec (and runc's
+        // implementation) require the console socket consumer (e.g. recvtty)
+        // to have the master fd before the runtime's `create` returns.
+        // The PTY fds are created fresh after closeRange, so they have no
+        // stale FD_CLOEXEC.  The master is sent and closed manually; the
+        // slave is dup2'd onto 0/1/2 before execvp.
         if (spec.process.terminal) {
             val consoleSocketPath =
                 getenv("_KONTAINER_CONSOLE_SOCKET")?.toKString()
@@ -226,6 +225,12 @@ private fun initProcessInternal(
                 spec.process.consoleSize?.width,
             )
         }
+
+        mainSender.initReady()
+        Logger.debug("sent init ready signal")
+
+        mainSender.close()
+        initReceiver.close()
 
         Logger.debug("waiting for start signal...")
         notifyListener.waitForContainerStart()
