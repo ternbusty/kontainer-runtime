@@ -43,23 +43,34 @@ class CgroupV2(
             // /sys/fs/cgroup/cgroup.subtree_control and
             // /sys/fs/cgroup/default/cgroup.subtree_control, otherwise opening
             // memory.max etc. in the leaf fails with EACCES.
+            //
+            // Even when the spec sets no explicit resource limits, controllers must
+            // be propagated so that per-controller knobs (pids.max, memory.max, …)
+            // exist in the leaf cgroup — the OCI integration tests verify their
+            // presence. We read the available controllers from each ancestor's own
+            // cgroup.controllers and enable all of them in its subtree_control.
+            // Controllers explicitly required by spec resources are added on top.
             val requiredControllers = getRequiredControllers(resources)
-            if (requiredControllers.isNotEmpty()) {
-                val segments = normalizedPath.split("/").filter { it.isNotEmpty() }
+            val segments = normalizedPath.split("/").filter { it.isNotEmpty() }
+            if (segments.isNotEmpty()) {
                 val ancestorPaths = mutableListOf(CGROUP_ROOT)
                 for (i in 0 until segments.size - 1) {
                     ancestorPaths.add("${ancestorPaths.last()}/${segments[i]}")
                 }
 
                 for (ancestorPath in ancestorPaths) {
+                    val controllersToEnable = getAvailableControllers(ancestorPath, requiredControllers)
                     val subtreeControlPath = "$ancestorPath/$CGROUP_SUBTREE_CONTROL"
-                    for (controller in requiredControllers) {
+                    for (controller in controllersToEnable) {
                         try {
                             fs.writeTextFile(subtreeControlPath, "+$controller")
                             Logger.debug("enabled $controller controller in $ancestorPath")
                         } catch (e: Exception) {
-                            Logger.error("failed to enable $controller controller in $ancestorPath: ${e.message}")
-                            throw Exception("Failed to enable required cgroup controller: $controller in $ancestorPath", e)
+                            if (controller in requiredControllers) {
+                                Logger.error("failed to enable $controller controller in $ancestorPath: ${e.message}")
+                                throw Exception("Failed to enable required cgroup controller: $controller in $ancestorPath", e)
+                            }
+                            Logger.debug("could not enable optional controller $controller in $ancestorPath: ${e.message}")
                         }
                     }
                 }
@@ -108,25 +119,44 @@ class CgroupV2(
         val fullPath = "$CGROUP_ROOT/$normalizedPath"
         Logger.debug("cleaning up cgroup at $fullPath")
 
-        // Kill any remaining processes in the cgroup before removing it.
-        // This handles host-pidns scenarios where processes survive after
-        // the container's init exits.
-        try {
-            val procsPath = "$fullPath/$CGROUP_PROCS"
-            val content = fs.readProcFile(procsPath).trim()
-            if (content.isNotEmpty()) {
-                for (line in content.lines()) {
-                    val pid = line.trim().toIntOrNull() ?: continue
-                    platform.posix.kill(pid, platform.posix.SIGKILL)
-                }
-            }
-        } catch (_: Exception) {
-            // Best-effort
-        }
+        // Kill any remaining processes in the cgroup tree before removing it.
+        // In cgroup v2, processes in subcgroups are NOT visible in the parent's
+        // cgroup.procs — they only appear in the subcgroup's own cgroup.procs.
+        // We must walk all subcgroups and kill their processes too.
+        killProcessesRecursive(fullPath)
 
         // Recursively remove subcgroups (bottom-up), then the leaf.
         // cgroupfs only allows rmdir on empty cgroups, so children first.
         removeCgroupRecursive(fullPath)
+    }
+
+    /**
+     * Kill all processes in a cgroup directory and all of its sub-cgroups,
+     * walking depth-first. Uses cgroup.procs for domain cgroups and
+     * cgroup.threads for threaded cgroups.
+     */
+    private fun killProcessesRecursive(path: String) {
+        // Kill processes in subcgroups first (depth-first)
+        val children = fs.listDirectories(path)
+        for (child in children) {
+            killProcessesRecursive("$path/$child")
+        }
+
+        // Kill processes/threads in this cgroup
+        for (procsFile in listOf(CGROUP_PROCS, "cgroup.threads")) {
+            try {
+                val content = fs.readProcFile("$path/$procsFile").trim()
+                if (content.isNotEmpty()) {
+                    for (line in content.lines()) {
+                        val pid = line.trim().toIntOrNull() ?: continue
+                        platform.posix.kill(pid, platform.posix.SIGKILL)
+                    }
+                }
+            } catch (_: Exception) {
+                // Best-effort: file may not exist (e.g. cgroup.threads
+                // in a non-threaded cgroup) or may already be empty.
+            }
+        }
     }
 
     /**
@@ -306,6 +336,37 @@ class CgroupV2(
         }
     }
 
+    /**
+     * Read the controllers available to [cgroupPath] by parsing its
+     * `cgroup.controllers` file and merging with [requiredControllers].
+     * Returns a de-duplicated list of controllers to enable in
+     * `cgroup.subtree_control` of this directory. If the controllers file
+     * cannot be read (e.g. the directory was just created by us and the
+     * parent doesn't delegate), falls back to [requiredControllers] only.
+     */
+    private fun getAvailableControllers(
+        cgroupPath: String,
+        requiredControllers: List<String>,
+    ): List<String> {
+        val available =
+            try {
+                val content = fs.readProcFile("$cgroupPath/$CGROUP_CONTROLLERS").trim()
+                if (content.isNotEmpty()) {
+                    content.split(" ").filter { it.isNotBlank() }
+                } else {
+                    emptyList()
+                }
+            } catch (_: Exception) {
+                emptyList()
+            }
+
+        // Merge available with required, de-duplicate, preserving order.
+        val merged = LinkedHashSet<String>()
+        merged.addAll(available)
+        merged.addAll(requiredControllers)
+        return merged.toList()
+    }
+
     private fun getRequiredControllers(resources: LinuxResources?): List<String> {
         if (resources == null) {
             return emptyList()
@@ -345,6 +406,7 @@ class CgroupV2(
 
         private const val CGROUP_ROOT = "/sys/fs/cgroup"
         private const val CGROUP_PROCS = "cgroup.procs"
+        private const val CGROUP_CONTROLLERS = "cgroup.controllers"
         private const val CGROUP_SUBTREE_CONTROL = "cgroup.subtree_control"
         private const val MEMORY_MAX = "memory.max"
         private const val MEMORY_LOW = "memory.low"

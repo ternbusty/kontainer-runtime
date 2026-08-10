@@ -8,6 +8,11 @@ import channel.MainSender
 import channel.initChannel
 import channel.mainChannel
 import config.loadKontainerConfig
+import console.connectConsoleSocket
+import console.openPtyFromDevpts
+import console.relayPtyIO
+import console.sendMasterViaFd
+import console.wireStdio
 import kotlinx.cinterop.*
 import logger.Logger
 import namespace.NsJoin
@@ -80,6 +85,7 @@ fun exec(
     pidFilePath: String? = null,
     detach: Boolean = false,
     tty: Boolean = false,
+    consoleSocket: String? = null,
     cwdOverride: String? = null,
     envOverrides: List<String> = emptyList(),
     userOverride: String? = null,
@@ -270,6 +276,19 @@ fun exec(
         }
     }
 
+    // For detached exec with terminal, connect to the external console
+    // socket from the host context (before forking into the container's
+    // namespaces where the host path would be unreachable).
+    var consoleSocketFd = -1
+    if (execSpec.process.terminal && consoleSocket != null) {
+        consoleSocketFd = connectConsoleSocket(consoleSocket)
+        if (consoleSocketFd < 0) {
+            Logger.error("exec: failed to connect to console socket: $consoleSocket")
+            nsFds.values.forEach { close(it) }
+            exit(1)
+        }
+    }
+
     val pid = fork()
     if (pid < 0) {
         Logger.error("exec: fork() failed (errno=$errno)")
@@ -280,12 +299,25 @@ fun exec(
         // the fork boundary — the runtime's default handler would exit(),
         // flushing stdio duplicated from the parent; only _exit() here.
         try {
-            runExecChild(syscall, execSpec, joins, nsFds, setupPipe, usesNotify, pidPipe, notifyMainSender, notifyInitReceiver, preserveFds)
+            runExecChild(
+                syscall,
+                execSpec,
+                joins,
+                nsFds,
+                setupPipe,
+                usesNotify,
+                pidPipe,
+                notifyMainSender,
+                notifyInitReceiver,
+                preserveFds,
+                consoleSocketFd,
+            )
         } catch (t: Throwable) {
             fprintf(stderr, "exec: %s\n", t.message ?: "unknown error")
         }
         _exit(1)
     }
+    if (consoleSocketFd >= 0) close(consoleSocketFd)
 
     // Parent: attach the child to the container's cgroup and raise its hard
     // rlimits, both from the host context — the host cgroupfs view is gone
@@ -361,6 +393,13 @@ fun exec(
  * Child process body: wait for the parent's cgroup/rlimit setup, join the
  * namespaces, fork the grandchild that becomes the user command, wait for
  * it and propagate its exit code.
+ *
+ * When spec.process.terminal is true, allocates a PTY pair from the
+ * container's devpts after joining the namespaces.  The grandchild wires
+ * the slave to stdio; the child either relays I/O between the master and
+ * its own stdio (non-detached) or sends the master to [consoleSocketFd]
+ * (detached with --console-socket).
+ *
  * Runs single-threaded (fresh fork); exits via _exit only.
  */
 @OptIn(ExperimentalForeignApi::class)
@@ -375,6 +414,7 @@ private fun runExecChild(
     notifyMainSender: MainSender?,
     notifyInitReceiver: InitReceiver?,
     preserveFds: Int = 0,
+    consoleSocketFd: Int = -1,
 ) {
     close(pidPipe[0])
     close(setupPipe[1])
@@ -408,17 +448,60 @@ private fun runExecChild(
     }
     nsFds.values.forEach { close(it) }
 
+    // PTY allocation: after joining the container's namespaces (so we are
+    // inside the container's mount namespace with access to its /dev/pts),
+    // allocate a pseudo-terminal pair from the container's devpts.  The
+    // slave will be wired to the grandchild's stdio; the master is either
+    // relayed by this child process (non-detached) or sent to the console
+    // socket (detached).
+    var masterFd = -1
+    var slaveFd = -1
+    if (spec.process.terminal) {
+        val pty =
+            openPtyFromDevpts("/dev/pts")
+                ?: run {
+                    fprintf(stderr, "exec: failed to allocate PTY from container devpts\n")
+                    _exit(1)
+                    @Suppress("UNREACHABLE_CODE")
+                    return
+                }
+        masterFd = pty.master
+        slaveFd = pty.slave
+
+        // Set the slave's ownership to the exec process's uid.
+        fchown(slaveFd, spec.process.user.uid, (-1).toUInt())
+
+        // For detached exec with a console socket, send the master now and
+        // close it — the console socket receiver handles I/O.
+        if (consoleSocketFd >= 0) {
+            if (!sendMasterViaFd(consoleSocketFd, masterFd)) {
+                fprintf(stderr, "exec: failed to send PTY master to console socket\n")
+                close(masterFd)
+                close(slaveFd)
+                close(consoleSocketFd)
+                _exit(1)
+            }
+            close(masterFd)
+            close(consoleSocketFd)
+            masterFd = -1
+        }
+    }
+
     val grandchild = fork()
     if (grandchild < 0) _exit(1)
     if (grandchild == 0) {
         close(pidPipe[1])
+        if (masterFd >= 0) close(masterFd)
         try {
-            runExecGrandchild(syscall, spec, notifyMainSender, notifyInitReceiver, preserveFds)
+            runExecGrandchild(syscall, spec, notifyMainSender, notifyInitReceiver, preserveFds, slaveFd)
         } catch (t: Throwable) {
             fprintf(stderr, "exec: setup failed: %s\n", t.message ?: "unknown error")
         }
         _exit(1)
     }
+
+    // Child keeps the master (for relay) and closes the slave.
+    if (slaveFd >= 0) close(slaveFd)
 
     // Report the grandchild's host-perspective PID to the parent. This is
     // always sent (used for pid-file and seccomp notify), not only when
@@ -433,6 +516,14 @@ private fun runExecChild(
     notifyMainSender?.close()
     notifyInitReceiver?.close()
 
+    // For non-detached exec with terminal, relay I/O between the PTY master
+    // and this process's stdin/stdout.  The relay runs until the master side
+    // closes (grandchild exits) or stdin closes.
+    if (masterFd >= 0) {
+        relayPtyIO(masterFd)
+        close(masterFd)
+    }
+
     memScoped {
         val status = alloc<IntVar>()
         waitpid(grandchild, status.ptr, 0)
@@ -443,8 +534,14 @@ private fun runExecChild(
 /**
  * Grandchild process body: the process that becomes the user command.
  * Already inside all of the container's namespaces (including pid, by being
- * born after the child's setns). Applies the shared spec.process setup and
- * execvp's in place. Exits via _exit only.
+ * born after the child's setns).  Applies the shared spec.process setup and
+ * execvp's in place.
+ *
+ * When [slaveFd] >= 0, creates a new session, acquires the PTY slave as
+ * the controlling terminal, and wires it to stdin/stdout/stderr before
+ * executing the user command.
+ *
+ * Exits via _exit only.
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun runExecGrandchild(
@@ -453,7 +550,20 @@ private fun runExecGrandchild(
     notifyMainSender: MainSender?,
     notifyInitReceiver: InitReceiver?,
     preserveFds: Int = 0,
+    slaveFd: Int = -1,
 ) {
+    // If terminal=true, set up the PTY slave as the controlling terminal.
+    // setsid() creates a new session (required for TIOCSCTTY). wireStdio
+    // calls TIOCSCTTY and dup2's the slave onto stdin/stdout/stderr.
+    if (slaveFd >= 0) {
+        setsid()
+        wireStdio(
+            slaveFd,
+            spec.process.consoleSize?.height,
+            spec.process.consoleSize?.width,
+        )
+    }
+
     Logger.debug("child process in init()")
 
     val args = spec.process.args
@@ -554,7 +664,7 @@ private fun forwardSeccompNotify(
 }
 
 /** Map a waitpid status to a shell-style exit code (128 + signal for signal deaths). */
-private fun exitCodeFromWaitStatus(status: Int): Int =
+internal fun exitCodeFromWaitStatus(status: Int): Int =
     if ((status and 0x7f) == 0) {
         (status shr 8) and 0xff
     } else {

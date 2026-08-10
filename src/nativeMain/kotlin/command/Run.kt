@@ -29,12 +29,10 @@ import utils.FileSystem
  * the runtime creates an internal console socket, accepts the PTY master
  * from the container, and relays I/O between the master and stdio.
  *
- * Note: because our bootstrap.c clones Stage-2 with CLONE_PARENT,
- * Stage-2 is a *sibling* of this process rather than a child, so we
- * cannot use waitpid to obtain its exit code. Foreground mode polls
- * process liveness via `kill(pid, 0)` and always returns exit code 0.
- * A future bootstrap.c change (conditional CLONE_PARENT) would allow
- * true waitpid-based exit-code forwarding.
+ * Because bootstrap.c clones Stage-2 with CLONE_PARENT, Stage-2's
+ * parent is the main process, so waitpid works for exit-code forwarding.
+ * Foreground mode uses waitpid to capture the container exit code and
+ * exits with it.
  */
 @OptIn(ExperimentalForeignApi::class)
 fun run(
@@ -137,9 +135,15 @@ fun run(
             0
         }
 
-    if (initPid > 0) {
-        waitForProcessExit(initPid)
-    }
+    // Wait for the container's init process to exit and capture its exit code.
+    // Stage-2 (init) is a child of the main process (due to CLONE_PARENT in
+    // bootstrap.c), so waitpid works here.
+    val containerExitCode =
+        if (initPid > 0) {
+            waitForProcessExit(initPid)
+        } else {
+            0
+        }
 
     if (keep) {
         // --keep: update state to stopped but leave the container around
@@ -163,27 +167,45 @@ fun run(
     }
 
     Logger.info("container $containerId finished")
+    exit(containerExitCode)
 }
 
 /**
- * Poll until the process identified by [pid] no longer exists.
+ * Wait for the container init process to exit and return its exit code.
  *
- * Uses `kill(pid, 0)` (signal 0 — existence check) with
- * exponential-ish back-off: 10 ms → 20 → 40 → … → capped at 500 ms.
+ * Stage-2 (the container init) is a child of the main process (due to
+ * CLONE_PARENT in bootstrap.c), so waitpid(2) works here. We try waitpid
+ * first; if that fails (ECHILD — process already reaped), we fall back to
+ * polling with kill(pid, 0).
+ *
+ * @return the process's exit code, or 0 if it couldn't be determined
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun waitForProcessExit(pid: Int) {
-    var sleepUs: UInt = 10_000u // start at 10 ms
+private fun waitForProcessExit(pid: Int): Int =
+    memScoped {
+        val status = alloc<IntVar>()
 
-    while (true) {
-        val rc = kill(pid, 0)
-        if (rc != 0 && errno == ESRCH) {
-            // Process no longer exists.
-            return
+        // Try waitpid first — works if the init is our child (CLONE_PARENT).
+        val rc = waitpid(pid, status.ptr, 0)
+        if (rc > 0) {
+            return@memScoped exitCodeFromWaitStatus(status.value)
         }
-        usleep(sleepUs)
-        if (sleepUs < 500_000u) {
-            sleepUs = (sleepUs * 2u).coerceAtMost(500_000u)
+
+        // Fallback: poll until the process disappears. This handles
+        // edge cases where waitpid fails (e.g., ECHILD if the kernel
+        // reparented the process).
+        Logger.debug("waitpid failed (errno=$errno), falling back to poll")
+        var sleepUs: UInt = 10_000u
+        while (true) {
+            val probeRc = kill(pid, 0)
+            if (probeRc != 0 && errno == ESRCH) {
+                return@memScoped 0
+            }
+            usleep(sleepUs)
+            if (sleepUs < 500_000u) {
+                sleepUs = (sleepUs * 2u).coerceAtMost(500_000u)
+            }
         }
+        @Suppress("UNREACHABLE_CODE")
+        0
     }
-}

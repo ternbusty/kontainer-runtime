@@ -39,6 +39,7 @@ private val EXEC_VALUE_FLAGS =
         "-p",
         "--process",
         "--pid-file",
+        "--console-socket",
         "--cwd",
         "--user",
         "-u",
@@ -69,6 +70,7 @@ private val EXEC_EQ_VALUE_PREFIXES =
         "--cap=",
         "--pid-file=",
         "--process=",
+        "--console-socket=",
     )
 
 /**
@@ -423,6 +425,10 @@ class ExecCommand : CoreCliktCommand(name = "exec") {
         "-t",
         help = "Allocate a pseudo-TTY",
     ).flag()
+    val consoleSocketOpt by option(
+        "--console-socket",
+        help = "Path to AF_UNIX socket to receive the PTY master (detached terminal mode)",
+    )
     val cwdOverride by option(
         "--cwd",
         help = "Override the working directory for the exec'd process",
@@ -467,6 +473,7 @@ class ExecCommand : CoreCliktCommand(name = "exec") {
             pidFile,
             detach,
             tty = tty,
+            consoleSocket = consoleSocketOpt,
             cwdOverride = cwdOverride,
             envOverrides = envOverrides,
             userOverride = userOverride,

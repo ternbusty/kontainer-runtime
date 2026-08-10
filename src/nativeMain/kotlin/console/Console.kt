@@ -6,6 +6,7 @@ import platform.linux.*
 import platform.posix.*
 import platform.pty._TIOCSCTTY
 import platform.pty._TIOCSWINSZ
+import platform.pty.pty_disable_onlcr
 import platform.pty.pty_grantpt
 import platform.pty.pty_openpt
 import platform.pty.pty_ptsname_r
@@ -68,9 +69,125 @@ fun openPty(): PtyPair? {
         return null
     }
 
+    // Disable ONLCR so the slave doesn't add \r before \n. Without this,
+    // callers that capture output (bats, containerd shim) see spurious \r
+    // characters that break string comparisons.
+    pty_disable_onlcr(slave)
+
     Logger.debug("opened pty pair: master=$master, slave=$slave ($slavePath)")
     return PtyPair(master, slave)
 }
+
+/**
+ * Allocate a new pseudo-terminal pair from a specific devpts mount point.
+ *
+ * Unlike [openPty] which uses posix_openpt (always opens the host's
+ * /dev/ptmx), this function opens the ptmx device from the specified
+ * devpts directory.  This is required when the container has its own
+ * devpts mounted with `newinstance` — the slave must belong to the
+ * container's devpts so /dev/pts/N paths resolve correctly after
+ * pivot_root.
+ *
+ * @param devptsDir path to the devpts mount point (e.g. "$rootfs/dev/pts"
+ *   before pivot_root, or "/dev/pts" inside the container after setns)
+ * @return the pair, or null on failure
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun openPtyFromDevpts(devptsDir: String): PtyPair? {
+    val master = open("$devptsDir/ptmx", O_RDWR or O_NOCTTY or O_CLOEXEC)
+    if (master < 0) {
+        Logger.warn("open $devptsDir/ptmx failed (errno=$errno)")
+        return null
+    }
+
+    if (pty_grantpt(master) != 0) {
+        Logger.warn("grantpt failed on $devptsDir/ptmx (errno=$errno)")
+        close(master)
+        return null
+    }
+
+    if (pty_unlockpt(master) != 0) {
+        Logger.warn("unlockpt failed on $devptsDir/ptmx (errno=$errno)")
+        close(master)
+        return null
+    }
+
+    // ptsname_r returns something like "/dev/pts/0".  Extract the index
+    // (the part after the last slash) and open the slave from the target
+    // devpts directory rather than the default /dev/pts.
+    val slaveIndex =
+        memScoped {
+            val buf = allocArray<ByteVar>(256)
+            if (pty_ptsname_r(master, buf, 256) != 0) {
+                Logger.warn("ptsname_r failed (errno=$errno)")
+                close(master)
+                return null
+            }
+            buf.toKString().substringAfterLast('/')
+        }
+
+    val slavePath = "$devptsDir/$slaveIndex"
+    val slave = open(slavePath, O_RDWR)
+    if (slave < 0) {
+        Logger.warn("open slave $slavePath failed (errno=$errno)")
+        close(master)
+        return null
+    }
+
+    // Disable ONLCR so the slave doesn't add \r before \n.
+    pty_disable_onlcr(slave)
+
+    Logger.debug("opened pty pair from $devptsDir: master=$master, slave=$slave ($slavePath)")
+    return PtyPair(master, slave)
+}
+
+/**
+ * Connect to a console socket at [socketPath] and return the connected fd.
+ * The caller can later use [sendMasterViaFd] to ship a PTY master over it.
+ *
+ * @return the connected socket fd, or -1 on failure
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun connectConsoleSocket(socketPath: String): Int =
+    memScoped {
+        val sock = socket(AF_UNIX, SOCK_STREAM, 0)
+        if (sock < 0) {
+            Logger.warn("connectConsoleSocket: socket() failed (errno=$errno)")
+            return -1
+        }
+
+        val addr = alloc<sockaddr_un>()
+        addr.sun_family = AF_UNIX.toUShort()
+        val pathBytes = socketPath.encodeToByteArray()
+        if (pathBytes.size >= 108) {
+            Logger.warn("console socket path too long: ${pathBytes.size}")
+            close(sock)
+            return -1
+        }
+        for (i in pathBytes.indices) {
+            addr.sun_path[i] = pathBytes[i]
+        }
+        addr.sun_path[pathBytes.size] = 0
+
+        if (connect(sock, addr.ptr.reinterpret(), sizeOf<sockaddr_un>().toUInt()) != 0) {
+            Logger.warn("connectConsoleSocket: connect to $socketPath failed (errno=$errno)")
+            close(sock)
+            return -1
+        }
+
+        Logger.debug("connected to console socket at $socketPath (fd=$sock)")
+        sock
+    }
+
+/**
+ * Send a PTY master fd over an already-connected console socket.
+ *
+ * @return true on success
+ */
+fun sendMasterViaFd(
+    connectedSockFd: Int,
+    masterFd: Int,
+): Boolean = sendFdOverSocket(connectedSockFd, masterFd)
 
 /**
  * Send the PTY master fd to the external console socket at [socketPath].
