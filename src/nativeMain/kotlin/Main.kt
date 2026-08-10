@@ -16,6 +16,7 @@ import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.parameters.arguments.argument
 import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
+import com.github.ajalt.clikt.parameters.options.multiple
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.int
 import command.*
@@ -32,10 +33,42 @@ import syscall.LinuxSyscall
 import utils.RealFileSystem
 
 /** Exec-option flags that consume the next argument as a value. */
-private val EXEC_VALUE_FLAGS = setOf("-p", "--process", "--pid-file")
+private val EXEC_VALUE_FLAGS =
+    setOf(
+        "-p",
+        "--process",
+        "--pid-file",
+        "--cwd",
+        "--user",
+        "-u",
+        "--additional-gids",
+        "--preserve-fds",
+        "--cgroup",
+        "--env",
+        "-e",
+        "--cap",
+    )
 
 /** Exec-option flags that are boolean (no following value). */
-private val EXEC_BOOL_FLAGS = setOf("-d", "--detach")
+private val EXEC_BOOL_FLAGS = setOf("-d", "--detach", "-t", "--tty")
+
+/**
+ * Exec-option flags that use `--flag=value` form (value attached with `=`).
+ * These are recognized so `--preserve-fds=2` etc. are not mistaken for
+ * positional arguments.
+ */
+private val EXEC_EQ_VALUE_PREFIXES =
+    listOf(
+        "--preserve-fds=",
+        "--cwd=",
+        "--user=",
+        "--additional-gids=",
+        "--cgroup=",
+        "--env=",
+        "--cap=",
+        "--pid-file=",
+        "--process=",
+    )
 
 /**
  * Split trailing command arguments out of an `exec` invocation so that
@@ -90,6 +123,10 @@ internal fun preprocessExecArgs(
                 i++
             }
         } else if (a in EXEC_BOOL_FLAGS) {
+            kept.add(a)
+            i++
+        } else if (EXEC_EQ_VALUE_PREFIXES.any { a.startsWith(it) }) {
+            // --flag=value form (e.g. --preserve-fds=2)
             kept.add(a)
             i++
         } else if (a.startsWith("-")) {
@@ -202,6 +239,10 @@ class RunCommand : CoreCliktCommand(name = "run") {
         "-d",
         help = "Detach from the container (do not wait for exit)",
     ).flag()
+    val keep by option(
+        "--keep",
+        help = "Keep container state after it exits (don't delete automatically)",
+    ).flag()
     val containerId by argument(help = "Container ID")
     val config by requireObject<GlobalConfig>()
 
@@ -216,6 +257,7 @@ class RunCommand : CoreCliktCommand(name = "run") {
             pidFile,
             consoleSocket,
             detach,
+            keep,
         )
         _exit(0)
     }
@@ -251,7 +293,7 @@ class KillCommand : CoreCliktCommand(name = "kill") {
     val config by requireObject<GlobalConfig>()
 
     override fun run() {
-        kill(config.syscall, config.fs, config.rootPath, containerId, signal)
+        kill(config.syscall, config.fs, config.cgroup, config.rootPath, containerId, signal)
     }
 }
 
@@ -374,6 +416,40 @@ class ExecCommand : CoreCliktCommand(name = "exec") {
         "-d",
         help = "Detach from the exec'd process (do not wait for exit)",
     ).flag()
+    val tty by option(
+        "--tty",
+        "-t",
+        help = "Allocate a pseudo-TTY",
+    ).flag()
+    val cwdOverride by option(
+        "--cwd",
+        help = "Override the working directory for the exec'd process",
+    )
+    val envOverrides by option(
+        "--env",
+        help = "Set an environment variable (KEY=VALUE, can be repeated)",
+    ).multiple()
+    val userOverride by option(
+        "--user",
+        "-u",
+        help = "Override the user (UID[:GID])",
+    )
+    val additionalGids by option(
+        "--additional-gids",
+        help = "Additional group IDs (can be repeated)",
+    ).multiple()
+    val preserveFds by option(
+        "--preserve-fds",
+        help = "Number of additional file descriptors to preserve for the exec'd process",
+    ).int().default(0)
+    val cgroupOverride by option(
+        "--cgroup",
+        help = "Run the exec'd process in a sub-cgroup",
+    ).multiple()
+    val capOverride by option(
+        "--cap",
+        help = "Add a capability to the bounding set",
+    ).multiple()
     val containerId by argument(help = "Container ID")
     val config by requireObject<GlobalConfig>()
 
@@ -388,6 +464,13 @@ class ExecCommand : CoreCliktCommand(name = "exec") {
             processSpec,
             pidFile,
             detach,
+            tty = tty,
+            cwdOverride = cwdOverride,
+            envOverrides = envOverrides,
+            userOverride = userOverride,
+            additionalGids = additionalGids,
+            preserveFds = preserveFds,
+            cgroupOverride = cgroupOverride,
         )
     }
 }
@@ -400,6 +483,87 @@ class SpecCommand : CoreCliktCommand(name = "spec") {
     override fun run() {
         spec(bundle)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Subcommand names (for help flag detection)
+// ---------------------------------------------------------------------------
+private val SUBCOMMAND_NAMES =
+    setOf(
+        "checkpoint",
+        "create",
+        "delete",
+        "events",
+        "exec",
+        "kill",
+        "list",
+        "pause",
+        "ps",
+        "restore",
+        "resume",
+        "run",
+        "spec",
+        "start",
+        "state",
+        "update",
+        "features",
+    )
+
+// ---------------------------------------------------------------------------
+// runc-compatible help output (NAME: header format expected by help.bats)
+// ---------------------------------------------------------------------------
+
+private val SUBCOMMAND_DESCRIPTIONS =
+    mapOf(
+        "checkpoint" to "checkpoint a running container",
+        "create" to "create a container",
+        "delete" to "delete any resources held by the container often used with detached container",
+        "events" to "display container events such as OOM notifications, cpu, memory, and IO usage statistics",
+        "exec" to "execute new process inside the container",
+        "features" to "show the enabled features",
+        "kill" to "kill sends the specified signal (default: SIGTERM) to the container's init process",
+        "list" to "lists containers started by runc with the given root",
+        "pause" to "pause suspends all processes inside the container",
+        "ps" to "ps displays the processes running inside a container",
+        "restore" to "restore a container from a previous checkpoint",
+        "resume" to "resumes all processes that have been previously paused",
+        "run" to "create and run a container",
+        "spec" to "create a new specification file",
+        "start" to "executes the user defined process in a created container",
+        "state" to "output the state of a container",
+        "update" to "update container resource constraints",
+    )
+
+private fun printRuncHelp() {
+    val name = "kontainer-runtime"
+    println("NAME:")
+    println("   $name - Open Container Initiative runtime")
+    println()
+    println("USAGE:")
+    println("   $name [global options] command [command options] [arguments...]")
+    println()
+    println("COMMANDS:")
+    for ((cmd, desc) in SUBCOMMAND_DESCRIPTIONS) {
+        println("   ${cmd.padEnd(16)}$desc")
+    }
+    println()
+    println("GLOBAL OPTIONS:")
+    println("   --debug             enable debug logging")
+    println("   --log value         set the log file to write runc logs to (default: /dev/stderr)")
+    println("   --log-format value  set the log format (default: text)")
+    println("   --root value        root directory for storage of container state (default: /run/kontainer)")
+    println("   --help, -h          show help")
+    println("   --version, -v       print the version")
+}
+
+private fun printSubcommandHelp(subcommand: String) {
+    val name = "kontainer-runtime"
+    val desc = SUBCOMMAND_DESCRIPTIONS[subcommand] ?: subcommand
+    println("NAME:")
+    println("   $name $subcommand - $desc")
+    println()
+    println("USAGE:")
+    println("   $name $subcommand [command options] [arguments...]")
 }
 
 // ---------------------------------------------------------------------------
@@ -526,9 +690,25 @@ fun main(args: Array<String>) {
 
     // Handle -v / --version before the CLI parser (runc compatibility)
     if (args.size == 1 && (args[0] == "-v" || args[0] == "--version")) {
-        println("kontainer-runtime version ${BuildConfig.VERSION}")
+        println("runc version ${BuildConfig.VERSION}")
         println("commit: ${BuildConfig.COMMIT}")
         println("spec: ${BuildConfig.OCI_SPEC_VERSION}")
+        return
+    }
+
+    // Handle -h / --help before the CLI parser (runc compatibility).
+    // CoreCliktCommand does not register --help; we produce runc-style output.
+    if (args.isNotEmpty() && (args.last() == "-h" || args.last() == "--help")) {
+        val subcommand = args.firstOrNull { !it.startsWith("-") }
+        if (subcommand != null && subcommand in SUBCOMMAND_NAMES) {
+            printSubcommandHelp(subcommand)
+        } else if (subcommand != null && subcommand !in SUBCOMMAND_NAMES) {
+            Logger.error("No help topic for '$subcommand'")
+            exit(1)
+            return
+        } else {
+            printRuncHelp()
+        }
         return
     }
 

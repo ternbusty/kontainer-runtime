@@ -16,6 +16,7 @@ object JsonCodec {
             ignoreUnknownKeys = true
             isLenient = true
             coerceInputValues = true
+            encodeDefaults = true
         }
 
     /**

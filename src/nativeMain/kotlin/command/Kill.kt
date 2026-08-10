@@ -1,5 +1,7 @@
 package command
 
+import cgroup.Cgroup
+import config.loadKontainerConfig
 import kotlinx.cinterop.ExperimentalForeignApi
 import logger.Logger
 import platform.posix.*
@@ -11,7 +13,9 @@ import utils.FileSystem
 /**
  * Kill command - Send a signal to a container
  *
- * Sends the specified signal to the container's init process.
+ * Sends the specified signal to all processes in the container's cgroup.
+ * This handles the host-pidns case where killing just the init process
+ * does not terminate child processes (no PID namespace to propagate the death).
  * Only works on containers in "created" or "running" states.
  *
  * @param rootPath Root directory for container state
@@ -22,6 +26,7 @@ import utils.FileSystem
 fun kill(
     syscall: Syscall,
     fs: FileSystem,
+    cgroup: Cgroup,
     rootPath: String,
     containerId: String,
     signalStr: String,
@@ -45,8 +50,7 @@ fun kill(
 
     // Validate status - only created or running containers can be killed
     if (!state.status.canKill()) {
-        Logger.error("cannot kill container in '${state.status.value}' state")
-        Logger.error("kill can only be used on containers in 'created' or 'running' states")
+        Logger.error("container not running")
         exit(1)
     }
 
@@ -72,9 +76,48 @@ fun kill(
         return
     }
 
-    Logger.debug("sending signal $signal to PID $pid")
+    // Try to send the signal to ALL processes in the container's cgroup.
+    // This handles the host-pidns case where killing just init doesn't
+    // propagate to child processes (there's no PID namespace).
+    val cgroupPath =
+        try {
+            loadKontainerConfig(fs, rootPath, containerId).cgroupPath
+        } catch (_: Exception) {
+            null
+        }
 
-    // Send signal to init process
+    if (cgroupPath != null) {
+        Logger.debug("killing all processes in cgroup $cgroupPath")
+        try {
+            val pids = cgroup.getPids(cgroupPath)
+            for (p in pids) {
+                Logger.debug("sending signal $signal to PID $p")
+                try {
+                    syscall.killProcess(p, signal)
+                } catch (_: Exception) {
+                    // Process may have already exited; ignore ESRCH.
+                }
+            }
+            Logger.info("successfully sent signal $signalStr to ${pids.size} process(es) in container $containerId")
+        } catch (e: Exception) {
+            // Fall back to sending to init PID only.
+            Logger.debug("failed to read cgroup PIDs, falling back to init PID: ${e.message}")
+            sendToInitPid(syscall, pid, signal, signalStr, containerId)
+        }
+    } else {
+        sendToInitPid(syscall, pid, signal, signalStr, containerId)
+    }
+}
+
+/** Send signal to the init PID (fallback when cgroup is not available). */
+private fun sendToInitPid(
+    syscall: Syscall,
+    pid: Int,
+    signal: Int,
+    signalStr: String,
+    containerId: String,
+) {
+    Logger.debug("sending signal $signal to PID $pid")
     try {
         syscall.killProcess(pid, signal)
         Logger.info("successfully sent signal $signalStr to container $containerId (PID $pid)")

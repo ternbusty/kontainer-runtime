@@ -108,9 +108,38 @@ class CgroupV2(
         val fullPath = "$CGROUP_ROOT/$normalizedPath"
         Logger.debug("cleaning up cgroup at $fullPath")
 
-        // removeDirectory returns false on missing directory or error; in either
-        // case cleanup is best-effort and we already log inside the impl.
-        fs.removeDirectory(fullPath)
+        // Kill any remaining processes in the cgroup before removing it.
+        // This handles host-pidns scenarios where processes survive after
+        // the container's init exits.
+        try {
+            val procsPath = "$fullPath/$CGROUP_PROCS"
+            val content = fs.readProcFile(procsPath).trim()
+            if (content.isNotEmpty()) {
+                for (line in content.lines()) {
+                    val pid = line.trim().toIntOrNull() ?: continue
+                    platform.posix.kill(pid, platform.posix.SIGKILL)
+                }
+            }
+        } catch (_: Exception) {
+            // Best-effort
+        }
+
+        // Recursively remove subcgroups (bottom-up), then the leaf.
+        // cgroupfs only allows rmdir on empty cgroups, so children first.
+        removeCgroupRecursive(fullPath)
+    }
+
+    /**
+     * Recursively remove a cgroup directory and all its sub-cgroups.
+     * Walks depth-first (children before parent) because cgroupfs rejects
+     * rmdir on a non-empty cgroup.
+     */
+    private fun removeCgroupRecursive(path: String) {
+        val children = fs.listDirectories(path)
+        for (child in children) {
+            removeCgroupRecursive("$path/$child")
+        }
+        fs.removeDirectory(path)
     }
 
     override fun getPids(cgroupPath: String): List<Int> {

@@ -66,16 +66,42 @@ fun delete(
         }
 
         force -> {
-            // Force flag set: kill process before deletion
+            // Force flag set: kill all processes in the container before deletion.
+            // In host-pidns scenarios the init process may be gone but child
+            // processes remain — we must kill everything in the cgroup.
             Logger.debug("container is in '${state.status.value}' state, but force flag is set")
-            Logger.debug("killing process before deletion")
+            Logger.debug("killing all container processes before deletion")
+
+            // Try cgroup-based kill first (covers host-pidns)
+            val cgPath =
+                try {
+                    loadKontainerConfig(fs, rootPath, containerId).cgroupPath
+                } catch (_: Exception) {
+                    null
+                }
+            if (cgPath != null) {
+                try {
+                    val pids = cgroup.getPids(cgPath)
+                    for (p in pids) {
+                        try {
+                            syscall.killProcess(p, SIGKILL)
+                            Logger.debug("killed PID $p")
+                        } catch (_: Exception) {
+                            // Process may have already exited
+                        }
+                    }
+                } catch (_: Exception) {
+                    // Fall back to init PID
+                }
+            }
+
+            // Also try the init PID directly (belt & suspenders)
             state.pid?.let { pid ->
                 try {
                     syscall.killProcess(pid, SIGKILL)
-                    Logger.debug("killed process $pid")
-                } catch (e: Exception) {
-                    Logger.warn("failed to kill process $pid: ${e.message ?: "unknown"}")
-                    // Continue with deletion even if kill fails
+                    Logger.debug("killed init process $pid")
+                } catch (_: Exception) {
+                    // Process may have already exited
                 }
             }
         }

@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.ternbusty"
-version = "1.0-SNAPSHOT"
+version = "1.2.4"
 
 repositories {
     mavenCentral()
@@ -28,7 +28,7 @@ val buildConfigDir = layout.buildDirectory.dir("generated/buildconfig")
 val generateBuildConfig =
     tasks.register("generateBuildConfig") {
         val isRelease = isReleaseTask()
-        val defaultLogLevel = if (isRelease) "INFO" else "DEBUG"
+        val defaultLogLevel = if (isRelease) "ERROR" else "ERROR"
 
         // Track build type as input to invalidate cache when it changes
         inputs.property("buildType", if (isRelease) "release" else "debug")

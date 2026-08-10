@@ -20,6 +20,7 @@ import seccomp.seccompUsesNotify
 import seccomp.sendToSeccompListener
 import spec.Process
 import spec.Spec
+import spec.User
 import spec.loadSpec
 import state.ContainerStatus
 import state.State
@@ -78,6 +79,13 @@ fun exec(
     processSpecPath: String? = null,
     pidFilePath: String? = null,
     detach: Boolean = false,
+    tty: Boolean = false,
+    cwdOverride: String? = null,
+    envOverrides: List<String> = emptyList(),
+    userOverride: String? = null,
+    additionalGids: List<String> = emptyList(),
+    preserveFds: Int = 0,
+    cgroupOverride: List<String> = emptyList(),
 ) {
     if (processSpecPath != null && args.isNotEmpty()) {
         Logger.error("exec: --process cannot be combined with a positional command")
@@ -88,12 +96,22 @@ fun exec(
         exit(1)
     }
 
+    // Validate --pid-file path early (runc exits 255 for invalid path)
+    if (pidFilePath != null) {
+        val parentDir = pidFilePath.substringBeforeLast('/', "")
+        if (parentDir.isNotEmpty() && access(parentDir, F_OK) != 0) {
+            Logger.error("exec: failed to create pid file: open $pidFilePath: no such file or directory")
+            _exit(255)
+        }
+    }
+
     var state =
         try {
             loadState(fs, rootPath, containerId)
         } catch (e: Exception) {
             Logger.error("exec: failed to load state for $containerId: ${e.message}")
-            exit(1)
+            _exit(255)
+            @Suppress("UNREACHABLE_CODE")
             return
         }
     state = state.refreshStatus()
@@ -121,7 +139,7 @@ fun exec(
             return
         }
 
-    val execProcess =
+    var execProcess =
         if (processSpecPath != null) {
             try {
                 val p = JsonCodec.loadFromFile<Process>(fs, processSpecPath)
@@ -139,6 +157,33 @@ fun exec(
         } else {
             spec.process.copy(args = args)
         }
+
+    // Apply CLI overrides to the exec process spec
+    if (cwdOverride != null) {
+        execProcess = execProcess.copy(cwd = cwdOverride)
+    }
+    if (envOverrides.isNotEmpty()) {
+        val existingEnv = execProcess.env?.toMutableList() ?: mutableListOf()
+        existingEnv.addAll(envOverrides)
+        execProcess = execProcess.copy(env = existingEnv)
+    }
+    if (userOverride != null) {
+        val parts = userOverride.split(":")
+        val uid = parts[0].toUIntOrNull() ?: 0u
+        val gid = if (parts.size > 1) parts[1].toUIntOrNull() ?: 0u else uid
+        val existingAdditionalGids = execProcess.user.additionalGids
+        execProcess = execProcess.copy(user = User(uid = uid, gid = gid, additionalGids = existingAdditionalGids))
+    }
+    if (additionalGids.isNotEmpty()) {
+        val existingGids = execProcess.user.additionalGids?.toMutableList() ?: mutableListOf()
+        additionalGids.forEach { g ->
+            g.toUIntOrNull()?.let { existingGids.add(it) }
+        }
+        execProcess = execProcess.copy(user = execProcess.user.copy(additionalGids = existingGids))
+    }
+    if (tty) {
+        execProcess = execProcess.copy(terminal = true)
+    }
 
     // Build a spec overlay that carries the exec process profile but
     // preserves the bundle's linux/namespace/seccomp configuration.
@@ -323,6 +368,8 @@ private fun runExecChild(
     close(pidPipe[0])
     close(setupPipe[1])
 
+    Logger.debug("nsexec container setup")
+
     // Block until the parent has attached us to the container's cgroup and
     // raised our hard rlimits (host-context work — see the parent). Both are
     // inherited at fork, so they must be in place before the grandchild
@@ -395,6 +442,8 @@ private fun runExecGrandchild(
     notifyMainSender: MainSender?,
     notifyInitReceiver: InitReceiver?,
 ) {
+    Logger.debug("child process in init()")
+
     val args = spec.process.args
     // Unlike init (which warns for bundle compatibility), a cwd that doesn't
     // exist inside the container is a hard error for exec — runc parity.
@@ -430,6 +479,8 @@ private fun runExecGrandchild(
     // parent already raised them via prlimit from the host context; this
     // pass only sets the exact spec values, which is unprivileged.
     syscall.applyRlimits(0, spec.process.rlimits)
+
+    Logger.debug("setns_init: about to exec")
 
     memScoped {
         val argv = allocArray<CPointerVar<ByteVar>>(args.size + 1)

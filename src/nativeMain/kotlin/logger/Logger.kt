@@ -204,31 +204,21 @@ object Logger {
 
             when (logFormat) {
                 Format.TEXT -> {
-                    val formattedMessage = "[%s] [%s] [%s] %s\n"
+                    // Use logrus-compatible format: time="..." level=info msg="..."
+                    // This matches runc's debug output format expected by bats tests.
+                    val escapedMsg = message.replace("\"", "\\\"")
+                    val formattedMessage =
+                        "time=\"$timestamp\" level=${level.label.lowercase()} msg=\"$escapedMsg\"\n"
 
                     // Log to stderr only if no log file is configured
                     // This prevents polluting stdout when used with containerd (--log option)
                     if (logFile == null) {
-                        fprintf(
-                            stderr,
-                            formattedMessage,
-                            timestamp,
-                            level.label,
-                            processContext,
-                            message,
-                        )
+                        fprintf(stderr, "%s", formattedMessage)
                     }
 
                     // Log to file if configured
                     logFile?.let { file ->
-                        fprintf(
-                            file,
-                            formattedMessage,
-                            timestamp,
-                            level.label,
-                            processContext,
-                            message,
-                        )
+                        fprintf(file, "%s", formattedMessage)
                         fflush(file) // Ensure immediate write
                     }
                 }

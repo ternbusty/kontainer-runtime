@@ -158,6 +158,162 @@ fun wireStdio(
 }
 
 /**
+ * Create a temporary AF_UNIX socket, bind it, listen, and return the path
+ * and the listening fd. Used by Run when terminal=true but no --console-socket
+ * was provided — the runtime creates its own internal listener.
+ *
+ * @return pair of (socket path, server fd) or null on failure
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun createConsoleSocketListener(tmpDir: String): Pair<String, Int>? =
+    memScoped {
+        val socketPath = "$tmpDir/console.sock"
+
+        val fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        if (fd < 0) {
+            Logger.warn("createConsoleSocketListener: socket() failed (errno=$errno)")
+            return null
+        }
+
+        val addr = alloc<sockaddr_un>()
+        addr.sun_family = AF_UNIX.toUShort()
+        val pathBytes = socketPath.encodeToByteArray()
+        if (pathBytes.size >= 108) {
+            close(fd)
+            return null
+        }
+        for (i in pathBytes.indices) {
+            addr.sun_path[i] = pathBytes[i]
+        }
+        addr.sun_path[pathBytes.size] = 0
+
+        if (bind(fd, addr.ptr.reinterpret(), sizeOf<sockaddr_un>().toUInt()) != 0) {
+            Logger.warn("createConsoleSocketListener: bind failed (errno=$errno)")
+            close(fd)
+            return null
+        }
+
+        if (listen(fd, 1) != 0) {
+            Logger.warn("createConsoleSocketListener: listen failed (errno=$errno)")
+            close(fd)
+            unlink(socketPath)
+            return null
+        }
+
+        Logger.debug("console socket listener at $socketPath (fd=$fd)")
+        Pair(socketPath, fd)
+    }
+
+/**
+ * Accept a connection on a console socket server and receive the PTY master
+ * fd via SCM_RIGHTS.
+ *
+ * @return the received master fd, or -1 on failure
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun acceptConsoleMaster(serverFd: Int): Int =
+    memScoped {
+        val client = accept(serverFd, null, null)
+        if (client < 0) {
+            Logger.warn("acceptConsoleMaster: accept failed (errno=$errno)")
+            return -1
+        }
+
+        val masterFd = receiveFdFromSocket(client)
+        close(client)
+        masterFd
+    }
+
+/**
+ * Receive a file descriptor from a unix socket via SCM_RIGHTS.
+ *
+ * @return the received fd, or -1 on failure
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun receiveFdFromSocket(sock: Int): Int =
+    memScoped {
+        val buf = allocArray<ByteVar>(1)
+
+        val iov = alloc<iovec>()
+        iov.iov_base = buf
+        iov.iov_len = 1u
+
+        val cmsgLen = _CMSG_SPACE(sizeOf<IntVar>().toULong())
+        val cmsgBuf = allocArray<ByteVar>(cmsgLen.toInt())
+
+        val msg = alloc<msghdr>()
+        msg.msg_iov = iov.ptr
+        msg.msg_iovlen = 1u
+        msg.msg_control = cmsgBuf
+        msg.msg_controllen = cmsgLen.toULong()
+
+        val n = recvmsg(sock, msg.ptr, 0)
+        if (n < 0) {
+            Logger.warn("recvmsg SCM_RIGHTS failed (errno=$errno)")
+            return -1
+        }
+
+        val cmsg = _CMSG_FIRSTHDR(msg.ptr)
+        if (cmsg == null ||
+            cmsg.pointed.cmsg_level != SOL_SOCKET ||
+            cmsg.pointed.cmsg_type != SCM_RIGHTS
+        ) {
+            Logger.warn("receiveFdFromSocket: unexpected cmsg (no SCM_RIGHTS)")
+            return -1
+        }
+
+        val fdPtr = _CMSG_DATA(cmsg)!!.reinterpret<IntVar>()
+        val fd = fdPtr.pointed.value
+        Logger.debug("received fd $fd via SCM_RIGHTS")
+        fd
+    }
+
+/**
+ * Relay I/O between a PTY master fd and the current process's stdin/stdout.
+ * Runs until the master or stdin closes. Uses poll(2) for multiplexing.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun relayPtyIO(masterFd: Int) {
+    memScoped {
+        val buf = allocArray<ByteVar>(4096)
+        val fds = allocArray<pollfd>(2)
+
+        // fds[0] = stdin, fds[1] = master
+        fds[0].fd = STDIN_FILENO
+        fds[0].events = POLLIN.toShort()
+        fds[1].fd = masterFd
+        fds[1].events = POLLIN.toShort()
+
+        while (true) {
+            val rc = poll(fds, 2u, -1)
+            if (rc < 0) {
+                if (errno == EINTR) continue
+                break
+            }
+
+            // Master → stdout
+            if (fds[1].revents.toInt() and POLLIN != 0) {
+                val n = read(masterFd, buf, 4096u)
+                if (n <= 0) break
+                write(STDOUT_FILENO, buf, n.toULong())
+            }
+            if (fds[1].revents.toInt() and (POLLHUP or POLLERR) != 0) break
+
+            // stdin → master
+            if (fds[0].revents.toInt() and POLLIN != 0) {
+                val n = read(STDIN_FILENO, buf, 4096u)
+                if (n <= 0) {
+                    // stdin closed; master may still produce output
+                    fds[0].fd = -1
+                    continue
+                }
+                write(masterFd, buf, n.toULong())
+            }
+        }
+    }
+}
+
+/**
  * Send a file descriptor over a unix socket using SCM_RIGHTS.
  * Sends a single zero byte as the payload (required by the OCI console protocol).
  */

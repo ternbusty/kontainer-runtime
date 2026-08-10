@@ -92,8 +92,8 @@ internal fun buildSnapshot(
 
 @Serializable
 internal data class EventSnapshot(
-    val id: String,
     val type: String,
+    val id: String,
     val data: EventData,
 )
 
