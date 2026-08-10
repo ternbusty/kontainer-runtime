@@ -100,6 +100,16 @@ fun spec(bundlePath: String) {
                 ),
             linux =
                 spec.Linux(
+                    resources =
+                        spec.LinuxResources(
+                            devices =
+                                listOf(
+                                    spec.LinuxDeviceCgroup(
+                                        allow = false,
+                                        access = "rwm",
+                                    ),
+                                ),
+                        ),
                     namespaces =
                         listOf(
                             spec.Namespace(type = "pid"),

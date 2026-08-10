@@ -46,11 +46,24 @@ fun events(
 
     val cgDir = "/sys/fs/cgroup/${cgroupPath.removePrefix("/")}"
 
+    // Track oom counter so we can emit {"type":"oom"} events when it
+    // increments. cgroup v2 exposes this in memory.events as "oom <N>".
+    var lastOomCount = readOomCount(fs, cgDir)
+
     while (true) {
         // Check if the container still exists. Once deleted, exit cleanly.
         if (!containerExists(fs, rootPath, containerId)) {
             break
         }
+
+        // Detect OOM: if the oom counter increased since our last check,
+        // emit a dedicated OOM event before the stats snapshot.
+        val currentOomCount = readOomCount(fs, cgDir)
+        if (currentOomCount != null && lastOomCount != null && currentOomCount > lastOomCount) {
+            println("""{"type":"oom","id":"$containerId"}""")
+            fflush(stdout)
+        }
+        lastOomCount = currentOomCount
 
         val snapshot = buildSnapshot(fs, cgDir, containerId)
         println(JsonCodec.encode(snapshot))
@@ -77,7 +90,6 @@ internal fun buildSnapshot(
 ): EventSnapshot {
     val memCurrent = readLong(fs, "$cgroupDir/memory.current")
     val memMax = readCgroupString(fs, "$cgroupDir/memory.max")
-    val memEvents = readKvFile(fs, "$cgroupDir/memory.events")
 
     val cpuStat = readKvFile(fs, "$cgroupDir/cpu.stat")
 
@@ -93,7 +105,6 @@ internal fun buildSnapshot(
                     MemoryStats(
                         usage = memCurrent,
                         limit = memMax,
-                        events = memEvents,
                     ),
                 cpu = CpuStats(stat = cpuStat),
                 pids = PidsStats(current = pidsCurrent, limit = pidsMax),
@@ -121,7 +132,6 @@ internal data class EventData(
 internal data class MemoryStats(
     val usage: Long? = null,
     val limit: String? = null,
-    val events: Map<String, Long>? = null,
 )
 
 @Serializable
@@ -134,6 +144,17 @@ internal data class PidsStats(
     val current: Long? = null,
     val limit: String? = null,
 )
+
+// ---- OOM detection ----
+
+/**
+ * Read the "oom" counter from memory.events in the given cgroup directory.
+ * Returns null if the file is absent or unreadable.
+ */
+private fun readOomCount(
+    fs: FileSystem,
+    cgroupDir: String,
+): Long? = readKvFile(fs, "$cgroupDir/memory.events")?.get("oom")
 
 // ---- Cgroup file readers ----
 
