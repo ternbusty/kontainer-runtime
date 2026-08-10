@@ -84,26 +84,37 @@ private fun initProcessInternal(
                 annotations = spec.annotations,
             )
 
-        // Connect to console socket early, before pivot_root.  The console
-        // socket path is a host-side path that becomes unreachable after
-        // pivot_root, but the connected fd survives across pivot_root and
-        // can be used later to send the PTY master.
+        // Obtain the console socket fd for PTY master handoff.
+        //
+        // Prefer _KONTAINER_CONSOLE_SOCKET_FD: the main process connected to
+        // the socket while still in the host namespace (before the user-ns
+        // switch), so the fd works regardless of uid/gid mappings.
+        //
+        // Fallback to _KONTAINER_CONSOLE_SOCKET (path-based connect) only for
+        // backwards compatibility; this fails when a user namespace remaps the
+        // init's host UID to one that lacks permission on the socket.
         var consoleSocketFd = -1
         if (spec.process.terminal) {
-            val consoleSocketPath =
-                getenv("_KONTAINER_CONSOLE_SOCKET")?.toKString()
-                    ?: run {
-                        Logger.error(
-                            "spec.process.terminal=true but --console-socket was not provided",
-                        )
-                        _exit(1)
-                        @Suppress("UNREACHABLE_CODE")
-                        return@memScoped
-                    }
-            consoleSocketFd = connectConsoleSocket(consoleSocketPath)
-            if (consoleSocketFd < 0) {
-                Logger.error("failed to connect to console socket: $consoleSocketPath")
-                _exit(1)
+            val preFd = getenv("_KONTAINER_CONSOLE_SOCKET_FD")?.toKString()?.toIntOrNull()
+            if (preFd != null && preFd >= 0) {
+                consoleSocketFd = preFd
+                Logger.debug("using pre-connected console socket fd=$consoleSocketFd")
+            } else {
+                val consoleSocketPath =
+                    getenv("_KONTAINER_CONSOLE_SOCKET")?.toKString()
+                        ?: run {
+                            Logger.error(
+                                "spec.process.terminal=true but --console-socket was not provided",
+                            )
+                            _exit(1)
+                            @Suppress("UNREACHABLE_CODE")
+                            return@memScoped
+                        }
+                consoleSocketFd = connectConsoleSocket(consoleSocketPath)
+                if (consoleSocketFd < 0) {
+                    Logger.error("failed to connect to console socket: $consoleSocketPath")
+                    _exit(1)
+                }
             }
         }
 

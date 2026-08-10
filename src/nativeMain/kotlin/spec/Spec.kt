@@ -22,9 +22,15 @@ data class Spec(
     val linux: Linux? = null,
 ) {
     /**
-     * Check if a namespace type exists in the spec
+     * Check if a namespace type exists in the spec (either creating or joining).
      */
     fun hasNamespace(type: String): Boolean = linux?.namespaces?.any { it.type == type } ?: false
+
+    /**
+     * Check if the spec creates (unshares) a new namespace of the given type.
+     * Returns false when the namespace is being *joined* (has a path).
+     */
+    fun createsNamespace(type: String): Boolean = linux?.namespaces?.any { it.type == type && it.path.isNullOrEmpty() } ?: false
 }
 
 /**

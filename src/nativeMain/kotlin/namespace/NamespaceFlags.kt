@@ -67,9 +67,11 @@ fun calculateCloneFlags(namespaces: List<Namespace>?): UInt {
     var flags = 0u
 
     for (ns in namespaces) {
-        // A namespace entry with a non-null `path` means "join an existing namespace
-        // at this path", not "create a new one" — don't add it to the unshare set.
-        if (ns.path != null) continue
+        // A namespace entry with a non-empty `path` means "join an existing
+        // namespace at this path", not "create a new one" — don't add it to
+        // the unshare set.  An empty string is treated the same as absent
+        // (OCI: path must be a valid filesystem path to join).
+        if (!ns.path.isNullOrEmpty()) continue
         val flag: UInt =
             when (ns.type) {
                 "mount" -> _CLONE_NEWNS().toUInt()

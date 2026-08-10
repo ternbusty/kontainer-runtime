@@ -310,11 +310,37 @@ void kontainer_bootstrap(void) {
     // joining works only here (kernel forbids it post-fork); mount joining
     // works because bootstrap.c is single-threaded (the Kotlin runtime, which
     // would otherwise be multi-threaded, hasn't started yet).
+    //
+    // User namespace MUST be joined first: it establishes the capability
+    // context required for joining the remaining namespaces. After joining,
+    // the process UID/GID is 65534 (overflow/nobody) because the host UID
+    // does not appear in the target namespace's mapping. We must become
+    // root (UID 0) in the target namespace so that subsequent VFS operations
+    // (mount, mknod, file creation) work correctly.
+    // See: https://github.com/opencontainers/runc/issues/4466
+    maybe_setns_by_path("USER",    CLONE_NEWUSER);
+    {
+        char env_check[64];
+        snprintf(env_check, sizeof(env_check), "%sUSER", ENV_NS_PATH_PREFIX);
+        const char *user_ns_path = getenv(env_check);
+        if (user_ns_path && *user_ns_path) {
+            if (setresgid(0, 0, 0) < 0) {
+                fprintf(stderr, "[stage-1] failed to become gid 0 after joining user namespace: %s\n",
+                        strerror(errno));
+                exit(1);
+            }
+            if (setresuid(0, 0, 0) < 0) {
+                fprintf(stderr, "[stage-1] failed to become uid 0 after joining user namespace: %s\n",
+                        strerror(errno));
+                exit(1);
+            }
+            debug_log("[stage-1] became root (uid=0, gid=0) in joined user namespace\n");
+        }
+    }
     maybe_setns_by_path("MOUNT",   CLONE_NEWNS);
     maybe_setns_by_path("NETWORK", CLONE_NEWNET);
     maybe_setns_by_path("UTS",     CLONE_NEWUTS);
     maybe_setns_by_path("IPC",     CLONE_NEWIPC);
-    maybe_setns_by_path("USER",    CLONE_NEWUSER);
     maybe_setns_by_path("CGROUP",  CLONE_NEWCGROUP);
     maybe_setns_by_path("TIME",    CLONE_NEWTIME);
     maybe_setns_by_path("PID",     CLONE_NEWPID);

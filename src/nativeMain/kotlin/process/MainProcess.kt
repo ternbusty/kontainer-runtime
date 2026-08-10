@@ -125,10 +125,10 @@ private fun runMainProcessInternal(
             DeviceCgroup.apply(cgroupDirPath, deviceRules)
         }
 
-        // Handle UID/GID mapping if user namespace is configured
-        // This must be done BEFORE receiving Stage-2 PID, as Stage-1 waits for mapping completion
-        // before forking Stage-2
-        val hasUserNamespace = spec.hasNamespace("user")
+        // Handle UID/GID mapping only when CREATING a new user namespace.
+        // When joining an existing user namespace (path is set), the bootstrap
+        // doesn't send SYNC_USERMAP_PLS — the mapping already exists.
+        val hasUserNamespace = spec.createsNamespace("user")
         if (hasUserNamespace) {
             Logger.debug("user namespace configured, handling UID/GID mapping")
 
@@ -185,11 +185,10 @@ private fun runMainProcessInternal(
             Logger.debug("sent mapping ack to Stage-1")
         }
 
-        // Handle timens_offsets if time namespace is configured.
-        // Stage-1 sends SYNC_TIMEOFFSETS_PLS + its PID after unsharing
-        // CLONE_NEWTIME but before forking Stage-2. We write the offsets
-        // to /proc/<stage1_pid>/timens_offsets and ack.
-        val hasTimeNamespace = spec.hasNamespace("time")
+        // Handle timens_offsets only when CREATING a new time namespace.
+        // When joining (path is set), bootstrap doesn't unshare CLONE_NEWTIME
+        // and doesn't send SYNC_TIMEOFFSETS_PLS.
+        val hasTimeNamespace = spec.createsNamespace("time")
         val timeOffsets = spec.linux?.timeOffsets
         if (hasTimeNamespace && !timeOffsets.isNullOrEmpty()) {
             val request = readInt32(syncFd, "Failed to read timens request from Stage-1")

@@ -4,6 +4,7 @@ import cgroup.Cgroup
 import channel.SocketNotifyListener
 import channel.initChannel
 import channel.mainChannel
+import console.connectConsoleSocket
 import kotlinx.cinterop.*
 import logger.Logger
 import namespace.calculateCloneFlags
@@ -207,9 +208,19 @@ fun create(
                 setenv("_KONTAINER_NOTIFY_SOCKET", notifySocketPath, 1)
                 setenv("_KONTAINER_CONTAINER_ID", containerId, 1)
 
-                // Console socket path for PTY master fd handoff
+                // Console socket: connect NOW, while still in the host
+                // namespace with full credentials.  Inside a user namespace the
+                // init process's effective host UID is the mapped UID (e.g.
+                // 100000), which may not have permission to connect to a socket
+                // owned by root.  By connecting here and passing the fd, the
+                // init process avoids the permission check entirely.
                 if (consoleSocket != null) {
-                    setenv("_KONTAINER_CONSOLE_SOCKET", consoleSocket, 1)
+                    val csFd = connectConsoleSocket(consoleSocket)
+                    if (csFd < 0) {
+                        fprintf(stderr, "failed to connect to console socket: %s\n", consoleSocket)
+                        _exit(1)
+                    }
+                    setenv("_KONTAINER_CONSOLE_SOCKET_FD", csFd.toString(), 1)
                 }
 
                 // Pass any spec.linux.namespaces[].path entries to bootstrap.c
@@ -220,7 +231,8 @@ fun create(
                 // namespace join must happen pre-fork. The env var key matches
                 // ENV_NS_PATH_PREFIX in bootstrap.c.
                 spec.linux?.namespaces?.forEach { ns ->
-                    val path = ns.path ?: return@forEach
+                    val path = ns.path
+                    if (path.isNullOrEmpty()) return@forEach
                     val envKey =
                         when (ns.type) {
                             "mount" -> "_KONTAINER_NS_PATH_MOUNT"
