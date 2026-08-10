@@ -71,11 +71,17 @@ fun events(
 
         if (stats) break
 
-        // Sleep for the interval. Use usleep for sub-second precision.
-        if (intervalMs >= 1000) {
-            sleep((intervalMs / 1000).toUInt())
-        } else {
-            usleep((intervalMs * 1000).toUInt())
+        // Sleep for the interval, but check for container deletion every
+        // 500ms so we exit promptly when the container is removed (runc
+        // uses an eventfd that fires immediately; we poll instead).
+        var remaining = intervalMs
+        while (remaining > 0) {
+            val chunk = minOf(remaining, 500L)
+            usleep((chunk * 1000).toUInt())
+            remaining -= chunk
+            if (!containerExists(fs, rootPath, containerId)) {
+                return
+            }
         }
     }
 }
