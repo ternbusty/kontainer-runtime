@@ -55,8 +55,22 @@ fun kill(
             // --all with a stopped container: succeed silently (runc compat)
             exit(0)
         }
-        Logger.error("container not running")
-        exit(1)
+        // In host-pidns scenarios the init process may be gone (container
+        // shows as "stopped") but other processes remain in the cgroup.
+        // Check for remaining cgroup processes before rejecting.
+        val hasRemainingProcs =
+            try {
+                val cgPath = loadKontainerConfig(fs, rootPath, containerId).cgroupPath
+                cgPath != null && cgroup.getPids(cgPath).isNotEmpty()
+            } catch (_: Exception) {
+                false
+            }
+        if (!hasRemainingProcs) {
+            Logger.error("container not running")
+            exit(1)
+        }
+        // Fall through to cgroup-based kill below.
+        Logger.debug("container init is gone but cgroup still has processes, proceeding with cgroup kill")
     }
 
     Logger.debug("container is in valid state for kill: ${state.status.value}")

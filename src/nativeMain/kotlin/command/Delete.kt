@@ -61,8 +61,29 @@ fun delete(
     // With force flag, allow deletion of any state
     when {
         state.status.canDelete() -> {
-            // STOPPED status: can delete without killing process
+            // STOPPED status: can delete without killing process.
+            // In host-pidns scenarios the init process may be gone but child
+            // processes remain in the cgroup — kill them before cleanup.
             Logger.debug("container is stopped, proceeding with deletion")
+            val cgPath =
+                try {
+                    loadKontainerConfig(fs, rootPath, containerId).cgroupPath
+                } catch (_: Exception) {
+                    null
+                }
+            if (cgPath != null) {
+                try {
+                    val pids = cgroup.getPids(cgPath)
+                    for (p in pids) {
+                        try {
+                            syscall.killProcess(p, SIGKILL)
+                            Logger.debug("killed remaining PID $p in cgroup")
+                        } catch (_: Exception) {
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+            }
         }
 
         force -> {
