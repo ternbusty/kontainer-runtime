@@ -197,6 +197,7 @@ kotlin {
             create("bpf")
             create("pty")
             create("inotify")
+            create("exeseal")
         }
     }
 

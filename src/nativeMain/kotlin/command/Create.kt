@@ -141,19 +141,13 @@ fun create(
         val cloneFlags = calculateCloneFlags(spec.linux?.namespaces)
         Logger.debug("calculated clone_flags: 0x${cloneFlags.toString(16)}")
 
-        // Get current executable path (in parent process, before fork)
-        val exePathBuf = allocArray<ByteVar>(4096)
-        val exePathLen = readlink("/proc/self/exe", exePathBuf, 4095u)
-        if (exePathLen < 0) {
-            perror("readlink")
-            Logger.error("Failed to read executable path")
-            close(syncFds[0])
-            close(syncFds[1])
-            notifyListener.close()
-            exit(1)
-        }
-        exePathBuf[exePathLen.toInt()] = 0.toByte() // null terminate
-        Logger.debug("executable path: ${exePathBuf.toKString()}")
+        // Use /proc/self/exe as the exec target.  After the CVE-2019-5736
+        // mitigation re-execs from a sealed memfd, readlink("/proc/self/exe")
+        // returns a memfd path that cannot be exec'd by name.  Using the
+        // /proc/self/exe symlink directly works regardless of the backing —
+        // the kernel resolves it to the running executable.
+        val exePathBuf = "/proc/self/exe".cstr.ptr
+        Logger.debug("executable path (for re-exec): /proc/self/exe")
 
         // Fork and exec to trigger bootstrap constructor.
         // We use a plain fork() (not CLONE_PARENT) so that Stage-1 becomes a
@@ -254,9 +248,8 @@ fun create(
                 argv[1] = "__init__".cstr.ptr
                 argv[2] = null
 
-                // Exec ourselves
-                val exePath = exePathBuf.toKString()
-                execv(exePath, argv)
+                // Exec ourselves via /proc/self/exe (CVE-2019-5736 safe)
+                execv("/proc/self/exe", argv)
 
                 // If exec fails, we reach here
                 perror("execv")

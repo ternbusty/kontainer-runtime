@@ -22,6 +22,7 @@ import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.int
 import command.*
 import config.BuildConfig
+import exeseal.ensureSelfCloned
 import kotlinx.cinterop.toKString
 import logger.Logger
 import platform.posix._exit
@@ -667,6 +668,15 @@ fun main(args: Array<String>) {
     val isInit = kontainer_is_init_process()
 
     Logger.setContext("main")
+
+    // CVE-2019-5736 mitigation: clone the runtime binary into a sealed memfd
+    // and re-exec from it so /proc/self/exe can never be used to overwrite the
+    // on-disk binary.  Must run before any container namespace is entered.
+    // Skip for the init process (Stage-2) — it was already exec'd from the
+    // cloned binary by the parent.
+    if (isInit == 0) {
+        ensureSelfCloned(args)
+    }
 
     // If this is Stage-2 (init process) forked by bootstrap.c
     if (isInit != 0 || (args.size == 1 && args[0] == "__init__")) {
