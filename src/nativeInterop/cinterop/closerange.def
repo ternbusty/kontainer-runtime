@@ -9,8 +9,12 @@ compilerOpts = -D_GNU_SOURCE
 static inline long _SYS_close_range() {
 #ifdef __NR_close_range
     return __NR_close_range;
+#elif defined(__x86_64__)
+    return 436;
+#elif defined(__aarch64__)
+    return 436;
 #else
-    return 436;  // fallback: added in Linux 5.9, same on x86_64 and arm64
+    #error "close_range syscall number unknown for this architecture"
 #endif
 }
 
