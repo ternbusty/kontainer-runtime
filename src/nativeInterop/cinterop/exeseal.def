@@ -1,0 +1,93 @@
+headers = sys/mman.h sys/syscall.h
+headerFilter = sys/mman.h sys/syscall.h
+package = platform.linux
+compilerOpts = -D_GNU_SOURCE
+---
+
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <string.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+/* memfd_create flags */
+#ifndef MFD_CLOEXEC
+#define MFD_CLOEXEC       0x0001U
+#endif
+#ifndef MFD_ALLOW_SEALING
+#define MFD_ALLOW_SEALING 0x0002U
+#endif
+
+/* fcntl sealing commands and flags (linux/fcntl.h) */
+#ifndef F_ADD_SEALS
+#define F_ADD_SEALS    1033
+#endif
+#ifndef F_GET_SEALS
+#define F_GET_SEALS    1034
+#endif
+#ifndef F_SEAL_SEAL
+#define F_SEAL_SEAL    0x0001
+#endif
+#ifndef F_SEAL_SHRINK
+#define F_SEAL_SHRINK  0x0002
+#endif
+#ifndef F_SEAL_GROW
+#define F_SEAL_GROW    0x0004
+#endif
+#ifndef F_SEAL_WRITE
+#define F_SEAL_WRITE   0x0008
+#endif
+
+/* O_TMPFILE may not be in all toolchain headers */
+#ifndef O_TMPFILE
+#define O_TMPFILE (020000000 | 00200000)  /* __O_TMPFILE | O_DIRECTORY */
+#endif
+
+/**
+ * Wrapper around memfd_create(2).  glibc < 2.27 may not expose the
+ * symbol even though the kernel supports it; fall back to the raw
+ * syscall so we work on older distributions.
+ */
+static inline int _memfd_create(const char *name, unsigned int flags) {
+#if defined(__NR_memfd_create)
+    return (int)syscall(__NR_memfd_create, name, flags);
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
+/* Expose constants as functions (K/N cannot read C macros directly). */
+static inline unsigned int _MFD_CLOEXEC(void)       { return MFD_CLOEXEC; }
+static inline unsigned int _MFD_ALLOW_SEALING(void)  { return MFD_ALLOW_SEALING; }
+
+static inline int _F_ADD_SEALS(void)  { return F_ADD_SEALS; }
+static inline int _F_GET_SEALS(void)  { return F_GET_SEALS; }
+static inline int _F_SEAL_SEAL(void)  { return F_SEAL_SEAL; }
+static inline int _F_SEAL_SHRINK(void){ return F_SEAL_SHRINK; }
+static inline int _F_SEAL_GROW(void)  { return F_SEAL_GROW; }
+static inline int _F_SEAL_WRITE(void) { return F_SEAL_WRITE; }
+
+static inline int _O_TMPFILE(void)    { return O_TMPFILE; }
+
+/**
+ * Copy the contents of src_fd into dst_fd.  Uses a read/write loop.
+ * Returns 0 on success, -1 on failure with errno set.
+ */
+static inline int _copy_fd(int dst_fd, int src_fd) {
+    char buf[32768];
+    ssize_t n;
+    while ((n = read(src_fd, buf, sizeof(buf))) > 0) {
+        const char *p = buf;
+        while (n > 0) {
+            ssize_t w = write(dst_fd, p, (size_t)n);
+            if (w < 0) return -1;
+            p += w;
+            n -= w;
+        }
+    }
+    return (n < 0) ? -1 : 0;
+}
