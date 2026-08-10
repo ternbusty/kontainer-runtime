@@ -55,6 +55,9 @@ internal fun formatContainerList(
         }
     }
 
+    // Sort by container ID (runc uses alphabetical order).
+    states.sortBy { it.id }
+
     return when {
         quiet -> states.joinToString("") { "${it.id}\n" }
         format == "json" -> {
