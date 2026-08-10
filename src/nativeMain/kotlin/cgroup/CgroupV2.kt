@@ -14,7 +14,7 @@ class CgroupV2(
     private val fs: FileSystem,
 ) : Cgroup {
     override fun setup(
-        pid: Int,
+        pid: Int?,
         cgroupPath: String?,
         resources: LinuxResources?,
     ) {
@@ -28,7 +28,7 @@ class CgroupV2(
             // in this file). If the caller passes null we fall back to a PID-
             // suffixed leaf under our runtime's subtree — this is mainly for
             // tests that don't go through MainProcess's resolver.
-            val normalizedPath = cgroupPath?.removePrefix("/") ?: "kontainer-runtime/kontainer-$pid"
+            val normalizedPath = cgroupPath?.removePrefix("/") ?: "kontainer-runtime/kontainer-${pid ?: 0}"
             val fullPath = "$CGROUP_ROOT/$normalizedPath"
 
             Logger.debug("setting up cgroup at $fullPath")
@@ -65,13 +65,15 @@ class CgroupV2(
                 }
             }
 
-            val procsPath = "$fullPath/$CGROUP_PROCS"
-            try {
-                fs.writeTextFile(procsPath, pid.toString())
-                Logger.debug("added PID $pid to cgroup")
-            } catch (e: Exception) {
-                Logger.error("failed to add PID to cgroup: ${e.message}")
-                throw Exception("Failed to add PID to cgroup", e)
+            if (pid != null) {
+                val procsPath = "$fullPath/$CGROUP_PROCS"
+                try {
+                    fs.writeTextFile(procsPath, pid.toString())
+                    Logger.debug("added PID $pid to cgroup")
+                } catch (e: Exception) {
+                    Logger.error("failed to add PID to cgroup: ${e.message}")
+                    throw Exception("Failed to add PID to cgroup", e)
+                }
             }
 
             if (resources != null) {

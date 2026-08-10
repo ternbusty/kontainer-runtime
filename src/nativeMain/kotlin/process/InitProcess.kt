@@ -87,6 +87,54 @@ private fun initProcessInternal(
             // Process spec.mounts BEFORE pivot_root so bind-mount source paths from
             // the host are still reachable. Targets are inside rootfsPath.
             applySpecMounts(syscall, spec.mounts, rootfsPath)
+
+            // PTY allocation: when spec.process.terminal is true, allocate a
+            // pseudo-terminal pair, ship the master fd to the caller via the
+            // --console-socket (SCM_RIGHTS), and wire the slave to stdio.
+            //
+            // This MUST happen AFTER mounts (so /dev/pts is available for the
+            // PTY slave) but BEFORE pivot_root: the console socket path is a
+            // HOST-side path that becomes unreachable after pivot_root.
+            // This matches runc's ordering: prepareRootfs → setupConsole →
+            // finalizeRootfs(pivot_root).
+            if (spec.process.terminal) {
+                val consoleSocketPath =
+                    getenv("_KONTAINER_CONSOLE_SOCKET")?.toKString()
+                        ?: run {
+                            Logger.error(
+                                "spec.process.terminal=true but --console-socket was not provided",
+                            )
+                            _exit(1)
+                            @Suppress("UNREACHABLE_CODE")
+                            return@memScoped
+                        }
+
+                val pty =
+                    openPty()
+                        ?: run {
+                            Logger.error("failed to allocate pseudo-terminal")
+                            _exit(1)
+                            @Suppress("UNREACHABLE_CODE")
+                            return@memScoped
+                        }
+
+                if (!sendMasterTo(consoleSocketPath, pty.master)) {
+                    Logger.error(
+                        "failed to send PTY master fd to console socket: $consoleSocketPath",
+                    )
+                    close(pty.master)
+                    close(pty.slave)
+                    _exit(1)
+                }
+                close(pty.master)
+
+                wireStdio(
+                    pty.slave,
+                    spec.process.consoleSize?.height,
+                    spec.process.consoleSize?.width,
+                )
+            }
+
             // createContainer hooks run after the container's mount namespace
             // is established but BEFORE pivot_root — they can still see the
             // host paths via the new rootfs's parent. This is the standard
@@ -103,6 +151,46 @@ private fun initProcessInternal(
             applyRootfsPropagation(syscall, spec.linux?.rootfsPropagation)
         } else {
             Logger.debug("no mount namespace, skipping rootfs preparation")
+
+            // Without a mount namespace there is no pivot_root, so host
+            // paths remain accessible.  PTY setup can run here safely.
+            if (spec.process.terminal) {
+                val consoleSocketPath =
+                    getenv("_KONTAINER_CONSOLE_SOCKET")?.toKString()
+                        ?: run {
+                            Logger.error(
+                                "spec.process.terminal=true but --console-socket was not provided",
+                            )
+                            _exit(1)
+                            @Suppress("UNREACHABLE_CODE")
+                            return@memScoped
+                        }
+
+                val pty =
+                    openPty()
+                        ?: run {
+                            Logger.error("failed to allocate pseudo-terminal")
+                            _exit(1)
+                            @Suppress("UNREACHABLE_CODE")
+                            return@memScoped
+                        }
+
+                if (!sendMasterTo(consoleSocketPath, pty.master)) {
+                    Logger.error(
+                        "failed to send PTY master fd to console socket: $consoleSocketPath",
+                    )
+                    close(pty.master)
+                    close(pty.slave)
+                    _exit(1)
+                }
+                close(pty.master)
+
+                wireStdio(
+                    pty.slave,
+                    spec.process.consoleSize?.height,
+                    spec.process.consoleSize?.width,
+                )
+            }
         }
 
         // Change to working directory
@@ -176,55 +264,9 @@ private fun initProcessInternal(
         // This sets FD_CLOEXEC on all FDs >= 3 + preserveFds so they're auto-closed at
         // execve.  Channel fds remain usable (CLOEXEC only fires at execve, not
         // during read/write), so initReady() below still works.
+        // Note: PTY fds (0/1/2) were already set up before pivot_root via
+        // dup2, so they are unaffected by closeRange (which starts at fd 3).
         syscall.closeRange(preserveFds)
-
-        // PTY allocation: when spec.process.terminal is true, allocate a
-        // pseudo-terminal pair, ship the master fd to the caller via the
-        // --console-socket (SCM_RIGHTS), and wire the slave to stdio.
-        //
-        // This MUST happen BEFORE initReady: the OCI spec (and runc's
-        // implementation) require the console socket consumer (e.g. recvtty)
-        // to have the master fd before the runtime's `create` returns.
-        // The PTY fds are created fresh after closeRange, so they have no
-        // stale FD_CLOEXEC.  The master is sent and closed manually; the
-        // slave is dup2'd onto 0/1/2 before execvp.
-        if (spec.process.terminal) {
-            val consoleSocketPath =
-                getenv("_KONTAINER_CONSOLE_SOCKET")?.toKString()
-                    ?: run {
-                        Logger.error(
-                            "spec.process.terminal=true but --console-socket was not provided",
-                        )
-                        _exit(1)
-                        @Suppress("UNREACHABLE_CODE")
-                        return@memScoped
-                    }
-
-            val pty =
-                openPty()
-                    ?: run {
-                        Logger.error("failed to allocate pseudo-terminal")
-                        _exit(1)
-                        @Suppress("UNREACHABLE_CODE")
-                        return@memScoped
-                    }
-
-            if (!sendMasterTo(consoleSocketPath, pty.master)) {
-                Logger.error(
-                    "failed to send PTY master fd to console socket: $consoleSocketPath",
-                )
-                close(pty.master)
-                close(pty.slave)
-                _exit(1)
-            }
-            close(pty.master)
-
-            wireStdio(
-                pty.slave,
-                spec.process.consoleSize?.height,
-                spec.process.consoleSize?.width,
-            )
-        }
 
         mainSender.initReady()
         Logger.debug("sent init ready signal")

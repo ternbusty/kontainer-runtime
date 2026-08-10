@@ -13,12 +13,16 @@ interface Cgroup {
     /**
      * Create a cgroup at [cgroupPath] (relative to the cgroup root), enable the
      * controllers required by [resources] in every ancestor's cgroup.subtree_control,
-     * place [pid] in the leaf cgroup.procs, and apply the resource limits.
+     * and apply the resource limits.
+     *
+     * When [pid] is non-null the process is also written into the leaf
+     * cgroup.procs. Pass `null` to set up the directory and resources without
+     * adding any process — the caller can use [addProcess] later.
      *
      * No-op when both [cgroupPath] and [resources] are null.
      */
     fun setup(
-        pid: Int,
+        pid: Int? = null,
         cgroupPath: String?,
         resources: LinuxResources?,
     )
