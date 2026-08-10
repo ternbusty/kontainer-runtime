@@ -6,12 +6,30 @@ compilerOpts = -D_GNU_SOURCE
 
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <sys/mount.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <libgen.h>
+
+/* New mount API constants (linux/mount.h, Linux 5.2+).
+ * Defined here to avoid a dependency on the kernel header, which is
+ * not present in the K/N bundled sysroot. */
+#ifndef FSOPEN_CLOEXEC
+#define FSOPEN_CLOEXEC      0x00000001
+#endif
+#ifndef FSMOUNT_CLOEXEC
+#define FSMOUNT_CLOEXEC     0x00000001
+#endif
+#ifndef FSCONFIG_SET_STRING
+#define FSCONFIG_SET_STRING 1
+#endif
+#ifndef FSCONFIG_CMD_CREATE
+#define FSCONFIG_CMD_CREATE 6
+#endif
 
 /* memfd_create flags */
 #ifndef MFD_CLOEXEC
@@ -60,6 +78,49 @@ static inline int _memfd_create(const char *name, unsigned int flags) {
 #endif
 }
 
+/* ----- New mount API wrappers (Linux 5.2+) -----
+ *
+ * The K/N bundled sysroot (glibc 2.19) does not define __NR_fsopen etc.,
+ * so we hardcode the syscall numbers.  These are stable ABI — the numbers
+ * are architecture-specific but never change once assigned.
+ *
+ * x86_64: fsopen=430  fsconfig=431  fsmount=432
+ * aarch64: same numbers (shared unistd since 4.17)
+ */
+#ifndef __NR_fsopen
+#define __NR_fsopen  430
+#endif
+#ifndef __NR_fsconfig
+#define __NR_fsconfig 431
+#endif
+#ifndef __NR_fsmount
+#define __NR_fsmount 432
+#endif
+
+/**
+ * fsopen(2) — create a filesystem configuration context.
+ */
+static inline int _fsopen(const char *fsname, unsigned int flags) {
+    return (int)syscall(__NR_fsopen, fsname, flags);
+}
+
+/**
+ * fsconfig(2) — set a filesystem configuration parameter.
+ */
+static inline int _fsconfig(int fd, unsigned int cmd,
+                             const char *key, const char *value,
+                             int aux) {
+    return (int)syscall(__NR_fsconfig, fd, cmd, key, value, aux);
+}
+
+/**
+ * fsmount(2) — create a mount from a filesystem context.
+ */
+static inline int _fsmount(int fd, unsigned int flags,
+                            unsigned int mount_attrs) {
+    return (int)syscall(__NR_fsmount, fd, flags, mount_attrs);
+}
+
 /* Expose constants as functions (K/N cannot read C macros directly). */
 static inline unsigned int _MFD_CLOEXEC(void)       { return MFD_CLOEXEC; }
 static inline unsigned int _MFD_ALLOW_SEALING(void)  { return MFD_ALLOW_SEALING; }
@@ -72,6 +133,11 @@ static inline int _F_SEAL_GROW(void)  { return F_SEAL_GROW; }
 static inline int _F_SEAL_WRITE(void) { return F_SEAL_WRITE; }
 
 static inline int _O_TMPFILE(void)    { return O_TMPFILE; }
+
+static inline unsigned int _FSOPEN_CLOEXEC(void)     { return FSOPEN_CLOEXEC; }
+static inline unsigned int _FSMOUNT_CLOEXEC(void)     { return FSMOUNT_CLOEXEC; }
+static inline unsigned int _FSCONFIG_SET_STRING(void) { return FSCONFIG_SET_STRING; }
+static inline unsigned int _FSCONFIG_CMD_CREATE(void) { return FSCONFIG_CMD_CREATE; }
 
 /**
  * Copy the contents of src_fd into dst_fd.  Uses a read/write loop.
@@ -90,4 +156,102 @@ static inline int _copy_fd(int dst_fd, int src_fd) {
         }
     }
     return (n < 0) ? -1 : 0;
+}
+
+/**
+ * Resolve /proc/self/exe via readlink, split into directory and basename,
+ * and write them into the provided buffers.  Returns 0 on success, -1
+ * on failure.
+ */
+static inline int _resolve_exe_path(char *dir_buf, size_t dir_len,
+                                     char *name_buf, size_t name_len) {
+    char link[4096];
+    ssize_t n = readlink("/proc/self/exe", link, sizeof(link) - 1);
+    if (n < 0) return -1;
+    link[n] = '\0';
+
+    /* dirname(3) and basename(3) may modify their argument, so copy. */
+    char tmp1[4096], tmp2[4096];
+    memcpy(tmp1, link, (size_t)n + 1);
+    memcpy(tmp2, link, (size_t)n + 1);
+
+    const char *d = dirname(tmp1);
+    const char *b = basename(tmp2);
+    if (strlen(d) >= dir_len || strlen(b) >= name_len) return -1;
+    strcpy(dir_buf, d);
+    strcpy(name_buf, b);
+    return 0;
+}
+
+/* O_PATH is not in the K/N bundled sysroot headers. */
+#ifndef O_PATH
+#define O_PATH 010000000
+#endif
+
+/**
+ * Create a read-only overlayfs mount over the directory containing the
+ * binary, then open the binary through it.  Returns the opened fd on
+ * success or -1 on failure.  This is a zero-copy alternative to memfd
+ * cloning — the binary contents are never read or written.
+ *
+ * The overlayfs is created with two lowerdirs (the binary's directory and
+ * a dummy) which puts it in "lower-only" mode — no upperdir/workdir —
+ * making writes completely impossible.  Unlike bind-mount + MS_RDONLY,
+ * overlayfs cannot be "unwrapped" by a container process.
+ *
+ * Requires: root, Linux 5.2+ (new mount API), overlayfs module.
+ */
+static inline int _try_sealed_overlayfs(void) {
+    /* Resolve the real path of /proc/self/exe. */
+    char dir_buf[4096], name_buf[4096];
+    if (_resolve_exe_path(dir_buf, sizeof(dir_buf),
+                          name_buf, sizeof(name_buf)) < 0)
+        return -1;
+
+    /* fsopen("overlay") — this is the most likely failure point
+     * (unprivileged, no overlayfs module, old kernel). */
+    int ctx_fd = _fsopen("overlay", FSOPEN_CLOEXEC);
+    if (ctx_fd < 0) return -1;
+
+    /* Escape ":" and "\" in the directory path (overlayfs uses ":"
+     * as a lowerdir separator). Build the escaped path in-place. */
+    char escaped[8192];
+    size_t j = 0;
+    for (size_t i = 0; dir_buf[i] && j < sizeof(escaped) - 2; i++) {
+        if (dir_buf[i] == '\\' || dir_buf[i] == ':')
+            escaped[j++] = '\\';
+        escaped[j++] = dir_buf[i];
+    }
+    escaped[j] = '\0';
+
+    /* Two lowerdirs = "lower-only" mode (fully read-only).
+     * The binary's directory comes first so it takes priority. */
+    char lowerdir[16384];
+    snprintf(lowerdir, sizeof(lowerdir), "%s:/tmp", escaped);
+    if (_fsconfig(ctx_fd, FSCONFIG_SET_STRING, "lowerdir", lowerdir, 0) < 0) {
+        close(ctx_fd);
+        return -1;
+    }
+
+    /* Suppress spurious xino warnings. */
+    _fsconfig(ctx_fd, FSCONFIG_SET_STRING, "xino", "off", 0);
+
+    /* Create the superblock. */
+    if (_fsconfig(ctx_fd, FSCONFIG_CMD_CREATE, NULL, NULL, 0) < 0) {
+        close(ctx_fd);
+        return -1;
+    }
+
+    /* Mount read-only, nodev, nosuid. */
+    int mount_fd = _fsmount(ctx_fd, FSMOUNT_CLOEXEC,
+                            MS_RDONLY | MS_NODEV | MS_NOSUID);
+    close(ctx_fd);
+    if (mount_fd < 0) return -1;
+
+    /* Open the binary through the overlayfs. O_PATH gives an
+     * unopened fd suitable for execveat / /proc/self/fd/N exec. */
+    int exe_fd = openat(mount_fd, name_buf,
+                        O_PATH | O_NOFOLLOW | O_CLOEXEC);
+    close(mount_fd);
+    return exe_fd;  /* >= 0 on success, -1 on failure */
 }

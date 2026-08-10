@@ -14,6 +14,7 @@ import platform.linux._MFD_CLOEXEC
 import platform.linux._O_TMPFILE
 import platform.linux._copy_fd
 import platform.linux._memfd_create
+import platform.linux._try_sealed_overlayfs
 import platform.posix.*
 
 /**
@@ -24,14 +25,16 @@ import platform.posix.*
  * point to the on-disk binary.  A malicious container process could otherwise
  * overwrite the host binary through that symlink.
  *
- * The mitigation copies the runtime binary into a sealed memory-backed fd
- * (memfd) and re-execs from it.  After re-exec `/proc/self/exe` resolves to
- * the in-memory copy, which is sealed against writes, so the attack fails.
- *
  * Fallback chain (matching runc):
- *   1. memfd_create  — preferred; supports F_SEAL_WRITE
- *   2. O_TMPFILE     — anonymous file on /tmp; no sealing but no on-disk name
- *   3. mkstemp+unlink — named temp file, immediately unlinked
+ *   1. overlayfs  — zero-copy; creates a read-only overlay over the binary's
+ *                   directory and opens the binary through it.  Requires
+ *                   root and Linux 5.2+ (new mount API).
+ *   2. memfd_create — copies the binary into a sealed memfd (Linux 3.17+)
+ *   3. O_TMPFILE  — anonymous file on /tmp; no sealing but no on-disk name
+ *   4. mkstemp+unlink — named temp file, immediately unlinked
+ *
+ * After obtaining a sealed fd, the process re-execs from it so
+ * `/proc/self/exe` resolves to the sealed copy, not the on-disk binary.
  */
 
 /** Environment variable set after a successful re-exec to avoid looping. */
@@ -41,11 +44,11 @@ private const val CLONED_ENV = "_KONTAINER_CLONED_BINARY"
  * Entry point — call at the very beginning of main().
  *
  * If the process is already running from a cloned binary (env marker set),
- * this is a no-op.  Otherwise it copies the binary, seals it, and re-execs.
+ * this is a no-op.  Otherwise it seals the binary and re-execs.
  * On success this function never returns (the process is replaced).
  * On failure it logs a warning and returns, allowing the runtime to proceed
  * unprotected — matching runc's behavior of not hard-failing when the
- * kernel is too old for memfd and no tmp space is available.
+ * kernel is too old or no tmp space is available.
  */
 fun ensureSelfCloned(args: Array<String>) {
     // Already cloned — nothing to do.
@@ -91,20 +94,47 @@ private fun isMemfd(): Boolean =
     }
 
 /**
- * Clone /proc/self/exe into a sealed fd.  Returns the fd (>= 0) on
+ * Obtain a sealed fd for the current binary.  Returns the fd (>= 0) on
  * success or -1 on failure.
  */
 private fun cloneBinary(): Int {
-    // Strategy 1: memfd_create
+    // Strategy 1: overlayfs (zero-copy, Linux 5.2+, requires root)
+    val overlayFd = tryOverlayfs()
+    if (overlayFd >= 0) return overlayFd
+
+    // Strategy 2: memfd_create (copies binary, Linux 3.17+)
     val memfd = tryMemfd()
     if (memfd >= 0) return memfd
 
-    // Strategy 2: O_TMPFILE (anonymous file, no name on disk)
+    // Strategy 3: O_TMPFILE (anonymous file, no name on disk)
     val tmpfd = tryOTmpfile()
     if (tmpfd >= 0) return tmpfd
 
-    // Strategy 3: mkstemp + unlink
+    // Strategy 4: mkstemp + unlink
     return tryMkstemp()
+}
+
+/**
+ * Try the overlayfs approach: create a read-only overlayfs over the
+ * directory containing the binary, then open the binary through it.
+ *
+ * This is a zero-copy technique — no data is read or written.  The
+ * overlayfs mount has two lowerdirs (the binary's directory and a dummy)
+ * which puts it in "lower-only" mode where writes are completely blocked.
+ * Unlike a bind-mount, overlayfs cannot be "unwrapped" by the container
+ * to reach the underlying file.
+ *
+ * Requires: root, Linux 5.2+ (fsopen/fsconfig/fsmount), overlayfs support.
+ * Returns fd >= 0 on success, -1 on failure.
+ */
+private fun tryOverlayfs(): Int {
+    val fd = _try_sealed_overlayfs()
+    if (fd >= 0) {
+        Logger.debug("exeseal: sealed binary via overlayfs (fd=$fd)")
+    } else {
+        Logger.debug("exeseal: overlayfs failed: ${strerror(errno)?.toKString()}")
+    }
+    return fd
 }
 
 /**
