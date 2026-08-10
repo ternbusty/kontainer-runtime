@@ -71,6 +71,12 @@ object Logger {
     // breaks bats tests that check exact output lines.
     private var stderrEnabled: Boolean = false
 
+    // An fd-backed FILE* that replaces stderr for log output. Used by the
+    // init process to redirect Logger writes to a dup of the original stderr
+    // BEFORE wireStdio replaces fd 2 with the PTY slave, so diagnostic
+    // messages go to the runtime's stderr (not the container's PTY).
+    private var stderrOverride: CPointer<FILE>? = null
+
     // Log format (text or json)
     private var logFormat: Format = Format.TEXT
 
@@ -100,6 +106,18 @@ object Logger {
      */
     fun setContext(context: String) {
         processContext = context
+    }
+
+    /**
+     * Redirect stderr-targeted log output to the given file descriptor.
+     * Used by the init process to preserve the original stderr before
+     * wireStdio replaces fd 2 with the PTY slave.
+     */
+    fun redirectToFd(fd: Int) {
+        val f = fdopen(fd, "w")
+        if (f != null) {
+            stderrOverride = f
+        }
     }
 
     /**
@@ -227,10 +245,12 @@ object Logger {
                     val formattedMessage =
                         "time=\"$timestamp\" level=${level.label.lowercase()} msg=\"$escapedMsg\"\n"
 
-                    // Write to stderr when explicitly enabled (--debug) and
-                    // no log file redirects output elsewhere.
+                    // Write to stderr (or its override fd) when explicitly
+                    // enabled and no log file redirects output elsewhere.
                     if (stderrEnabled && logFile == null) {
-                        fprintf(stderr, "%s", formattedMessage)
+                        val target = stderrOverride ?: stderr
+                        fprintf(target, "%s", formattedMessage)
+                        if (stderrOverride != null) fflush(target)
                     }
 
                     // Log to file if configured
@@ -248,7 +268,9 @@ object Logger {
                             "\"context\":\"$processContext\",\"message\":\"$escapedMessage\"}\n"
 
                     if (stderrEnabled && logFile == null) {
-                        fprintf(stderr, "%s", jsonMessage)
+                        val target = stderrOverride ?: stderr
+                        fprintf(target, "%s", jsonMessage)
+                        if (stderrOverride != null) fflush(target)
                     }
 
                     // Log to file if configured

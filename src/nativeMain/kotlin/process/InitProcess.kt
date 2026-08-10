@@ -252,6 +252,23 @@ private fun initProcessInternal(
             close(pty.master)
             close(consoleSocketFd)
 
+            // Save a dup of stderr BEFORE wireStdio replaces it with the
+            // PTY slave. This lets the Logger write to the original stderr
+            // (which connects back to the runtime's stderr) instead of
+            // going through the PTY relay and polluting the container's
+            // output stream.
+            //
+            // Mark the dup CLOEXEC so it does NOT leak across execvp into
+            // the container process. Without CLOEXEC the fd survives exec
+            // (it was created after closeRange) and keeps the caller's
+            // pipe/fd open, causing $() subshell captures (e.g. bats'
+            // `run`) to hang indefinitely.
+            val savedStderr = dup(STDERR_FILENO)
+            if (savedStderr >= 0) {
+                fcntl(savedStderr, F_SETFD, FD_CLOEXEC)
+                Logger.redirectToFd(savedStderr)
+            }
+
             wireStdio(
                 pty.slave,
                 spec.process.consoleSize?.height,

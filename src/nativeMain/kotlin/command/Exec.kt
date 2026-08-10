@@ -286,6 +286,26 @@ fun exec(
         }
     }
 
+    // Open the container's root directory BEFORE the fork (while we can
+    // still see /proc/<initPid>/root from the host mount namespace).
+    // After the child joins the container's mount namespace, it uses
+    // fchdir + chroot to enter the container's root filesystem. Without
+    // this, /proc/sys/kernel/domainname etc. are not visible because the
+    // exec process's filesystem root is still the host root.
+    val hasMount = joins.any { it.ociType == "mount" }
+    val rootFd =
+        if (hasMount) {
+            val fd = open("/proc/$initPid/root", O_RDONLY or O_CLOEXEC or O_DIRECTORY)
+            if (fd < 0) {
+                Logger.error("exec: failed to open /proc/$initPid/root (errno=$errno)")
+                nsFds.values.forEach { close(it) }
+                exit(1)
+            }
+            fd
+        } else {
+            -1
+        }
+
     // For detached exec with terminal, connect to the external console
     // socket from the host context (before forking into the container's
     // namespaces where the host path would be unreachable).
@@ -321,6 +341,7 @@ fun exec(
                 notifyInitReceiver,
                 preserveFds,
                 consoleSocketFd,
+                rootFd,
             )
         } catch (t: Throwable) {
             fprintf(stderr, "exec: %s\n", t.message ?: "unknown error")
@@ -328,6 +349,7 @@ fun exec(
         _exit(1)
     }
     if (consoleSocketFd >= 0) close(consoleSocketFd)
+    if (rootFd >= 0) close(rootFd)
 
     // Parent: attach the child to the container's cgroup and raise its hard
     // rlimits, both from the host context — the host cgroupfs view is gone
@@ -425,6 +447,7 @@ private fun runExecChild(
     notifyInitReceiver: InitReceiver?,
     preserveFds: Int = 0,
     consoleSocketFd: Int = -1,
+    rootFd: Int = -1,
 ) {
     close(pidPipe[0])
     close(setupPipe[1])
@@ -457,6 +480,23 @@ private fun runExecChild(
         }
     }
     nsFds.values.forEach { close(it) }
+
+    // After joining the mount namespace, change root to the container's
+    // rootfs. Without this the process's filesystem root is still the host
+    // root, and paths like /proc/sys/kernel/domainname are invisible.
+    // The rootFd was opened BEFORE the fork while /proc/<initPid>/root was
+    // still reachable from the host mount namespace.
+    if (rootFd >= 0) {
+        if (fchdir(rootFd) != 0) {
+            fprintf(stderr, "exec: fchdir(rootFd) failed: %s\n", strerror(errno))
+            _exit(1)
+        }
+        close(rootFd)
+        if (chroot(".") != 0) {
+            fprintf(stderr, "exec: chroot(\".\") failed: %s\n", strerror(errno))
+            _exit(1)
+        }
+    }
 
     // PTY allocation: after joining the container's namespaces (so we are
     // inside the container's mount namespace with access to its /dev/pts),
