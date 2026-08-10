@@ -216,10 +216,17 @@ kotlin {
         }
     }
 
-    // Ensure BuildConfig is generated before compilation
+    // Ensure BuildConfig is generated before compilation and KSP
     nativeTarget.compilations.getByName("main").compileTaskProvider.configure {
         dependsOn(generateBuildConfig)
     }
+}
+
+// KSP also scans the generated buildconfig source directory, so it must
+// wait for generateBuildConfig to run first.  Without this explicit
+// dependency Gradle 9 reports an implicit-dependency validation error.
+tasks.matching { it.name.matches(Regex("kspKotlin(LinuxX64|LinuxArm64)")) }.configureEach {
+    dependsOn(generateBuildConfig)
 }
 
 // Ensure ktlint tasks run after generation if they touch generated sources
