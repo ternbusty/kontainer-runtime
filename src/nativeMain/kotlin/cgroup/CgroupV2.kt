@@ -103,7 +103,10 @@ class CgroupV2(
         try {
             fs.writeTextFile(procsPath, pid.toString())
         } catch (e: Exception) {
-            throw Exception("adding pid $pid to $procsPath", e)
+            // Include the root-cause text (e.g. "no such file or directory") so
+            // that callers printing only `message` get the full picture.
+            val reason = e.message?.substringAfterLast(": ") ?: "unknown error"
+            throw Exception("adding pid $pid to $procsPath: $reason", e)
         }
         Logger.debug("added PID $pid to cgroup $normalizedPath")
     }
