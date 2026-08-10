@@ -72,7 +72,9 @@ jobs:
           cd "$HOME/runc"
           # recvtty — required for --console-socket tests
           go build -o tests/cmd/recvtty/recvtty ./tests/cmd/recvtty/
-          ls -la tests/cmd/recvtty/recvtty
+          # remap-rootfs — required for user-namespace tests that run as root
+          go build -o tests/cmd/remap-rootfs/remap-rootfs ./tests/cmd/remap-rootfs/
+          ls -la tests/cmd/recvtty/recvtty tests/cmd/remap-rootfs/remap-rootfs
 
       # ── fetch rootfs images ──────────────────────────────────────
       - name: Fetch rootfs images (busybox / debian)
