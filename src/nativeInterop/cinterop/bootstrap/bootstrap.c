@@ -103,6 +103,7 @@ enum sync_t {
     SYNC_TIMEOFFSETS_ACK = 0x43, /* timens_offsets write complete */
     SYNC_GRANDCHILD = 0x44,     /* Stage-2 is ready to run */
     SYNC_CHILD_FINISH = 0x45,   /* Stage-2 has finished setup */
+    SYNC_CGROUP_DONE = 0x46,    /* Main Process: cgroup addProcess complete */
 };
 
 /**
@@ -372,14 +373,12 @@ void kontainer_bootstrap(void) {
     #ifndef CLONE_NEWCGROUP
     #define CLONE_NEWCGROUP 0x02000000
     #endif
-    if (clone_flags & CLONE_NEWCGROUP) {
-        debug_log("[stage-1] Unsharing cgroup namespace (CLONE_NEWCGROUP)\n");
-        if (unshare(CLONE_NEWCGROUP) < 0) {
-            fprintf(stderr, "[stage-1] Failed to unshare cgroup namespace: %s (errno=%d)\n",
-                    strerror(errno), errno);
-            exit(1);
-        }
-    }
+    // CLONE_NEWCGROUP is deliberately NOT unshared here. The cgroup namespace
+    // must be created AFTER the main process has moved Stage-2 into the
+    // container's cgroup (addProcess). Otherwise /proc/self/cgroup would show
+    // the host cgroup path instead of "0::/". Stage-2 will call
+    // unshare(CLONE_NEWCGROUP) after receiving SYNC_GRANDCHILD (which is sent
+    // only after the main process signals SYNC_CGROUP_DONE).
 
     // Time namespace: unshare AFTER PID (like runc). The process that
     // calls unshare(CLONE_NEWTIME) stays in the OLD time namespace — only
@@ -454,6 +453,18 @@ void kontainer_bootstrap(void) {
         }
         debug_log("[stage-2] Received SYNC_GRANDCHILD from stage-1\n");
 
+        // Unshare cgroup namespace NOW — after the main process has moved us
+        // into the container's cgroup. This makes /proc/self/cgroup show "0::/"
+        // (our cgroup is the namespace root).
+        if (clone_flags & CLONE_NEWCGROUP) {
+            debug_log("[stage-2] Unsharing cgroup namespace (CLONE_NEWCGROUP)\n");
+            if (unshare(CLONE_NEWCGROUP) < 0) {
+                fprintf(stderr, "[stage-2] Failed to unshare cgroup namespace: %s (errno=%d)\n",
+                        strerror(errno), errno);
+                _exit(1);
+            }
+        }
+
         // Create new session
         if (setsid() < 0) {
             fprintf(stderr, "[stage-2] setsid failed: %s\n", strerror(errno));
@@ -491,6 +502,20 @@ void kontainer_bootstrap(void) {
         fprintf(stderr, "[stage-1] Failed to send stage-2 PID to Main Process\n");
         exit(1);
     }
+
+    // Wait for Main Process to signal that cgroup setup is done
+    // (Stage-2 must be in its cgroup before unsharing CLONE_NEWCGROUP)
+    debug_log("[stage-1] Waiting for SYNC_CGROUP_DONE from Main Process\n");
+    if (read(sync_fd, &s, sizeof(s)) != sizeof(s)) {
+        fprintf(stderr, "[stage-1] Failed to read SYNC_CGROUP_DONE: %s\n", strerror(errno));
+        exit(1);
+    }
+    if (s != SYNC_CGROUP_DONE) {
+        fprintf(stderr, "[stage-1] Expected SYNC_CGROUP_DONE (0x46), got %u\n", s);
+        exit(1);
+    }
+    debug_log("[stage-1] Received SYNC_CGROUP_DONE from Main Process\n");
+    close(sync_fd);
 
     // Sync with Stage-2
     debug_log("[stage-1] Syncing with stage-2\n");

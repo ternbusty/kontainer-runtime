@@ -33,6 +33,7 @@ fun prepareRootfs(
     syscall: Syscall,
     rootfsPath: String,
     rootfsPropagation: String? = null,
+    specMounts: List<spec.Mount>? = null,
 ) {
     Logger.debug("preparing rootfs at $rootfsPath")
 
@@ -174,19 +175,28 @@ fun prepareRootfs(
                 } else {
                     Logger.debug("bind mounted container cgroup to /sys/fs/cgroup")
 
-                    // Remount as readonly
-                    if (syscall.mount(
-                            source = null,
-                            target = cgroupMountPath,
-                            fstype = null,
-                            flags = (MS_BIND or MS_REMOUNT or MS_RDONLY or MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong(),
-                        ) != 0
-                    ) {
-                        val errNum = errno
-                        perror("remount /sys/fs/cgroup readonly")
-                        Logger.warn("failed to remount /sys/fs/cgroup readonly (errno=$errNum)")
+                    // Check the spec's cgroup mount options. If "ro" is present
+                    // (the default), remount as readonly. If the spec's mount
+                    // was modified to remove "ro" (set_cgroup_mount_writable),
+                    // leave it writable.
+                    val cgroupMount = specMounts?.find { it.destination == "/sys/fs/cgroup" }
+                    val cgroupReadonly = cgroupMount?.options?.contains("ro") ?: true
+                    if (cgroupReadonly) {
+                        if (syscall.mount(
+                                source = null,
+                                target = cgroupMountPath,
+                                fstype = null,
+                                flags = (MS_BIND or MS_REMOUNT or MS_RDONLY or MS_NOSUID or MS_NODEV or MS_NOEXEC).toULong(),
+                            ) != 0
+                        ) {
+                            val errNum = errno
+                            perror("remount /sys/fs/cgroup readonly")
+                            Logger.warn("failed to remount /sys/fs/cgroup readonly (errno=$errNum)")
+                        } else {
+                            Logger.debug("remounted /sys/fs/cgroup as readonly")
+                        }
                     } else {
-                        Logger.debug("remounted /sys/fs/cgroup as readonly")
+                        Logger.debug("/sys/fs/cgroup left writable per spec mount options")
                     }
                 }
             }

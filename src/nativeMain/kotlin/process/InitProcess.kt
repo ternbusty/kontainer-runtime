@@ -109,7 +109,7 @@ private fun initProcessInternal(
 
         // Prepare rootfs
         if (spec.hasNamespace("mount")) {
-            prepareRootfs(syscall, rootfsPath, spec.linux?.rootfsPropagation)
+            prepareRootfs(syscall, rootfsPath, spec.linux?.rootfsPropagation, spec.mounts)
             // Process spec.mounts BEFORE pivot_root so bind-mount source paths from
             // the host are still reachable. Targets are inside rootfsPath.
             applySpecMounts(syscall, spec.mounts, rootfsPath)

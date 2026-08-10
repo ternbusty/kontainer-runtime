@@ -186,14 +186,21 @@ private fun runMainProcessInternal(
         val stage2Pid = readInt32(syncFd, "Failed to read Stage-2 PID from sync pipe")
         Logger.debug("received Stage-2 PID from bootstrap: $stage2Pid")
 
-        close(syncFd)
-
         // Place Stage-2 (the long-lived init process) into the cgroup that
         // was prepared above.  Stage-2 is guaranteed to be alive here — it is
         // blocked in bootstrap.c waiting for SYNC_GRANDCHILD from Stage-1.
         if (resolvedCgroupPath.isNotEmpty()) {
             cgroup.addProcess(stage2Pid, resolvedCgroupPath)
         }
+
+        // Signal Stage-1 that cgroup setup is complete. Stage-1 will then
+        // send SYNC_GRANDCHILD to Stage-2, which will unshare(CLONE_NEWCGROUP)
+        // AFTER being in the container's cgroup — so /proc/self/cgroup shows
+        // "0::/" (the cgroup namespace root) instead of the host path.
+        val syncCgroupDone = 0x46 // SYNC_CGROUP_DONE
+        writeInt32(syncFd, syncCgroupDone, "Failed to send SYNC_CGROUP_DONE to Stage-1")
+        Logger.debug("sent SYNC_CGROUP_DONE to Stage-1")
+        close(syncFd)
 
         // Apply rlimits to Stage-2.  We target Stage-2 directly instead of
         // Stage-1 because Stage-1 may already have exited by the time we
