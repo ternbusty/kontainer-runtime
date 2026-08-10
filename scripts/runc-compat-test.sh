@@ -26,6 +26,7 @@ RUNC_REPO_DIR="${RUNC_REPO_DIR:-}"
 KONTAINER_BIN="${KONTAINER_BIN:-${PROJECT_ROOT}/build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe}"
 SUMMARY_FILE="${SUMMARY_FILE:-}"
 BATS_JOBS="${BATS_JOBS:-1}"
+BATS_TEST_TIMEOUT="${BATS_TEST_TIMEOUT:-120}"
 
 # ---------------------------------------------------------------------------
 # Test file lists
@@ -148,6 +149,7 @@ set +e
 RUNC="$KONTAINER_BIN" bats \
   --jobs "$BATS_JOBS" \
   --tap \
+  --timeout "$BATS_TEST_TIMEOUT" \
   "${TEST_FILES[@]}" \
   2>&1 | tee "$TAP_OUTPUT"
 BATS_RC=${PIPESTATUS[0]}
