@@ -6,6 +6,7 @@ import console.createConsoleSocketListener
 import console.relayPtyIO
 import kotlinx.cinterop.*
 import logger.Logger
+import platform.linux._NR_pidfd_open
 import platform.posix.*
 import spec.loadSpec
 import state.ContainerStatus
@@ -194,20 +195,28 @@ private fun waitForProcessExit(pid: Int): Int =
             return@memScoped exitCodeFromWaitStatus(status.value)
         }
 
-        // Fallback: poll until the process disappears. This handles
-        // edge cases where waitpid fails (e.g., ECHILD if the kernel
-        // reparented the process).
-        Logger.debug("waitpid failed (errno=$errno), falling back to poll")
-        var sleepUs: UInt = 10_000u
+        // Fallback: waitpid failed (e.g., ECHILD if the kernel reparented
+        // the process). Use pidfd_open + poll to wait for the process to
+        // exit without polling.
+        Logger.debug("waitpid failed (errno=$errno), falling back to pidfd")
+        val pidfd = syscall(_NR_pidfd_open(), pid, 0).toInt()
+        if (pidfd >= 0) {
+            val pfd = alloc<pollfd>()
+            pfd.fd = pidfd
+            pfd.events = POLLIN.toShort()
+            poll(pfd.ptr, 1u, -1) // block until process exits
+            close(pidfd)
+            return@memScoped 0
+        }
+
+        // Last resort: pidfd_open unavailable (kernel < 5.3), poll with
+        // kill(pid, 0).
+        Logger.debug("pidfd_open failed (errno=$errno), falling back to kill-poll")
         while (true) {
-            val probeRc = kill(pid, 0)
-            if (probeRc != 0 && errno == ESRCH) {
+            if (kill(pid, 0) != 0 && errno == ESRCH) {
                 return@memScoped 0
             }
-            usleep(sleepUs)
-            if (sleepUs < 500_000u) {
-                sleepUs = (sleepUs * 2u).coerceAtMost(500_000u)
-            }
+            usleep(100_000u) // 100ms — fixed interval, no backoff needed
         }
         @Suppress("UNREACHABLE_CODE")
         0

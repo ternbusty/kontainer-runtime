@@ -128,7 +128,7 @@ class RealFileSystem : FileSystem {
     ): String =
         memScoped {
             val chunkSize = 4096
-            val buffer = allocArray<ByteVar>(chunkSize)
+            val buffer = allocArray<ByteVar>(chunkSize + 1)
             val parts = mutableListOf<String>()
             var totalBytes = 0L
 

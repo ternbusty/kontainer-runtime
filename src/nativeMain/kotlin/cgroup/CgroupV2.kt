@@ -103,10 +103,7 @@ class CgroupV2(
         try {
             fs.writeTextFile(procsPath, pid.toString())
         } catch (e: Exception) {
-            // Unwrap the FileSystem message into the format callers expect:
-            //   "adding pid <pid> to <path>: <strerror text>"
-            val cause = e.message?.substringAfterLast(": ") ?: "unknown error"
-            throw Exception("adding pid $pid to $procsPath: $cause")
+            throw Exception("adding pid $pid to $procsPath", e)
         }
         Logger.debug("added PID $pid to cgroup $normalizedPath")
     }

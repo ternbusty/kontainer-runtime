@@ -47,3 +47,13 @@ static inline int _CLONE_NEWCGROUP() {
 static inline int setns_wrapper(int fd, int nstype) {
     return setns(fd, nstype);
 }
+
+// pidfd_open(2) — returns a file descriptor referring to a process.
+// Available since Linux 5.3.
+static inline long _NR_pidfd_open() {
+#ifdef __NR_pidfd_open
+    return __NR_pidfd_open;
+#else
+    return 434;
+#endif
+}
