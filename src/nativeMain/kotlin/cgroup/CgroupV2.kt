@@ -100,10 +100,10 @@ class CgroupV2(
         val normalizedPath = cgroupPath.removePrefix("/")
         val procsPath = "$CGROUP_ROOT/$normalizedPath/$CGROUP_PROCS"
 
-        // Use direct write (not buffered stdio) so we capture the exact
-        // kernel errno. cgroupfs returns EBUSY when domain controllers
-        // prevent processes in non-leaf cgroups — the test suite checks
-        // for that exact wording ("device or resource busy").
+        // Use direct write so we capture the exact kernel errno string
+        // (e.g. "no such file or directory", "device or resource busy").
+        // Callers rely on the wording for fallback logic, and cgroupfs
+        // errors are only accurate with unbuffered writes.
         val fd = open(procsPath, O_WRONLY)
         if (fd < 0) {
             val errMsg = strerror(errno)?.toKString()?.lowercase() ?: "unknown error"

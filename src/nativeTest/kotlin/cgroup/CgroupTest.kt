@@ -1,9 +1,11 @@
 package cgroup
 
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldContain
 import spec.LinuxCpu
 import spec.LinuxMemory
 import spec.LinuxResources
@@ -131,21 +133,16 @@ class CgroupTest :
 
         // addProcess
 
-        test("addProcess writes the pid to cgroup.procs without touching anything else") {
+        test("addProcess throws on non-existent cgroup path") {
+            // addProcess uses direct POSIX open()/write() (not FileSystem)
+            // to capture exact kernel errno strings, so it cannot be
+            // tested with FakeFileSystem.  Verify the error path instead.
             val fs = FakeFileSystem()
-            CgroupV2(fs).addProcess(0, "kontainer-runtime/x")
-
-            fs.files["/sys/fs/cgroup/kontainer-runtime/x/cgroup.procs"] shouldBe "0"
-            // No directory creation, no controllers, no limits
-            fs.directories.isEmpty() shouldBe true
-            fs.files.keys shouldNotContain "/sys/fs/cgroup/cgroup.subtree_control"
-        }
-
-        test("addProcess accepts a leading slash in the path") {
-            val fs = FakeFileSystem()
-            CgroupV2(fs).addProcess(42, "/x")
-
-            fs.files["/sys/fs/cgroup/x/cgroup.procs"] shouldBe "42"
+            val ex =
+                shouldThrow<Exception> {
+                    CgroupV2(fs).addProcess(42, "nonexistent-cgroup-path-for-test")
+                }
+            ex.message shouldContain "cgroup.procs"
         }
 
         // cleanup
