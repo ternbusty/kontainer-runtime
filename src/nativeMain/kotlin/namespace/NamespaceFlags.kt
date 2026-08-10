@@ -11,6 +11,10 @@ import spec.Namespace
  * @param procName file name under /proc/<pid>/ns/ ("mnt", "net", ...)
  * @param cloneFlag CLONE_NEW* constant, passed as the nstype guard to setns
  */
+
+/** CLONE_NEWTIME — may not be defined in older sysroot headers. */
+const val CLONE_NEWTIME = 0x00000080
+
 data class NsJoin(
     val ociType: String,
     val procName: String,
@@ -40,6 +44,7 @@ fun nsJoinList(namespaces: List<Namespace>?): List<NsJoin> {
         NsJoin("network", "net", _CLONE_NEWNET()),
         NsJoin("mount", "mnt", _CLONE_NEWNS()),
         NsJoin("cgroup", "cgroup", 0x02000000), // CLONE_NEWCGROUP (not yet in K/N's platform.linux on older sysroots)
+        NsJoin("time", "time", CLONE_NEWTIME),
         NsJoin("pid", "pid", _CLONE_NEWPID()),
     ).filter { it.ociType in specTypes }
 }
@@ -74,6 +79,7 @@ fun calculateCloneFlags(namespaces: List<Namespace>?): UInt {
                 "pid" -> _CLONE_NEWPID().toUInt()
                 "user" -> _CLONE_NEWUSER().toUInt()
                 "cgroup" -> 0x02000000u // CLONE_NEWCGROUP (not yet in K/N's platform.linux on older sysroots)
+                "time" -> CLONE_NEWTIME.toUInt()
                 else -> {
                     // Skip unknown namespace types (for forward compatibility)
                     0u

@@ -229,6 +229,7 @@ fun create(
                             "ipc" -> "_KONTAINER_NS_PATH_IPC"
                             "user" -> "_KONTAINER_NS_PATH_USER"
                             "cgroup" -> "_KONTAINER_NS_PATH_CGROUP"
+                            "time" -> "_KONTAINER_NS_PATH_TIME"
                             "pid" -> "_KONTAINER_NS_PATH_PID"
                             else -> return@forEach
                         }

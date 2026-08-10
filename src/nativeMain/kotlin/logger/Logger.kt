@@ -55,7 +55,8 @@ object Logger {
         JSON,
     }
 
-    // Current log level threshold
+    // Current log level threshold.  detectLogLevel() may also flip
+    // stderrEnabled when the env var explicitly requests debug output.
     private var currentLevel: Level = detectLogLevel()
 
     // Process context (main/intermediate/init)
@@ -63,6 +64,12 @@ object Logger {
 
     // Log file handle (null means stderr only)
     private var logFile: CPointer<FILE>? = null
+
+    // Whether stderr output is enabled. Default false — runc only emits
+    // log messages to stderr when --debug is explicitly passed. Without
+    // this gate, diagnostic output pollutes the container's stderr and
+    // breaks bats tests that check exact output lines.
+    private var stderrEnabled: Boolean = false
 
     // Log format (text or json)
     private var logFormat: Format = Format.TEXT
@@ -75,7 +82,12 @@ object Logger {
         val envVar = getenv("KONTAINER_LOG_LEVEL")?.toKString()
 
         if (envVar != null) {
-            Level.fromString(envVar)?.let { return it }
+            Level.fromString(envVar)?.let { level ->
+                if (level <= Level.DEBUG) {
+                    stderrEnabled = true
+                }
+                return level
+            }
         }
 
         // Default log level from build configuration
@@ -172,6 +184,11 @@ object Logger {
      */
     fun setLogLevel(level: Level) {
         currentLevel = level
+        // When debug level is explicitly requested (e.g. via --debug flag),
+        // enable stderr output to match runc's behavior.
+        if (level <= Level.DEBUG) {
+            stderrEnabled = true
+        }
     }
 
     /**
@@ -210,9 +227,9 @@ object Logger {
                     val formattedMessage =
                         "time=\"$timestamp\" level=${level.label.lowercase()} msg=\"$escapedMsg\"\n"
 
-                    // Log to stderr only if no log file is configured
-                    // This prevents polluting stdout when used with containerd (--log option)
-                    if (logFile == null) {
+                    // Write to stderr when explicitly enabled (--debug) and
+                    // no log file redirects output elsewhere.
+                    if (stderrEnabled && logFile == null) {
                         fprintf(stderr, "%s", formattedMessage)
                     }
 
@@ -230,9 +247,7 @@ object Logger {
                         "{\"timestamp\":\"$timestamp\",\"level\":\"${level.label}\"," +
                             "\"context\":\"$processContext\",\"message\":\"$escapedMessage\"}\n"
 
-                    // Log to stderr only if no log file is configured
-                    // This prevents polluting stdout when used with containerd (--log option)
-                    if (logFile == null) {
+                    if (stderrEnabled && logFile == null) {
                         fprintf(stderr, "%s", jsonMessage)
                     }
 

@@ -145,6 +145,43 @@ private fun runMainProcessInternal(
             Logger.debug("sent mapping ack to Stage-1")
         }
 
+        // Handle timens_offsets if time namespace is configured.
+        // Stage-1 sends SYNC_TIMEOFFSETS_PLS + its PID after unsharing
+        // CLONE_NEWTIME but before forking Stage-2. We write the offsets
+        // to /proc/<stage1_pid>/timens_offsets and ack.
+        val hasTimeNamespace = spec.hasNamespace("time")
+        val timeOffsets = spec.linux?.timeOffsets
+        if (hasTimeNamespace && !timeOffsets.isNullOrEmpty()) {
+            val request = readInt32(syncFd, "Failed to read timens request from Stage-1")
+            if (request != 0x42) { // SYNC_TIMEOFFSETS_PLS
+                throw Exception("Expected SYNC_TIMEOFFSETS_PLS (0x42), got 0x${request.toString(16)}")
+            }
+            val timensPid = readInt32(syncFd, "Failed to read PID for timens_offsets")
+            Logger.debug("received timens_offsets request for pid $timensPid")
+
+            // Each line: "<clock-id> <offset-secs> <offset-nanosecs>"
+            // Clock names from the spec map to kernel identifiers.
+            for ((clockName, offset) in timeOffsets) {
+                val line = "$clockName ${offset.secs} ${offset.nanosecs}\n"
+                Logger.debug("writing timens_offset: ${line.trim()}")
+                fs.writeTextFile("/proc/$timensPid/timens_offsets", line)
+            }
+
+            val ackValue = 0x43 // SYNC_TIMEOFFSETS_ACK
+            writeInt32(syncFd, ackValue, "Failed to send timens ack")
+            Logger.debug("sent timens_offsets ack")
+        } else if (hasTimeNamespace) {
+            // Time namespace configured but no offsets — still need to
+            // consume the sync messages to keep the protocol in sync.
+            val request = readInt32(syncFd, "Failed to read timens request from Stage-1")
+            if (request == 0x42) {
+                val timensPid = readInt32(syncFd, "Failed to read PID for timens_offsets")
+                Logger.debug("time namespace with no offsets, acking (pid=$timensPid)")
+                val ackValue = 0x43 // SYNC_TIMEOFFSETS_ACK
+                writeInt32(syncFd, ackValue, "Failed to send timens ack")
+            }
+        }
+
         // Wait for Stage-2 PID from bootstrap
         val stage2Pid = readInt32(syncFd, "Failed to read Stage-2 PID from sync pipe")
         Logger.debug("received Stage-2 PID from bootstrap: $stage2Pid")

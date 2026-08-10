@@ -264,6 +264,18 @@ data class Linux(
     val rootfsPropagation: String? = null,
     val devices: List<LinuxDevice>? = null,
     val mountLabel: String? = null,
+    val timeOffsets: Map<String, LinuxTimeOffset>? = null,
+)
+
+/**
+ * Time offset for a POSIX clock, used with CLONE_NEWTIME.
+ * Written to /proc/<pid>/timens_offsets before the process enters the new
+ * time namespace. See time_namespaces(7).
+ */
+@Serializable
+data class LinuxTimeOffset(
+    val secs: Long = 0,
+    val nanosecs: Long = 0,
 )
 
 /**

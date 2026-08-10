@@ -34,6 +34,9 @@
 #ifndef CLONE_PARENT
 #define CLONE_PARENT 0x00008000
 #endif
+#ifndef CLONE_NEWTIME
+#define CLONE_NEWTIME 0x00000080
+#endif
 
 // Environment variable names
 #define ENV_IS_BOOTSTRAP "_KONTAINER_IS_BOOTSTRAP"
@@ -96,6 +99,8 @@ static int is_init_process = 0;
 enum sync_t {
     SYNC_USERMAP_PLS = 0x40,    /* Request UID/GID mapping */
     SYNC_USERMAP_ACK = 0x41,    /* Mapping is complete */
+    SYNC_TIMEOFFSETS_PLS = 0x42, /* Request timens_offsets write (CLONE_NEWTIME) */
+    SYNC_TIMEOFFSETS_ACK = 0x43, /* timens_offsets write complete */
     SYNC_GRANDCHILD = 0x44,     /* Stage-2 is ready to run */
     SYNC_CHILD_FINISH = 0x45,   /* Stage-2 has finished setup */
 };
@@ -310,6 +315,7 @@ void kontainer_bootstrap(void) {
     maybe_setns_by_path("IPC",     CLONE_NEWIPC);
     maybe_setns_by_path("USER",    CLONE_NEWUSER);
     maybe_setns_by_path("CGROUP",  CLONE_NEWCGROUP);
+    maybe_setns_by_path("TIME",    CLONE_NEWTIME);
     maybe_setns_by_path("PID",     CLONE_NEWPID);
 
     // Step 7: Unshare other namespaces (mount, network, uts, ipc)
@@ -375,7 +381,50 @@ void kontainer_bootstrap(void) {
         }
     }
 
+    // Time namespace: unshare AFTER PID (like runc). The process that
+    // calls unshare(CLONE_NEWTIME) stays in the OLD time namespace — only
+    // its children enter the new one. The main process writes timens_offsets
+    // to /proc/<stage1_pid>/timens_offsets before Stage-2 is created.
+    if (clone_flags & CLONE_NEWTIME) {
+        debug_log("[stage-1] Unsharing time namespace (CLONE_NEWTIME)\n");
+        if (unshare(CLONE_NEWTIME) < 0) {
+            fprintf(stderr, "[stage-1] Failed to unshare time namespace: %s (errno=%d)\n",
+                    strerror(errno), errno);
+            exit(1);
+        }
+    }
+
     debug_log("[stage-1] Successfully unshared all requested namespaces\n");
+
+    // If we unshared a time namespace, ask Main Process to write
+    // timens_offsets BEFORE we fork Stage-2 (which will enter the new
+    // time namespace). After clone_parent(), it's too late.
+    if (clone_flags & CLONE_NEWTIME) {
+        debug_log("[stage-1] Requesting timens_offsets write from Main Process\n");
+        s = SYNC_TIMEOFFSETS_PLS;
+        if (write(sync_fd, &s, sizeof(s)) != sizeof(s)) {
+            fprintf(stderr, "[stage-1] Failed to send SYNC_TIMEOFFSETS_PLS: %s\n", strerror(errno));
+            exit(1);
+        }
+
+        // Send our PID so Main Process can write /proc/<pid>/timens_offsets
+        pid_t my_pid = getpid();
+        if (write(sync_fd, &my_pid, sizeof(my_pid)) != sizeof(my_pid)) {
+            fprintf(stderr, "[stage-1] Failed to send PID for timens: %s\n", strerror(errno));
+            exit(1);
+        }
+
+        // Wait for ack
+        if (read(sync_fd, &s, sizeof(s)) != sizeof(s)) {
+            fprintf(stderr, "[stage-1] Failed to read SYNC_TIMEOFFSETS_ACK: %s\n", strerror(errno));
+            exit(1);
+        }
+        if (s != SYNC_TIMEOFFSETS_ACK) {
+            fprintf(stderr, "[stage-1] Expected SYNC_TIMEOFFSETS_ACK, got %u\n", s);
+            exit(1);
+        }
+        debug_log("[stage-1] Received timens_offsets ack from Main Process\n");
+    }
 
     // Clone Stage-2 (init process) with CLONE_PARENT
     debug_log("[stage-1] Cloning stage-2 with CLONE_PARENT (init process)\n");
