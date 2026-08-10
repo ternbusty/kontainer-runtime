@@ -1,8 +1,8 @@
 package cgroup
 
-import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.*
 import logger.Logger
+import platform.posix.*
 import spec.LinuxResources
 import utils.FileSystem
 
@@ -100,13 +100,27 @@ class CgroupV2(
         val normalizedPath = cgroupPath.removePrefix("/")
         val procsPath = "$CGROUP_ROOT/$normalizedPath/$CGROUP_PROCS"
 
-        try {
-            fs.writeTextFile(procsPath, pid.toString())
-            Logger.debug("added PID $pid to cgroup $normalizedPath")
-        } catch (e: Exception) {
-            Logger.error("adding pid $pid to $procsPath: ${e.message}")
-            throw Exception("adding pid $pid to $procsPath: no such file or directory", e)
+        // Use direct write (not buffered stdio) so we capture the exact
+        // kernel errno. cgroupfs returns EBUSY when domain controllers
+        // prevent processes in non-leaf cgroups — the test suite checks
+        // for that exact wording ("device or resource busy").
+        val fd = open(procsPath, O_WRONLY)
+        if (fd < 0) {
+            val errMsg = strerror(errno)?.toKString()?.lowercase() ?: "unknown error"
+            throw Exception("adding pid $pid to $procsPath: $errMsg")
         }
+        val data = pid.toString()
+        val rc =
+            memScoped {
+                write(fd, data.cstr.ptr, data.length.toULong())
+            }
+        if (rc < 0) {
+            val errMsg = strerror(errno)?.toKString()?.lowercase() ?: "unknown error"
+            close(fd)
+            throw Exception("adding pid $pid to $procsPath: $errMsg")
+        }
+        close(fd)
+        Logger.debug("added PID $pid to cgroup $normalizedPath")
     }
 
     override fun cleanup(cgroupPath: String?) {

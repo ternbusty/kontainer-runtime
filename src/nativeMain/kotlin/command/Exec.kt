@@ -374,10 +374,44 @@ fun exec(
                 syscall.raiseRlimits(grandchildPid, execSpec.process.rlimits)
                 true
             } catch (e: Exception) {
-                // Write the error to stderr so it appears in bats test output.
-                // runc surfaces cgroup addProcess errors this way.
-                fprintf(stderr, "exec failed: %s\n", e.message ?: "unknown error")
-                false
+                // On cgroup v2 + nesting + domain controllers, writing to the
+                // container's root cgroup.procs fails (EBUSY). When no explicit
+                // --cgroup was given, fall back to the init process's cgroup —
+                // this matches runc's behavior (see runc#2356).
+                if (cgroupOverride.isEmpty()) {
+                    val initCgroupPath = readInitCgroup(initPid)
+                    if (initCgroupPath != null) {
+                        // initCgroupPath is the full cgroup hierarchy path
+                        // from /proc/<pid>/cgroup (e.g. "/container-cg/foobar").
+                        // addProcess() prepends the cgroupfs mount point itself.
+                        val fallbackPath = initCgroupPath
+                        try {
+                            Logger.debug(
+                                "exec: cgroup addProcess failed (${e.message}), " +
+                                    "falling back to init cgroup $fallbackPath",
+                            )
+                            cgroup.addProcess(grandchildPid, fallbackPath)
+                            syscall.raiseRlimits(grandchildPid, execSpec.process.rlimits)
+                            true
+                        } catch (e2: Exception) {
+                            fprintf(stderr, "exec failed: %s\n", e2.message ?: "unknown error")
+                            false
+                        }
+                    } else {
+                        fprintf(stderr, "exec failed: %s\n", e.message ?: "unknown error")
+                        false
+                    }
+                } else {
+                    // Explicit --cgroup: no fallback, report the error directly.
+                    // Format matches runc: "error adding pid X to cgroups: ..."
+                    fprintf(
+                        stderr,
+                        "error adding pid %d to cgroups: %s\n",
+                        grandchildPid,
+                        e.message ?: "unknown error",
+                    )
+                    false
+                }
             }
         } else {
             fprintf(stderr, "exec: failed to read grandchild PID\n")
@@ -734,3 +768,29 @@ internal fun exitCodeFromWaitStatus(status: Int): Int =
     } else {
         128 + (status and 0x7f)
     }
+
+/**
+ * Read /proc/<pid>/cgroup to find the cgroup path of the init process.
+ * On cgroup v2, the file contains a single line: "0::/relative/path".
+ * Returns the path part (e.g. "/foobar") or null on failure.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun readInitCgroup(pid: Int): String? {
+    val path = "/proc/$pid/cgroup"
+    val fp = fopen(path, "r") ?: return null
+    try {
+        val buf = ByteArray(4096)
+        buf.usePinned { pinned ->
+            val line = fgets(pinned.addressOf(0), buf.size, fp) ?: return null
+            val str = line.toKString().trim()
+            // cgroup v2 format: "0::<path>"
+            val parts = str.split(":")
+            if (parts.size >= 3 && parts[0] == "0" && parts[1].isEmpty()) {
+                return parts.drop(2).joinToString(":")
+            }
+        }
+    } finally {
+        fclose(fp)
+    }
+    return null
+}
