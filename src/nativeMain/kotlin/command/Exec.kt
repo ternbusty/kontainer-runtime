@@ -335,36 +335,24 @@ fun exec(
     }
     if (consoleSocketFd >= 0) close(consoleSocketFd)
 
-    // Parent: attach the child to the container's cgroup and raise its hard
-    // rlimits, both from the host context — the host cgroupfs view is gone
-    // after the child's setns(mnt), raising a hard limit needs
-    // CAP_SYS_RESOURCE in the initial user ns (gone after setns(user)), and
-    // doing it here rather than in the child keeps cgroupfs writes, logging
-    // and exception machinery out of the forked child of this multithreaded
-    // process, where the Kotlin runtime is not fork-safe.
+    // Parent: read the grandchild PID first (the child reports it after
+    // setns + fork), then attach the GRANDCHILD — not the intermediate
+    // child — to the container's cgroup and raise its rlimits from the
+    // host context.  Only after that does the parent send the go byte so
+    // the grandchild can proceed to execvp.
+    //
+    // The child (waitpid relay) is never added to the container's cgroup.
+    // Adding it would leave a non-leaf process inside the cgroup subtree,
+    // preventing writes to cgroup.subtree_control (EBUSY).
+    //
+    // Host context is required: the host cgroupfs view is gone after the
+    // child's setns(mnt), raising a hard limit needs CAP_SYS_RESOURCE in
+    // the initial user ns (gone after setns(user)), and doing it here
+    // keeps cgroupfs writes, logging and exception machinery out of the
+    // forked child of this multithreaded process, where the Kotlin
+    // runtime is not fork-safe.
     nsFds.values.forEach { close(it) }
     close(setupPipe[0])
-    val setupOk =
-        try {
-            cgroup.addProcess(pid, cgroupPath)
-            syscall.raiseRlimits(pid, execSpec.process.rlimits)
-            true
-        } catch (e: Exception) {
-            // Write the error to stderr so it appears in bats test output.
-            // runc surfaces cgroup addProcess errors this way.
-            fprintf(stderr, "exec failed: %s\n", e.message ?: "unknown error")
-            false
-        }
-    if (setupOk) {
-        memScoped {
-            val goByte = alloc<ByteVar>()
-            goByte.value = 1
-            if (write(setupPipe[1], goByte.ptr, 1u) != 1L) {
-                Logger.error("exec: failed to signal child (errno=$errno)")
-            }
-        }
-    }
-    close(setupPipe[1])
 
     // Read the grandchild's host-perspective PID from the child.
     close(pidPipe[1])
@@ -378,6 +366,33 @@ fun exec(
             }
         }
     close(pidPipe[0])
+
+    val setupOk =
+        if (grandchildPid > 0) {
+            try {
+                cgroup.addProcess(grandchildPid, cgroupPath)
+                syscall.raiseRlimits(grandchildPid, execSpec.process.rlimits)
+                true
+            } catch (e: Exception) {
+                // Write the error to stderr so it appears in bats test output.
+                // runc surfaces cgroup addProcess errors this way.
+                fprintf(stderr, "exec failed: %s\n", e.message ?: "unknown error")
+                false
+            }
+        } else {
+            fprintf(stderr, "exec: failed to read grandchild PID\n")
+            false
+        }
+    if (setupOk) {
+        memScoped {
+            val goByte = alloc<ByteVar>()
+            goByte.value = 1
+            if (write(setupPipe[1], goByte.ptr, 1u) != 1L) {
+                Logger.error("exec: failed to signal grandchild (errno=$errno)")
+            }
+        }
+    }
+    close(setupPipe[1])
 
     if (pidFilePath != null && grandchildPid > 0) {
         try {
@@ -408,9 +423,17 @@ fun exec(
 }
 
 /**
- * Child process body: wait for the parent's cgroup/rlimit setup, join the
- * namespaces, fork the grandchild that becomes the user command, wait for
- * it and propagate its exit code.
+ * Child process body: join the namespaces, fork the grandchild that
+ * becomes the user command, report the grandchild's PID to the parent,
+ * and wait for the grandchild to exit.
+ *
+ * The child does NOT wait for the parent's cgroup/rlimit setup — it
+ * proceeds immediately to setns + fork.  The parent reads the grandchild
+ * PID from pidPipe, attaches the grandchild (not this child) to the
+ * container's cgroup, raises the grandchild's rlimits, then sends a go
+ * byte directly to the grandchild via setupPipe.  This keeps the child
+ * (which stays alive doing waitpid) out of the container's cgroup,
+ * avoiding EBUSY on cgroup.subtree_control writes.
  *
  * When spec.process.terminal is true, allocates a PTY pair from the
  * container's devpts after joining the namespaces.  The grandchild wires
@@ -439,19 +462,11 @@ private fun runExecChild(
 
     Logger.debug("nsexec container setup")
 
-    // Block until the parent has attached us to the container's cgroup and
-    // raised our hard rlimits (host-context work — see the parent). Both are
-    // inherited at fork, so they must be in place before the grandchild
-    // fork below. One byte = go; EOF = the parent failed and we must not
-    // run the command outside the container's limits.
-    memScoped {
-        val goByte = alloc<ByteVar>()
-        if (read(setupPipe[0], goByte.ptr, 1u) != 1L) {
-            fprintf(stderr, "exec: parent failed to set up cgroup/rlimits\n")
-            _exit(1)
-        }
-    }
-    close(setupPipe[0])
+    // The child proceeds immediately to setns + fork without waiting for
+    // the parent.  The parent will set up cgroup/rlimits on the grandchild
+    // (not this child) after reading the grandchild PID from pidPipe.
+    // setupPipe[0] stays open so the grandchild inherits it and can wait
+    // for the parent's go byte before proceeding to execvp.
 
     // Join order matters: user first (grants the capabilities inside the
     // container's userns that authorize the remaining joins), pid last.
@@ -520,12 +535,15 @@ private fun runExecChild(
         close(pidPipe[1])
         if (masterFd >= 0) close(masterFd)
         try {
-            runExecGrandchild(syscall, spec, notifyMainSender, notifyInitReceiver, preserveFds, slaveFd)
+            runExecGrandchild(syscall, spec, notifyMainSender, notifyInitReceiver, preserveFds, slaveFd, setupPipe[0])
         } catch (t: Throwable) {
             fprintf(stderr, "exec: setup failed: %s\n", t.message ?: "unknown error")
         }
         _exit(1)
     }
+
+    // Child: close setupPipe read end — only the grandchild needs it now.
+    close(setupPipe[0])
 
     // Child keeps the master (for relay) and closes the slave.
     if (slaveFd >= 0) close(slaveFd)
@@ -561,8 +579,12 @@ private fun runExecChild(
 /**
  * Grandchild process body: the process that becomes the user command.
  * Already inside all of the container's namespaces (including pid, by being
- * born after the child's setns).  Applies the shared spec.process setup and
- * execvp's in place.
+ * born after the child's setns).
+ *
+ * Waits for the parent's go byte on [setupFd] before doing any work —
+ * this ensures the parent has moved this process into the container's
+ * cgroup and raised its hard rlimits.  Then applies the shared
+ * spec.process setup and execvp's in place.
  *
  * When [slaveFd] >= 0, creates a new session, acquires the PTY slave as
  * the controlling terminal, and wires it to stdin/stdout/stderr before
@@ -578,7 +600,22 @@ private fun runExecGrandchild(
     notifyInitReceiver: InitReceiver?,
     preserveFds: Int = 0,
     slaveFd: Int = -1,
+    setupFd: Int = -1,
 ) {
+    // Wait for the parent to add this process to the container's cgroup and
+    // raise its hard rlimits.  One byte = go; EOF = the parent failed and
+    // we must not run the command outside the container's limits.
+    if (setupFd >= 0) {
+        memScoped {
+            val goByte = alloc<ByteVar>()
+            if (read(setupFd, goByte.ptr, 1u) != 1L) {
+                fprintf(stderr, "exec: parent failed to set up cgroup/rlimits\n")
+                _exit(1)
+            }
+        }
+        close(setupFd)
+    }
+
     // If terminal=true, set up the PTY slave as the controlling terminal.
     // setsid() creates a new session (required for TIOCSCTTY). wireStdio
     // calls TIOCSCTTY and dup2's the slave onto stdin/stdout/stderr.
