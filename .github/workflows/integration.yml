@@ -30,7 +30,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build kontainer-runtime release binary
-        run: ./gradlew linkReleaseExecutableLinuxX64
+        run: ./gradlew linkReleaseExecutableLinuxX64 -PtargetArch=x86_64
 
       - name: Make verify scripts executable
         run: chmod +x test-scripts/*.sh
