@@ -47,4 +47,3 @@ src/nativeInterop/cinterop/libseccomp.def
 ### Mac OS ###
 .DS_Store
 site/
-.claude/worktrees/
