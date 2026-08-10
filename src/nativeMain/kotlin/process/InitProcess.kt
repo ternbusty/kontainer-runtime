@@ -329,7 +329,10 @@ private fun initProcessInternal(
         // execvp uses PATH lookup and the environment we set above
         execvp(processArgs[0], argv)
 
-        fprintf(stderr, "exec %s: %s\n", processArgs[0], strerror(errno))
+        // Match runc's lowercase error format (Go's os error strings are
+        // lowercase while C's strerror uses title-case).
+        val errMsg = strerror(errno)?.toKString()?.lowercase() ?: "unknown error"
+        fprintf(stderr, "exec %s: %s\n", processArgs[0], errMsg)
         _exit(255)
     }
 

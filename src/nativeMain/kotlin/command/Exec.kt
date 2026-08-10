@@ -502,7 +502,8 @@ private fun runExecGrandchild(
         // runc surfaces execve errors as exit code 255 (not the traditional
         // 127/126) so the caller can distinguish "runtime error" from
         // "container process exited with code N".
-        fprintf(stderr, "exec %s: %s\n", args[0], strerror(errno))
+        val errMsg = strerror(errno)?.toKString()?.lowercase() ?: "unknown error"
+        fprintf(stderr, "exec %s: %s\n", args[0], errMsg)
         _exit(255)
     }
 }
