@@ -121,6 +121,18 @@ object Logger {
     }
 
     /**
+     * Close the stderr override fd, reverting to normal stderr.
+     * Used by the init process to release the caller's stderr pipe
+     * before blocking for the start signal.
+     */
+    fun closeRedirect() {
+        stderrOverride?.let {
+            fclose(it)
+            stderrOverride = null
+        }
+    }
+
+    /**
      * Set the log file path
      * Opens the file in append mode
      *

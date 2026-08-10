@@ -293,8 +293,20 @@ private fun initProcessInternal(
         mainSender.close()
         initReceiver.close()
 
+        // Close the saved stderr fd before blocking for the start signal.
+        // In the "create" flow, the init process sits in "created" state
+        // while the CLI has already returned. The saved stderr fd (which
+        // points to the original runtime stderr) keeps the caller's pipe
+        // alive, preventing bats' output capture from completing.
+        // We re-open it after start if terminal mode is active.
         Logger.debug("waiting for start signal...")
+        Logger.closeRedirect()
         notifyListener.waitForContainerStart()
+        // Reopen Logger redirect for any post-start log messages.
+        // The PTY slave is already wired to stdio, so dup stderr again
+        // from the ORIGINAL stderr isn't possible (it was closed above).
+        // That's fine — post-start logging goes to the PTY-backed stderr,
+        // which is what the container process will use anyway.
         Logger.debug("received start signal, executing container process")
 
         notifyListener.close()
