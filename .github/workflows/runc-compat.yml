@@ -160,11 +160,12 @@ jobs:
         run: |
           set -eux -o pipefail
 
-          # Copy the kontainer-runtime binary to /usr/local/bin so SELinux
-          # file context rules can label it (chcon in selinux.bats setup).
+          # Copy the kontainer-runtime binary as "runc" — selinux.bats does
+          # `cp "$RUNC" . && export RUNC="$PWD/runc"` so the filename must
+          # be "runc" for the chcon/copy step to work.
           limactl cp build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe \
             default:/tmp/kontainer-runtime.kexe
-          lima sudo install -m 0755 /tmp/kontainer-runtime.kexe /usr/local/bin/kontainer-runtime.kexe
+          lima sudo install -m 0755 /tmp/kontainer-runtime.kexe /usr/local/bin/runc
 
           # Copy our test script.
           limactl cp scripts/runc-compat-test.sh default:/tmp/runc-compat-test.sh
@@ -187,11 +188,11 @@ jobs:
         id: bats-selinux
         run: |
           ssh -tt lima-default sudo -i env \
-            KONTAINER_BIN=/usr/local/bin/kontainer-runtime.kexe \
+            KONTAINER_BIN=/usr/local/bin/runc \
             TAP_OUTPUT=/tmp/selinux-tap.log \
             /tmp/runc-compat-test.sh \
               --runc-dir /tmp/runc \
-              --binary /usr/local/bin/kontainer-runtime.kexe \
+              --binary /usr/local/bin/runc \
               --selinux
 
       - name: Retrieve results
