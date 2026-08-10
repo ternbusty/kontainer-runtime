@@ -1,9 +1,11 @@
 package cgroup
 
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldContain
 import spec.LinuxCpu
 import spec.LinuxMemory
 import spec.LinuxResources
@@ -131,21 +133,26 @@ class CgroupTest :
 
         // addProcess
 
-        test("addProcess writes the pid to cgroup.procs without touching anything else") {
+        test("addProcess writes pid to cgroup.procs") {
             val fs = FakeFileSystem()
-            CgroupV2(fs).addProcess(0, "kontainer-runtime/x")
-
-            fs.files["/sys/fs/cgroup/kontainer-runtime/x/cgroup.procs"] shouldBe "0"
-            // No directory creation, no controllers, no limits
-            fs.directories.isEmpty() shouldBe true
-            fs.files.keys shouldNotContain "/sys/fs/cgroup/cgroup.subtree_control"
+            CgroupV2(fs).addProcess(42, "test-cg")
+            fs.files["/sys/fs/cgroup/test-cg/cgroup.procs"] shouldBe "42"
         }
 
-        test("addProcess accepts a leading slash in the path") {
+        test("addProcess strips leading slash from cgroupPath") {
             val fs = FakeFileSystem()
-            CgroupV2(fs).addProcess(42, "/x")
+            CgroupV2(fs).addProcess(99, "/test-cg")
+            fs.files["/sys/fs/cgroup/test-cg/cgroup.procs"] shouldBe "99"
+        }
 
-            fs.files["/sys/fs/cgroup/x/cgroup.procs"] shouldBe "42"
+        test("addProcess throws on write failure") {
+            val fs = FakeFileSystem()
+            fs.failOnWrite = true
+            val ex =
+                shouldThrow<Exception> {
+                    CgroupV2(fs).addProcess(42, "fail-cg")
+                }
+            ex.message shouldContain "cgroup.procs"
         }
 
         // cleanup

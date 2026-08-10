@@ -34,6 +34,9 @@
 #ifndef CLONE_PARENT
 #define CLONE_PARENT 0x00008000
 #endif
+#ifndef CLONE_NEWTIME
+#define CLONE_NEWTIME 0x00000080
+#endif
 
 // Environment variable names
 #define ENV_IS_BOOTSTRAP "_KONTAINER_IS_BOOTSTRAP"
@@ -43,6 +46,19 @@
 //   _KONTAINER_NS_PATH_MOUNT, _NS_PATH_NETWORK, _NS_PATH_UTS, _NS_PATH_IPC,
 //   _NS_PATH_PID, _NS_PATH_USER, _NS_PATH_CGROUP
 #define ENV_NS_PATH_PREFIX "_KONTAINER_NS_PATH_"
+
+// Debug logging: only emit diagnostic messages when _KONTAINER_DEBUG is set.
+// Error messages (failures) always go to stderr regardless.
+static int bootstrap_debug = -1; // -1 = not checked yet
+
+static inline int is_debug(void) {
+    if (bootstrap_debug < 0)
+        bootstrap_debug = (getenv("_KONTAINER_DEBUG") != NULL);
+    return bootstrap_debug;
+}
+
+#define debug_log(fmt, ...) \
+    do { if (is_debug()) fprintf(stderr, fmt, ##__VA_ARGS__); } while (0)
 
 #ifndef CLONE_NEWCGROUP
 #define CLONE_NEWCGROUP 0x02000000
@@ -73,7 +89,7 @@ static void maybe_setns_by_path(const char *name, int nstype) {
         exit(1);
     }
     close(fd);
-    fprintf(stderr, "[stage-1] joined %s namespace at %s\n", name, path);
+    debug_log("[stage-1] joined %s namespace at %s\n", name, path);
 }
 
 // Global state
@@ -83,8 +99,11 @@ static int is_init_process = 0;
 enum sync_t {
     SYNC_USERMAP_PLS = 0x40,    /* Request UID/GID mapping */
     SYNC_USERMAP_ACK = 0x41,    /* Mapping is complete */
+    SYNC_TIMEOFFSETS_PLS = 0x42, /* Request timens_offsets write (CLONE_NEWTIME) */
+    SYNC_TIMEOFFSETS_ACK = 0x43, /* timens_offsets write complete */
     SYNC_GRANDCHILD = 0x44,     /* Stage-2 is ready to run */
     SYNC_CHILD_FINISH = 0x45,   /* Stage-2 has finished setup */
+    SYNC_CGROUP_DONE = 0x46,    /* Main Process: cgroup addProcess complete */
 };
 
 /**
@@ -155,9 +174,12 @@ static unsigned int getenv_uint_hex(const char *name) {
  * This makes the child process a sibling of the caller, not a child.
  *
  * When Stage-1 calls this to create Stage-2:
- * - Stage-2's parent becomes Stage-1's parent (containerd-shim)
- * - Stage-1 and Stage-2 are siblings
- * - When Stage-1 exits, Stage-2 is not affected
+ * - Stage-2's parent becomes Stage-1's parent (the main process)
+ * - Both Stage-1 and Stage-2 are children of the main process
+ * - The main process can waitpid on Stage-2 for exit-code forwarding
+ *
+ * This mirrors runc's nsexec architecture where clone_parent() makes the
+ * init process a child of the Go runtime process.
  *
  * Returns: PID of cloned child on success, -1 on error
  */
@@ -196,11 +218,11 @@ void kontainer_bootstrap(void) {
 
     // This is Stage-1: unshare namespaces and create Stage-2
 
-    fprintf(stderr, "[stage-1] Starting namespace setup\n");
+    debug_log("[stage-1] Starting namespace setup\n");
 
     // Get clone flags from environment variable
     clone_flags = getenv_uint_hex(ENV_CLONE_FLAGS);
-    fprintf(stderr, "[stage-1] Clone flags: 0x%x\n", clone_flags);
+    debug_log("[stage-1] Clone flags: 0x%x\n", clone_flags);
 
     // Get sync pipe FD from environment variable (passed from Main Process)
     sync_fd = getenv_int(ENV_SYNCPIPE);
@@ -208,7 +230,7 @@ void kontainer_bootstrap(void) {
         fprintf(stderr, "[stage-1] Missing %s environment variable\n", ENV_SYNCPIPE);
         exit(1);
     }
-    fprintf(stderr, "[stage-1] Using sync FD from Main Process: %d\n", sync_fd);
+    debug_log("[stage-1] Using sync FD from Main Process: %d\n", sync_fd);
 
     // Create socketpair for Stage-1 <-> Stage-2 communication
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sync_pipe) < 0) {
@@ -218,24 +240,24 @@ void kontainer_bootstrap(void) {
 
     // Step 1: Unshare user namespace FIRST (if configured)
     if (clone_flags & CLONE_NEWUSER) {
-        fprintf(stderr, "[stage-1] Unsharing user namespace (CLONE_NEWUSER)\n");
+        debug_log("[stage-1] Unsharing user namespace (CLONE_NEWUSER)\n");
         if (unshare(CLONE_NEWUSER) < 0) {
             fprintf(stderr, "[stage-1] Failed to unshare user namespace: %s (errno=%d)\n",
                     strerror(errno), errno);
             exit(1);
         }
-        fprintf(stderr, "[stage-1] Successfully unshared user namespace\n");
+        debug_log("[stage-1] Successfully unshared user namespace\n");
 
         // Step 2: Make process dumpable so Main Process can write to uid_map/gid_map
         // See: man 7 user_namespaces
-        fprintf(stderr, "[stage-1] Setting dumpable to allow uid/gid mapping\n");
+        debug_log("[stage-1] Setting dumpable to allow uid/gid mapping\n");
         if (prctl(PR_SET_DUMPABLE, 1, 0, 0, 0) < 0) {
             fprintf(stderr, "[stage-1] Failed to set dumpable: %s\n", strerror(errno));
             exit(1);
         }
 
         // Step 3: Request UID/GID mapping from Main Process
-        fprintf(stderr, "[stage-1] Requesting UID/GID mapping from Main Process\n");
+        debug_log("[stage-1] Requesting UID/GID mapping from Main Process\n");
         s = SYNC_USERMAP_PLS;
         if (write(sync_fd, &s, sizeof(s)) != sizeof(s)) {
             fprintf(stderr, "[stage-1] Failed to send mapping request: %s\n", strerror(errno));
@@ -244,14 +266,14 @@ void kontainer_bootstrap(void) {
 
         // Send our PID so Main Process can write to /proc/<pid>/uid_map
         pid_t my_pid = getpid();
-        fprintf(stderr, "[stage-1] Sending my PID=%d to Main Process\n", my_pid);
+        debug_log("[stage-1] Sending my PID=%d to Main Process\n", my_pid);
         if (write(sync_fd, &my_pid, sizeof(my_pid)) != sizeof(my_pid)) {
             fprintf(stderr, "[stage-1] Failed to send PID: %s\n", strerror(errno));
             exit(1);
         }
 
         // Step 4: Wait for mapping completion from Main Process
-        fprintf(stderr, "[stage-1] Waiting for mapping ack from Main Process\n");
+        debug_log("[stage-1] Waiting for mapping ack from Main Process\n");
         if (read(sync_fd, &s, sizeof(s)) != sizeof(s)) {
             fprintf(stderr, "[stage-1] Failed to read mapping ack: %s\n", strerror(errno));
             exit(1);
@@ -260,17 +282,17 @@ void kontainer_bootstrap(void) {
             fprintf(stderr, "[stage-1] Expected SYNC_USERMAP_ACK, got %u\n", s);
             exit(1);
         }
-        fprintf(stderr, "[stage-1] Received mapping ack from Main Process\n");
+        debug_log("[stage-1] Received mapping ack from Main Process\n");
 
         // Step 5: Restore non-dumpable state
-        fprintf(stderr, "[stage-1] Restoring non-dumpable state\n");
+        debug_log("[stage-1] Restoring non-dumpable state\n");
         if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) < 0) {
             fprintf(stderr, "[stage-1] Failed to restore dumpable: %s\n", strerror(errno));
             exit(1);
         }
 
         // Step 6: Become root in the user namespace
-        fprintf(stderr, "[stage-1] Becoming root in user namespace (setuid/setgid 0)\n");
+        debug_log("[stage-1] Becoming root in user namespace (setuid/setgid 0)\n");
         if (setuid(0) < 0) {
             fprintf(stderr, "[stage-1] Failed to setuid(0): %s\n", strerror(errno));
             exit(1);
@@ -279,7 +301,7 @@ void kontainer_bootstrap(void) {
             fprintf(stderr, "[stage-1] Failed to setgid(0): %s\n", strerror(errno));
             exit(1);
         }
-        fprintf(stderr, "[stage-1] Successfully became root in user namespace\n");
+        debug_log("[stage-1] Successfully became root in user namespace\n");
     }
 
     // Join any namespaces named by spec.linux.namespaces[].path BEFORE the
@@ -288,18 +310,45 @@ void kontainer_bootstrap(void) {
     // joining works only here (kernel forbids it post-fork); mount joining
     // works because bootstrap.c is single-threaded (the Kotlin runtime, which
     // would otherwise be multi-threaded, hasn't started yet).
+    //
+    // User namespace MUST be joined first: it establishes the capability
+    // context required for joining the remaining namespaces. After joining,
+    // the process UID/GID is 65534 (overflow/nobody) because the host UID
+    // does not appear in the target namespace's mapping. We must become
+    // root (UID 0) in the target namespace so that subsequent VFS operations
+    // (mount, mknod, file creation) work correctly.
+    // See: https://github.com/opencontainers/runc/issues/4466
+    maybe_setns_by_path("USER",    CLONE_NEWUSER);
+    {
+        char env_check[64];
+        snprintf(env_check, sizeof(env_check), "%sUSER", ENV_NS_PATH_PREFIX);
+        const char *user_ns_path = getenv(env_check);
+        if (user_ns_path && *user_ns_path) {
+            if (setresgid(0, 0, 0) < 0) {
+                fprintf(stderr, "[stage-1] failed to become gid 0 after joining user namespace: %s\n",
+                        strerror(errno));
+                exit(1);
+            }
+            if (setresuid(0, 0, 0) < 0) {
+                fprintf(stderr, "[stage-1] failed to become uid 0 after joining user namespace: %s\n",
+                        strerror(errno));
+                exit(1);
+            }
+            debug_log("[stage-1] became root (uid=0, gid=0) in joined user namespace\n");
+        }
+    }
     maybe_setns_by_path("MOUNT",   CLONE_NEWNS);
     maybe_setns_by_path("NETWORK", CLONE_NEWNET);
     maybe_setns_by_path("UTS",     CLONE_NEWUTS);
     maybe_setns_by_path("IPC",     CLONE_NEWIPC);
-    maybe_setns_by_path("USER",    CLONE_NEWUSER);
     maybe_setns_by_path("CGROUP",  CLONE_NEWCGROUP);
+    maybe_setns_by_path("TIME",    CLONE_NEWTIME);
     maybe_setns_by_path("PID",     CLONE_NEWPID);
 
     // Step 7: Unshare other namespaces (mount, network, uts, ipc)
     // These must be done AFTER user namespace mapping is complete
     if (clone_flags & CLONE_NEWNS) {
-        fprintf(stderr, "[stage-1] Unsharing mount namespace (CLONE_NEWNS)\n");
+        debug_log("[stage-1] Unsharing mount namespace (CLONE_NEWNS)\n");
         if (unshare(CLONE_NEWNS) < 0) {
             fprintf(stderr, "[stage-1] Failed to unshare mount namespace: %s (errno=%d)\n",
                     strerror(errno), errno);
@@ -308,7 +357,7 @@ void kontainer_bootstrap(void) {
     }
 
     if (clone_flags & CLONE_NEWNET) {
-        fprintf(stderr, "[stage-1] Unsharing network namespace (CLONE_NEWNET)\n");
+        debug_log("[stage-1] Unsharing network namespace (CLONE_NEWNET)\n");
         if (unshare(CLONE_NEWNET) < 0) {
             fprintf(stderr, "[stage-1] Failed to unshare network namespace: %s (errno=%d)\n",
                     strerror(errno), errno);
@@ -317,7 +366,7 @@ void kontainer_bootstrap(void) {
     }
 
     if (clone_flags & CLONE_NEWUTS) {
-        fprintf(stderr, "[stage-1] Unsharing UTS namespace (CLONE_NEWUTS)\n");
+        debug_log("[stage-1] Unsharing UTS namespace (CLONE_NEWUTS)\n");
         if (unshare(CLONE_NEWUTS) < 0) {
             fprintf(stderr, "[stage-1] Failed to unshare UTS namespace: %s (errno=%d)\n",
                     strerror(errno), errno);
@@ -326,7 +375,7 @@ void kontainer_bootstrap(void) {
     }
 
     if (clone_flags & CLONE_NEWIPC) {
-        fprintf(stderr, "[stage-1] Unsharing IPC namespace (CLONE_NEWIPC)\n");
+        debug_log("[stage-1] Unsharing IPC namespace (CLONE_NEWIPC)\n");
         if (unshare(CLONE_NEWIPC) < 0) {
             fprintf(stderr, "[stage-1] Failed to unshare IPC namespace: %s (errno=%d)\n",
                     strerror(errno), errno);
@@ -338,7 +387,7 @@ void kontainer_bootstrap(void) {
     // Note: unshare(CLONE_NEWPID) doesn't move the current process into the new PID namespace.
     // Only child processes created AFTER unshare will be in the new PID namespace.
     if (clone_flags & CLONE_NEWPID) {
-        fprintf(stderr, "[stage-1] Unsharing PID namespace (CLONE_NEWPID)\n");
+        debug_log("[stage-1] Unsharing PID namespace (CLONE_NEWPID)\n");
         if (unshare(CLONE_NEWPID) < 0) {
             fprintf(stderr, "[stage-1] Failed to unshare PID namespace: %s (errno=%d)\n",
                     strerror(errno), errno);
@@ -350,19 +399,60 @@ void kontainer_bootstrap(void) {
     #ifndef CLONE_NEWCGROUP
     #define CLONE_NEWCGROUP 0x02000000
     #endif
-    if (clone_flags & CLONE_NEWCGROUP) {
-        fprintf(stderr, "[stage-1] Unsharing cgroup namespace (CLONE_NEWCGROUP)\n");
-        if (unshare(CLONE_NEWCGROUP) < 0) {
-            fprintf(stderr, "[stage-1] Failed to unshare cgroup namespace: %s (errno=%d)\n",
+    // CLONE_NEWCGROUP is deliberately NOT unshared here. The cgroup namespace
+    // must be created AFTER the main process has moved Stage-2 into the
+    // container's cgroup (addProcess). Otherwise /proc/self/cgroup would show
+    // the host cgroup path instead of "0::/". Stage-2 will call
+    // unshare(CLONE_NEWCGROUP) after receiving SYNC_GRANDCHILD (which is sent
+    // only after the main process signals SYNC_CGROUP_DONE).
+
+    // Time namespace: unshare AFTER PID (like runc). The process that
+    // calls unshare(CLONE_NEWTIME) stays in the OLD time namespace — only
+    // its children enter the new one. The main process writes timens_offsets
+    // to /proc/<stage1_pid>/timens_offsets before Stage-2 is created.
+    if (clone_flags & CLONE_NEWTIME) {
+        debug_log("[stage-1] Unsharing time namespace (CLONE_NEWTIME)\n");
+        if (unshare(CLONE_NEWTIME) < 0) {
+            fprintf(stderr, "[stage-1] Failed to unshare time namespace: %s (errno=%d)\n",
                     strerror(errno), errno);
             exit(1);
         }
     }
 
-    fprintf(stderr, "[stage-1] Successfully unshared all requested namespaces\n");
+    debug_log("[stage-1] Successfully unshared all requested namespaces\n");
+
+    // If we unshared a time namespace, ask Main Process to write
+    // timens_offsets BEFORE we fork Stage-2 (which will enter the new
+    // time namespace). After clone_parent(), it's too late.
+    if (clone_flags & CLONE_NEWTIME) {
+        debug_log("[stage-1] Requesting timens_offsets write from Main Process\n");
+        s = SYNC_TIMEOFFSETS_PLS;
+        if (write(sync_fd, &s, sizeof(s)) != sizeof(s)) {
+            fprintf(stderr, "[stage-1] Failed to send SYNC_TIMEOFFSETS_PLS: %s\n", strerror(errno));
+            exit(1);
+        }
+
+        // Send our PID so Main Process can write /proc/<pid>/timens_offsets
+        pid_t my_pid = getpid();
+        if (write(sync_fd, &my_pid, sizeof(my_pid)) != sizeof(my_pid)) {
+            fprintf(stderr, "[stage-1] Failed to send PID for timens: %s\n", strerror(errno));
+            exit(1);
+        }
+
+        // Wait for ack
+        if (read(sync_fd, &s, sizeof(s)) != sizeof(s)) {
+            fprintf(stderr, "[stage-1] Failed to read SYNC_TIMEOFFSETS_ACK: %s\n", strerror(errno));
+            exit(1);
+        }
+        if (s != SYNC_TIMEOFFSETS_ACK) {
+            fprintf(stderr, "[stage-1] Expected SYNC_TIMEOFFSETS_ACK, got %u\n", s);
+            exit(1);
+        }
+        debug_log("[stage-1] Received timens_offsets ack from Main Process\n");
+    }
 
     // Clone Stage-2 (init process) with CLONE_PARENT
-    fprintf(stderr, "[stage-1] Cloning stage-2 with CLONE_PARENT (init process)\n");
+    debug_log("[stage-1] Cloning stage-2 with CLONE_PARENT (init process)\n");
     stage2_pid = clone_parent();
 
     if (stage2_pid < 0) {
@@ -375,10 +465,10 @@ void kontainer_bootstrap(void) {
         close(sync_pipe[1]); // Close write end, we only read
         close(sync_fd);      // Close sync pipe to Main Process
 
-        fprintf(stderr, "[stage-2] Started, PID=%d\n", getpid());
+        debug_log("[stage-2] Started, PID=%d\n", getpid());
 
         // Wait for SYNC_GRANDCHILD signal from Stage-1
-        fprintf(stderr, "[stage-2] Waiting for SYNC_GRANDCHILD from stage-1\n");
+        debug_log("[stage-2] Waiting for SYNC_GRANDCHILD from stage-1\n");
         if (read(sync_pipe[0], &s, sizeof(s)) != sizeof(s)) {
             fprintf(stderr, "[stage-2] Failed to read SYNC_GRANDCHILD: %s\n", strerror(errno));
             _exit(1);
@@ -387,17 +477,29 @@ void kontainer_bootstrap(void) {
             fprintf(stderr, "[stage-2] Expected SYNC_GRANDCHILD, got %u\n", s);
             _exit(1);
         }
-        fprintf(stderr, "[stage-2] Received SYNC_GRANDCHILD from stage-1\n");
+        debug_log("[stage-2] Received SYNC_GRANDCHILD from stage-1\n");
+
+        // Unshare cgroup namespace NOW — after the main process has moved us
+        // into the container's cgroup. This makes /proc/self/cgroup show "0::/"
+        // (our cgroup is the namespace root).
+        if (clone_flags & CLONE_NEWCGROUP) {
+            debug_log("[stage-2] Unsharing cgroup namespace (CLONE_NEWCGROUP)\n");
+            if (unshare(CLONE_NEWCGROUP) < 0) {
+                fprintf(stderr, "[stage-2] Failed to unshare cgroup namespace: %s (errno=%d)\n",
+                        strerror(errno), errno);
+                _exit(1);
+            }
+        }
 
         // Create new session
         if (setsid() < 0) {
             fprintf(stderr, "[stage-2] setsid failed: %s\n", strerror(errno));
             _exit(1);
         }
-        fprintf(stderr, "[stage-2] Created new session\n");
+        debug_log("[stage-2] Created new session\n");
 
         // Signal completion to Stage-1
-        fprintf(stderr, "[stage-2] Sending SYNC_CHILD_FINISH to stage-1\n");
+        debug_log("[stage-2] Sending SYNC_CHILD_FINISH to stage-1\n");
         s = SYNC_CHILD_FINISH;
         if (write(sync_pipe[0], &s, sizeof(s)) != sizeof(s)) {
             fprintf(stderr, "[stage-2] Failed to write SYNC_CHILD_FINISH: %s\n", strerror(errno));
@@ -410,7 +512,7 @@ void kontainer_bootstrap(void) {
         // Set flag for Kotlin code to check
         is_init_process = 1;
 
-        fprintf(stderr, "[stage-2] Returning to start Kotlin runtime\n");
+        debug_log("[stage-2] Returning to start Kotlin runtime\n");
 
         return; // Start Kotlin runtime
     }
@@ -418,20 +520,34 @@ void kontainer_bootstrap(void) {
     // Stage-1 continues here (parent)
     close(sync_pipe[0]); // Close read end, we only write
 
-    fprintf(stderr, "[stage-1] Forked stage-2, PID=%d\n", stage2_pid);
+    debug_log("[stage-1] Forked stage-2, PID=%d\n", stage2_pid);
 
     // Send Stage-2 PID to Main Process
-    fprintf(stderr, "[stage-1] Sending stage-2 PID to Main Process\n");
+    debug_log("[stage-1] Sending stage-2 PID to Main Process\n");
     if (write(sync_fd, &stage2_pid, sizeof(stage2_pid)) != sizeof(stage2_pid)) {
         fprintf(stderr, "[stage-1] Failed to send stage-2 PID to Main Process\n");
         exit(1);
     }
 
+    // Wait for Main Process to signal that cgroup setup is done
+    // (Stage-2 must be in its cgroup before unsharing CLONE_NEWCGROUP)
+    debug_log("[stage-1] Waiting for SYNC_CGROUP_DONE from Main Process\n");
+    if (read(sync_fd, &s, sizeof(s)) != sizeof(s)) {
+        fprintf(stderr, "[stage-1] Failed to read SYNC_CGROUP_DONE: %s\n", strerror(errno));
+        exit(1);
+    }
+    if (s != SYNC_CGROUP_DONE) {
+        fprintf(stderr, "[stage-1] Expected SYNC_CGROUP_DONE (0x46), got %u\n", s);
+        exit(1);
+    }
+    debug_log("[stage-1] Received SYNC_CGROUP_DONE from Main Process\n");
+    close(sync_fd);
+
     // Sync with Stage-2
-    fprintf(stderr, "[stage-1] Syncing with stage-2\n");
+    debug_log("[stage-1] Syncing with stage-2\n");
 
     // Send SYNC_GRANDCHILD to Stage-2
-    fprintf(stderr, "[stage-1] Sending SYNC_GRANDCHILD to stage-2\n");
+    debug_log("[stage-1] Sending SYNC_GRANDCHILD to stage-2\n");
     s = SYNC_GRANDCHILD;
     if (write(sync_pipe[1], &s, sizeof(s)) != sizeof(s)) {
         fprintf(stderr, "[stage-1] Failed to write SYNC_GRANDCHILD: %s\n", strerror(errno));
@@ -439,7 +555,7 @@ void kontainer_bootstrap(void) {
     }
 
     // Wait for SYNC_CHILD_FINISH from Stage-2
-    fprintf(stderr, "[stage-1] Waiting for SYNC_CHILD_FINISH from stage-2\n");
+    debug_log("[stage-1] Waiting for SYNC_CHILD_FINISH from stage-2\n");
     if (read(sync_pipe[1], &s, sizeof(s)) != sizeof(s)) {
         fprintf(stderr, "[stage-1] Failed to read from stage-2: %s\n", strerror(errno));
         exit(1);
@@ -450,15 +566,15 @@ void kontainer_bootstrap(void) {
         exit(1);
     }
 
-    fprintf(stderr, "[stage-1] Received SYNC_CHILD_FINISH from stage-2\n");
-    fprintf(stderr, "[stage-1] Stage-2 setup complete\n");
+    debug_log("[stage-1] Received SYNC_CHILD_FINISH from stage-2\n");
+    debug_log("[stage-1] Stage-2 setup complete\n");
 
     // Clean up
     close(sync_pipe[1]);
     close(sync_fd);
 
     // Stage-1 exits here - Stage-2 continues as init process
-    fprintf(stderr, "[stage-1] Exiting, stage-2 continues as init\n");
+    debug_log("[stage-1] Exiting, stage-2 continues as init\n");
     _exit(0);
 }
 

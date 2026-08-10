@@ -36,6 +36,17 @@ static inline unsigned long _TIOCSCTTY() {
     return TIOCSCTTY;
 }
 
+// Disable ONLCR (NL → CR-NL translation) on a terminal FD.
+// This prevents PTY slaves from inserting \r before \n, which
+// would break callers that capture output (like bats test framework).
+// Must be called AFTER open() but BEFORE the slave is used.
+static inline int pty_disable_onlcr(int fd) {
+    struct termios t;
+    if (tcgetattr(fd, &t) != 0) return -1;
+    t.c_oflag &= ~ONLCR;
+    return tcsetattr(fd, TCSANOW, &t);
+}
+
 // Set window size on a terminal FD.
 // Wraps the ioctl(TIOCSWINSZ) call with a struct winsize so callers
 // do not depend on platform-specific field names (ws_row vs __ws_row

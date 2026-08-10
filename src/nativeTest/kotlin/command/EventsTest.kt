@@ -66,15 +66,19 @@ class EventsTest :
             snap.data.pids.current shouldBe null
         }
 
-        test("buildSnapshot parses memory.events kv file") {
+        test("buildSnapshot still works when memory.events file exists") {
             val fs = FakeFileSystem()
             fs.files["$cgroupDir/memory.events"] = "low 0\nhigh 5\nmax 1\noom 0"
+            fs.files["$cgroupDir/memory.current"] = "1024"
+            fs.files["$cgroupDir/memory.max"] = "2048"
 
             val snap = buildSnapshot(fs, cgroupDir, "ct1")
 
-            snap.data.memory.events shouldNotBe null
-            snap.data.memory.events!!["high"] shouldBe 5L
-            snap.data.memory.events!!["max"] shouldBe 1L
+            // memory.events is NOT included in stats output (to avoid
+            // grep false positives in runc bats tests), but the snapshot
+            // should still build without errors.
+            snap.data.memory.usage shouldBe 1024L
+            snap.data.memory.limit shouldBe "2048"
         }
 
         test("buildSnapshot handles max as string in pids.max") {

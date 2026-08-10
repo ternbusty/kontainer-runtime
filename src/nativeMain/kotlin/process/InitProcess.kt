@@ -3,8 +3,9 @@ package process
 import channel.InitReceiver
 import channel.MainSender
 import channel.NotifyListener
-import console.openPty
-import console.sendMasterTo
+import console.connectConsoleSocket
+import console.openPtyFromDevpts
+import console.sendMasterViaFd
 import console.wireStdio
 import kotlinx.cinterop.*
 import logger.Logger
@@ -25,7 +26,9 @@ import syscall.Syscall
  * Init process (Stage-2 / PID 1 in container)
  *
  * This process runs as PID 1 in the new PID namespace (if configured).
- * It is created by bootstrap.c Stage-1 using CLONE_PARENT.
+ * It is created by bootstrap.c Stage-1 using CLONE_PARENT, which makes
+ * its parent the main process (not Stage-1).  This allows the main
+ * process to waitpid on it for exit-code forwarding.
  *
  * This process:
  * - Runs as PID 1 in the container
@@ -81,12 +84,47 @@ private fun initProcessInternal(
                 annotations = spec.annotations,
             )
 
+        // Obtain the console socket fd for PTY master handoff.
+        //
+        // Prefer _KONTAINER_CONSOLE_SOCKET_FD: the main process connected to
+        // the socket while still in the host namespace (before the user-ns
+        // switch), so the fd works regardless of uid/gid mappings.
+        //
+        // Fallback to _KONTAINER_CONSOLE_SOCKET (path-based connect) only for
+        // backwards compatibility; this fails when a user namespace remaps the
+        // init's host UID to one that lacks permission on the socket.
+        var consoleSocketFd = -1
+        if (spec.process.terminal) {
+            val preFd = getenv("_KONTAINER_CONSOLE_SOCKET_FD")?.toKString()?.toIntOrNull()
+            if (preFd != null && preFd >= 0) {
+                consoleSocketFd = preFd
+                Logger.debug("using pre-connected console socket fd=$consoleSocketFd")
+            } else {
+                val consoleSocketPath =
+                    getenv("_KONTAINER_CONSOLE_SOCKET")?.toKString()
+                        ?: run {
+                            Logger.error(
+                                "spec.process.terminal=true but --console-socket was not provided",
+                            )
+                            _exit(1)
+                            @Suppress("UNREACHABLE_CODE")
+                            return@memScoped
+                        }
+                consoleSocketFd = connectConsoleSocket(consoleSocketPath)
+                if (consoleSocketFd < 0) {
+                    Logger.error("failed to connect to console socket: $consoleSocketPath")
+                    _exit(1)
+                }
+            }
+        }
+
         // Prepare rootfs
         if (spec.hasNamespace("mount")) {
-            prepareRootfs(syscall, rootfsPath, spec.linux?.rootfsPropagation)
+            prepareRootfs(syscall, rootfsPath, spec.linux?.rootfsPropagation, spec.mounts)
             // Process spec.mounts BEFORE pivot_root so bind-mount source paths from
             // the host are still reachable. Targets are inside rootfsPath.
             applySpecMounts(syscall, spec.mounts, rootfsPath)
+
             // createContainer hooks run after the container's mount namespace
             // is established but BEFORE pivot_root — they can still see the
             // host paths via the new rootfs's parent. This is the standard
@@ -124,6 +162,15 @@ private fun initProcessInternal(
                 Logger.warn("failed to set hostname to $hostname")
             } else {
                 Logger.debug("set hostname to $hostname")
+            }
+        }
+
+        spec.domainname?.let { domainname ->
+            if (syscall.setdomainname(domainname) != 0) {
+                perror("setdomainname")
+                Logger.warn("failed to set domainname to $domainname")
+            } else {
+                Logger.debug("set domainname to $domainname")
             }
         }
 
@@ -172,53 +219,66 @@ private fun initProcessInternal(
             syncSeccompNotifyFd(notifyFd, mainSender, initReceiver)
         }
 
-        mainSender.initReady()
-        Logger.debug("sent init ready signal")
-
-        mainSender.close()
-        initReceiver.close()
-
         // Cleanup extra file descriptors to prevent FD leaks (CVE-2024-21626).
         // This sets FD_CLOEXEC on all FDs >= 3 + preserveFds so they're auto-closed at
-        // execve. Done late (after init_ready) to avoid closing channel pipes early.
+        // execve.  Channel fds remain usable (CLOEXEC only fires at execve, not
+        // during read/write), so initReady() below still works.
         syscall.closeRange(preserveFds)
 
         // PTY allocation: when spec.process.terminal is true, allocate a
-        // pseudo-terminal pair, ship the master fd to the caller via the
-        // --console-socket (SCM_RIGHTS), and wire the slave to stdio.
+        // pseudo-terminal pair from the container's devpts (/dev/pts),
+        // ship the master fd to the caller via the pre-connected console
+        // socket, and wire the slave to stdio.
+        //
         // Placed AFTER closeRange: the PTY fds are created fresh (no stale
         // FD_CLOEXEC), the master is sent and closed manually, and the slave
         // is dup2'd onto 0/1/2 before execvp.
+        //
+        // Placed AFTER applyProcessSecurity: grantpt sets the slave's UID to
+        // the calling process's real UID, which is the container process's
+        // UID after setuid has been applied — so the PTY slave's ownership
+        // automatically matches the spec's process.user.uid.
+        //
+        // The PTY is allocated from the container's devpts (via /dev/pts/ptmx)
+        // rather than the host's /dev/ptmx so that /dev/pts/N paths resolve
+        // correctly inside the container.
         if (spec.process.terminal) {
-            val consoleSocketPath =
-                getenv("_KONTAINER_CONSOLE_SOCKET")?.toKString()
-                    ?: run {
-                        Logger.error(
-                            "spec.process.terminal=true but --console-socket was not provided",
-                        )
-                        _exit(1)
-                        @Suppress("UNREACHABLE_CODE")
-                        return@memScoped
-                    }
-
             val pty =
-                openPty()
+                openPtyFromDevpts("/dev/pts")
                     ?: run {
-                        Logger.error("failed to allocate pseudo-terminal")
+                        Logger.error("failed to allocate pseudo-terminal from container devpts")
+                        if (consoleSocketFd >= 0) close(consoleSocketFd)
                         _exit(1)
                         @Suppress("UNREACHABLE_CODE")
                         return@memScoped
                     }
 
-            if (!sendMasterTo(consoleSocketPath, pty.master)) {
-                Logger.error(
-                    "failed to send PTY master fd to console socket: $consoleSocketPath",
-                )
+            if (!sendMasterViaFd(consoleSocketFd, pty.master)) {
+                Logger.error("failed to send PTY master via console socket")
                 close(pty.master)
                 close(pty.slave)
+                close(consoleSocketFd)
                 _exit(1)
             }
             close(pty.master)
+            close(consoleSocketFd)
+
+            // Save a dup of stderr BEFORE wireStdio replaces it with the
+            // PTY slave. This lets the Logger write to the original stderr
+            // (which connects back to the runtime's stderr) instead of
+            // going through the PTY relay and polluting the container's
+            // output stream.
+            //
+            // Mark the dup CLOEXEC so it does NOT leak across execvp into
+            // the container process. Without CLOEXEC the fd survives exec
+            // (it was created after closeRange) and keeps the caller's
+            // pipe/fd open, causing $() subshell captures (e.g. bats'
+            // `run`) to hang indefinitely.
+            val savedStderr = dup(STDERR_FILENO)
+            if (savedStderr >= 0) {
+                fcntl(savedStderr, F_SETFD, FD_CLOEXEC)
+                Logger.redirectToFd(savedStderr)
+            }
 
             wireStdio(
                 pty.slave,
@@ -227,8 +287,48 @@ private fun initProcessInternal(
             )
         }
 
+        mainSender.initReady()
+        Logger.debug("sent init ready signal")
+
+        mainSender.close()
+        initReceiver.close()
+
+        // Close the saved stderr fd before blocking for the start signal.
+        // In the "create" flow, the init process sits in "created" state
+        // while the CLI has already returned. The saved stderr fd (which
+        // points to the original runtime stderr) keeps the caller's pipe
+        // alive, preventing bats' output capture from completing.
+        // We re-open it after start if terminal mode is active.
         Logger.debug("waiting for start signal...")
+        Logger.closeRedirect()
+
+        // Explicitly close all leaked FDs before blocking in "created"
+        // state.  closeRange (above) only sets CLOEXEC which fires at
+        // execve, but tools like runc's FD-leak test inspect
+        // /proc/$pid/fd while we're blocked here — before execve.  Close
+        // everything except stdio (0-2) and the notify listener socket.
+        val keepFd = notifyListener.fd()
+        val dir = opendir("/proc/self/fd")
+        if (dir != null) {
+            val leaked = mutableListOf<Int>()
+            while (true) {
+                val entry = readdir(dir) ?: break
+                val fd =
+                    entry.pointed.d_name
+                        .toKString()
+                        .toIntOrNull() ?: continue
+                if (fd >= 3 && fd != keepFd) leaked.add(fd)
+            }
+            closedir(dir) // closes its own internal fd
+            for (fd in leaked) close(fd) // EBADF on dir-fd is harmless
+        }
+
         notifyListener.waitForContainerStart()
+        // Reopen Logger redirect for any post-start log messages.
+        // The PTY slave is already wired to stdio, so dup stderr again
+        // from the ORIGINAL stderr isn't possible (it was closed above).
+        // That's fine — post-start logging goes to the PTY-backed stderr,
+        // which is what the container process will use anyway.
         Logger.debug("received start signal, executing container process")
 
         notifyListener.close()
@@ -273,9 +373,11 @@ private fun initProcessInternal(
         // execvp uses PATH lookup and the environment we set above
         execvp(processArgs[0], argv)
 
-        perror("execvp")
-        Logger.error("Failed to execute ${processArgs[0]}")
-        _exit(127)
+        // Match runc's lowercase error format (Go's os error strings are
+        // lowercase while C's strerror uses title-case).
+        val errMsg = strerror(errno)?.toKString()?.lowercase() ?: "unknown error"
+        fprintf(stderr, "exec %s: %s\n", processArgs[0], errMsg)
+        _exit(255)
     }
 
 /**

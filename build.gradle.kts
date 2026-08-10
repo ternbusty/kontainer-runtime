@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.ternbusty"
-version = "1.0-SNAPSHOT"
+version = "1.2.4"
 
 repositories {
     mavenCentral()
@@ -28,7 +28,7 @@ val buildConfigDir = layout.buildDirectory.dir("generated/buildconfig")
 val generateBuildConfig =
     tasks.register("generateBuildConfig") {
         val isRelease = isReleaseTask()
-        val defaultLogLevel = if (isRelease) "INFO" else "DEBUG"
+        val defaultLogLevel = if (isRelease) "ERROR" else "ERROR"
 
         // Track build type as input to invalidate cache when it changes
         inputs.property("buildType", if (isRelease) "release" else "debug")
@@ -39,6 +39,18 @@ val generateBuildConfig =
         doLast {
             val outputDir = buildConfigDir.get().asFile
             outputDir.mkdirs()
+            val projectVersion = project.version.toString()
+            val gitCommit =
+                try {
+                    providers
+                        .exec { commandLine("git", "rev-parse", "--short", "HEAD") }
+                        .standardOutput
+                        .asText
+                        .get()
+                        .trim()
+                } catch (_: Exception) {
+                    "unknown"
+                }
             file("${outputDir.path}/BuildConfig.kt").writeText(
                 """
                 package config
@@ -49,6 +61,9 @@ val generateBuildConfig =
                  */
                 object BuildConfig {
                     const val DEFAULT_LOG_LEVEL = "$defaultLogLevel"
+                    const val VERSION = "$projectVersion"
+                    const val COMMIT = "$gitCommit"
+                    const val OCI_SPEC_VERSION = "1.0.0"
                 }
                 """.trimIndent(),
             )
@@ -181,6 +196,7 @@ kotlin {
             create("network")
             create("bpf")
             create("pty")
+            create("inotify")
         }
     }
 

@@ -1,6 +1,7 @@
 package command
 
 import logger.Logger
+import spec.loadSpec
 import state.State
 import state.loadState
 import state.refreshStatus
@@ -54,9 +55,27 @@ internal fun formatContainerList(
         }
     }
 
+    // Sort by container ID (runc uses alphabetical order).
+    states.sortBy { it.id }
+
     return when {
         quiet -> states.joinToString("") { "${it.id}\n" }
-        format == "json" -> JsonCodec.encode(states, prettyPrint = true) + "\n"
+        format == "json" -> {
+            // Build list entries with rootfs field for runc compatibility
+            val entries =
+                states.map { s ->
+                    val rootfs =
+                        try {
+                            loadSpec(fs, "${s.bundle}/config.json").root.path.let { p ->
+                                if (p.startsWith("/")) p else "${s.bundle}/$p"
+                            }
+                        } catch (_: Exception) {
+                            ""
+                        }
+                    ListEntry(s.ociVersion, s.id, s.pid, s.status, s.bundle, rootfs, s.created)
+                }
+            JsonCodec.encode(entries, prettyPrint = false) + "\n"
+        }
         else -> formatTable(states)
     }
 }
@@ -93,3 +112,15 @@ private fun formatTable(states: List<State>): String {
         }
     }
 }
+
+@kotlinx.serialization.Serializable
+private data class ListEntry(
+    val ociVersion: String,
+    val id: String,
+    val pid: Int?,
+    @kotlinx.serialization.Serializable(with = state.ContainerStatusSerializer::class)
+    val status: state.ContainerStatus,
+    val bundle: String,
+    val rootfs: String,
+    val created: String?,
+)

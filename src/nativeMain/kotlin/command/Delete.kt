@@ -61,21 +61,82 @@ fun delete(
     // With force flag, allow deletion of any state
     when {
         state.status.canDelete() -> {
-            // STOPPED status: can delete without killing process
+            // STOPPED status: can delete without killing process.
+            // In host-pidns scenarios the init process may be gone but child
+            // processes remain in the cgroup — kill them before cleanup.
             Logger.debug("container is stopped, proceeding with deletion")
+            val cgPath =
+                try {
+                    loadKontainerConfig(fs, rootPath, containerId).cgroupPath
+                } catch (_: Exception) {
+                    null
+                }
+            if (cgPath != null) {
+                try {
+                    val pids = cgroup.getPids(cgPath)
+                    for (p in pids) {
+                        try {
+                            syscall.killProcess(p, SIGKILL)
+                            Logger.debug("killed remaining PID $p in cgroup")
+                        } catch (_: Exception) {
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+            }
         }
 
         force -> {
-            // Force flag set: kill process before deletion
+            // Force flag set: kill all processes in the container before deletion.
+            // In host-pidns scenarios the init process may be gone but child
+            // processes remain — we must kill everything in the cgroup.
             Logger.debug("container is in '${state.status.value}' state, but force flag is set")
-            Logger.debug("killing process before deletion")
+            Logger.debug("killing all container processes before deletion")
+
+            // Try cgroup-based kill first (covers host-pidns)
+            val cgPath =
+                try {
+                    loadKontainerConfig(fs, rootPath, containerId).cgroupPath
+                } catch (_: Exception) {
+                    null
+                }
+
+            // If the container is paused (frozen), thaw it before sending
+            // SIGKILL — the kernel holds signals pending on frozen processes.
+            if (state.status == ContainerStatus.PAUSED && cgPath != null) {
+                val normalizedPath = cgPath.removePrefix("/")
+                val freezePath = "/sys/fs/cgroup/$normalizedPath/cgroup.freeze"
+                try {
+                    fs.writeTextFile(freezePath, "0")
+                    Logger.debug("thawed paused container before kill")
+                } catch (_: Exception) {
+                    Logger.debug("could not thaw container (may not be frozen)")
+                }
+            }
+
+            if (cgPath != null) {
+                try {
+                    val pids = cgroup.getPids(cgPath)
+                    for (p in pids) {
+                        try {
+                            syscall.killProcess(p, SIGKILL)
+                            Logger.debug("killed PID $p")
+                        } catch (_: Exception) {
+                            // Process may have already exited
+                        }
+                    }
+                } catch (_: Exception) {
+                    // Fall back to init PID
+                }
+            }
+
+            // Also try the init PID directly (belt & suspenders)
             state.pid?.let { pid ->
                 try {
                     syscall.killProcess(pid, SIGKILL)
-                    Logger.debug("killed process $pid")
-                } catch (e: Exception) {
-                    Logger.warn("failed to kill process $pid: ${e.message ?: "unknown"}")
-                    // Continue with deletion even if kill fails
+                    Logger.debug("killed init process $pid")
+                } catch (_: Exception) {
+                    // Process may have already exited
                 }
             }
         }

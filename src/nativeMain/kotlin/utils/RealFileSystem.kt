@@ -16,8 +16,9 @@ class RealFileSystem : FileSystem {
         val fp = fopen(path, "w")
         if (fp == null) {
             val errNum = errno
-            Logger.error("failed to open $path for writing (errno=$errNum)")
-            throw Exception("Failed to open $path for writing: errno=$errNum")
+            val errMsg = strerror(errNum)?.toKString()?.lowercase() ?: "unknown error"
+            Logger.error("failed to open $path for writing ($errMsg)")
+            throw Exception("Failed to open $path for writing: $errMsg")
         }
 
         try {
@@ -34,21 +35,24 @@ class RealFileSystem : FileSystem {
 
                 if (ferror(fp) != 0) {
                     val errNum = errno
-                    Logger.error("write error detected for $path (errno=$errNum)")
-                    throw Exception("Write error for $path: errno=$errNum")
+                    val errMsg = strerror(errNum)?.toKString()?.lowercase() ?: "unknown error"
+                    Logger.error("write error detected for $path ($errMsg)")
+                    throw Exception("Write error for $path: $errMsg")
                 }
 
                 if (fflush(fp) != 0) {
                     val errNum = errno
-                    Logger.error("failed to flush $path (errno=$errNum)")
-                    throw Exception("Failed to flush $path: errno=$errNum")
+                    val errMsg = strerror(errNum)?.toKString()?.lowercase() ?: "unknown error"
+                    Logger.error("failed to flush $path ($errMsg)")
+                    throw Exception("Failed to flush $path: $errMsg")
                 }
             }
 
             if (fclose(fp) != 0) {
                 val errNum = errno
-                Logger.error("failed to close $path (errno=$errNum)")
-                throw Exception("Failed to close $path: errno=$errNum")
+                val errMsg = strerror(errNum)?.toKString()?.lowercase() ?: "unknown error"
+                Logger.error("failed to close $path ($errMsg)")
+                throw Exception("Failed to close $path: $errMsg")
             }
 
             Logger.debug("successfully wrote $path")
@@ -67,23 +71,21 @@ class RealFileSystem : FileSystem {
         }
 
         try {
+            // Try seek-based reading first (works for regular files).
+            // If seek fails (ESPIPE — e.g. pipe fds like /dev/fd/63),
+            // fall back to streaming reads.
             if (fseek(fp, 0, SEEK_END) != 0) {
-                val errNum = errno
-                Logger.error("failed to seek to end of $path (errno=$errNum)")
-                throw Exception("Failed to seek in $path: errno=$errNum")
+                // Non-seekable fd — read in chunks until EOF.
+                return readStreamToString(fp, path)
             }
 
             val fileSize = ftell(fp)
             if (fileSize == -1L) {
-                val errNum = errno
-                Logger.error("failed to get size of $path (errno=$errNum)")
-                throw Exception("Failed to get file size of $path: errno=$errNum")
+                return readStreamToString(fp, path)
             }
 
             if (fseek(fp, 0, SEEK_SET) != 0) {
-                val errNum = errno
-                Logger.error("failed to seek to start of $path (errno=$errNum)")
-                throw Exception("Failed to seek in $path: errno=$errNum")
+                return readStreamToString(fp, path)
             }
 
             val content =
@@ -114,6 +116,34 @@ class RealFileSystem : FileSystem {
             throw e
         }
     }
+
+    /**
+     * Read all content from a non-seekable FILE* (e.g. pipe fd) into a String.
+     * Reads in chunks and closes the stream when done.
+     */
+    @OptIn(ExperimentalForeignApi::class)
+    private fun readStreamToString(
+        fp: CPointer<FILE>,
+        path: String,
+    ): String =
+        memScoped {
+            val chunkSize = 4096
+            val buffer = allocArray<ByteVar>(chunkSize + 1)
+            val parts = mutableListOf<String>()
+            var totalBytes = 0L
+
+            while (true) {
+                val n = fread(buffer, 1u, chunkSize.toULong(), fp)
+                if (n == 0UL) break
+                buffer[n.toInt()] = 0
+                parts.add(buffer.toKString())
+                totalBytes += n.toLong()
+            }
+
+            fclose(fp)
+            Logger.debug("successfully read $path ($totalBytes bytes, streaming)")
+            parts.joinToString("")
+        }
 
     override fun readProcFile(path: String): String {
         val fp = fopen(path, "r")

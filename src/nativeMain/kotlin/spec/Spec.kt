@@ -15,15 +15,22 @@ data class Spec(
     val root: Root,
     val process: Process = Process(args = emptyList()),
     val hostname: String? = null,
+    val domainname: String? = null,
     val mounts: List<Mount>? = null,
     val annotations: Map<String, String>? = null,
     val hooks: Hooks? = null,
     val linux: Linux? = null,
 ) {
     /**
-     * Check if a namespace type exists in the spec
+     * Check if a namespace type exists in the spec (either creating or joining).
      */
     fun hasNamespace(type: String): Boolean = linux?.namespaces?.any { it.type == type } ?: false
+
+    /**
+     * Check if the spec creates (unshares) a new namespace of the given type.
+     * Returns false when the namespace is being *joined* (has a path).
+     */
+    fun createsNamespace(type: String): Boolean = linux?.namespaces?.any { it.type == type && it.path.isNullOrEmpty() } ?: false
 }
 
 /**
@@ -263,6 +270,18 @@ data class Linux(
     val rootfsPropagation: String? = null,
     val devices: List<LinuxDevice>? = null,
     val mountLabel: String? = null,
+    val timeOffsets: Map<String, LinuxTimeOffset>? = null,
+)
+
+/**
+ * Time offset for a POSIX clock, used with CLONE_NEWTIME.
+ * Written to /proc/<pid>/timens_offsets before the process enters the new
+ * time namespace. See time_namespaces(7).
+ */
+@Serializable
+data class LinuxTimeOffset(
+    val secs: Long = 0,
+    val nanosecs: Long = 0,
 )
 
 /**

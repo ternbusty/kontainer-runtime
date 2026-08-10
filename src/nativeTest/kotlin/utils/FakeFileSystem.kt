@@ -17,10 +17,16 @@ class FakeFileSystem : FileSystem {
     /** Every successful operation, in order, as a string. Useful for asserting call order. */
     val calls: MutableList<String> = mutableListOf()
 
+    /** When true, [writeTextFile] throws instead of writing — simulates I/O errors. */
+    var failOnWrite: Boolean = false
+
     override fun writeTextFile(
         path: String,
         content: String,
     ) {
+        if (failOnWrite) {
+            throw Exception("Failed to open $path for writing: no such file or directory")
+        }
         files[path] = content
         calls += "writeTextFile($path, $content)"
     }

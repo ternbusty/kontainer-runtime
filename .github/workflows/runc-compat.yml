@@ -1,0 +1,102 @@
+name: runc bats compatibility
+
+# Runs a subset of runc's bats integration tests against
+# kontainer-runtime to track OCI CLI compatibility.
+# The workflow fails if any test fails; results are also reported
+# as a Job Summary.
+
+on:
+  workflow_call:
+
+jobs:
+  runc-bats:
+    name: runc bats integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      # ── checkout & toolchain ──────────────────────────────────────
+      - name: Checkout kontainer-runtime
+        uses: actions/checkout@v7
+
+      - name: Download kontainer-runtime binary
+        uses: actions/download-artifact@v7
+        with:
+          name: kontainer-runtime-x86_64
+          path: build/bin/linuxX64/releaseExecutable
+
+      - name: Make binary executable
+        run: |
+          chmod +x build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe
+          BIN="$(pwd)/build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe"
+          echo "KONTAINER_BIN=$BIN" >> "$GITHUB_ENV"
+
+      - name: Set up Go (for runc test helpers)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y libseccomp-dev jq
+
+      # ── clone runc & install bats ─────────────────────────────────
+      - name: Clone runc v1.2.9 (shallow)
+        run: |
+          git clone --depth 1 --branch v1.2.9 \
+            https://github.com/opencontainers/runc "$HOME/runc"
+          echo "RUNC_REPO_DIR=$HOME/runc" >> "$GITHUB_ENV"
+
+      - name: Install bats-core
+        run: |
+          git clone --depth 1 https://github.com/bats-core/bats-core "$HOME/bats-core"
+          sudo "$HOME/bats-core/install.sh" /usr/local
+          bats --version
+
+      # ── build runc test helper binaries ──────────────────────────
+      - name: Build runc test helpers (recvtty, etc.)
+        run: |
+          cd "$HOME/runc"
+          # recvtty — required for --console-socket tests
+          go build -o tests/cmd/recvtty/recvtty ./tests/cmd/recvtty/
+          # remap-rootfs — required for user-namespace tests that run as root
+          go build -o tests/cmd/remap-rootfs/remap-rootfs ./tests/cmd/remap-rootfs/
+          ls -la tests/cmd/recvtty/recvtty tests/cmd/remap-rootfs/remap-rootfs
+
+      # ── fetch rootfs images ──────────────────────────────────────
+      - name: Fetch rootfs images (busybox / debian)
+        run: |
+          chmod +x "$HOME/runc/tests/integration/get-images.sh"
+          "$HOME/runc/tests/integration/get-images.sh" > /dev/null
+
+      # ── run bats tests ───────────────────────────────────────────
+      - name: Run runc bats integration tests
+        id: bats
+        run: |
+          chmod +x scripts/runc-compat-test.sh
+          sudo env \
+            KONTAINER_BIN="$KONTAINER_BIN" \
+            SUMMARY_FILE="$GITHUB_STEP_SUMMARY" \
+            TAP_OUTPUT="$PWD/tap-output.log" \
+            scripts/runc-compat-test.sh \
+              --runc-dir "$RUNC_REPO_DIR" \
+              --binary "$KONTAINER_BIN"
+
+      # ── upload raw output ────────────────────────────────────────
+      - name: Upload bats TAP output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: runc-bats-tap-output
+          path: tap-output.log
+
+      # ── report outcome in annotations ────────────────────────────
+      - name: Annotate outcome
+        if: always()
+        run: |
+          if [ "${{ steps.bats.outcome }}" = "success" ]; then
+            echo "::notice::All runc bats tests passed"
+          else
+            echo "::warning::Some runc bats tests failed — see Job Summary for details"
+          fi

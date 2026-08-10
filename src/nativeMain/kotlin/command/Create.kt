@@ -4,10 +4,10 @@ import cgroup.Cgroup
 import channel.SocketNotifyListener
 import channel.initChannel
 import channel.mainChannel
+import console.connectConsoleSocket
 import kotlinx.cinterop.*
 import logger.Logger
 import namespace.calculateCloneFlags
-import platform.linux.SYS_clone
 import platform.posix.*
 import process.runMainProcess
 import rootfs.validateSysctls
@@ -155,11 +155,17 @@ fun create(
         exePathBuf[exePathLen.toInt()] = 0.toByte() // null terminate
         Logger.debug("executable path: ${exePathBuf.toKString()}")
 
-        // Clone with CLONE_PARENT and exec to trigger bootstrap constructor
-        when (val stage1Pid = cloneWithParent()) {
+        // Fork and exec to trigger bootstrap constructor.
+        // We use a plain fork() (not CLONE_PARENT) so that Stage-1 becomes a
+        // child of this process.  bootstrap.c's clone_parent() then creates
+        // Stage-2 with CLONE_PARENT, which makes Stage-2's parent = Stage-1's
+        // parent = this process.  The result: both Stage-1 and Stage-2 are
+        // children of the main process, and waitpid works for exit-code
+        // forwarding in foreground mode (runc uses the same architecture).
+        when (val stage1Pid = fork()) {
             -1 -> {
-                perror("clone")
-                Logger.error("Failed to clone with CLONE_PARENT")
+                perror("fork")
+                Logger.error("Failed to fork Stage-1")
                 close(syncFds[0])
                 close(syncFds[1])
                 notifyListener.close()
@@ -184,6 +190,13 @@ fun create(
                 // Set clone flags as hex string (e.g., "10000000" for CLONE_NEWUSER)
                 val cloneFlagsHex = cloneFlags.toUInt().toString(16)
                 setenv("_KONTAINER_CLONE_FLAGS", cloneFlagsHex, 1)
+
+                // Forward debug logging to bootstrap.c — it checks for the
+                // existence of _KONTAINER_DEBUG before emitting diagnostics.
+                val logLevel = getenv("KONTAINER_LOG_LEVEL")?.toKString()?.uppercase()
+                if (logLevel == "DEBUG" || logLevel == "TRACE") {
+                    setenv("_KONTAINER_DEBUG", "1", 1)
+                }
                 // Enable bootstrap mode
                 setenv("_KONTAINER_IS_BOOTSTRAP", "1", 1)
                 setenv("_KONTAINER_SYNCPIPE", syncPipeStr, 1)
@@ -195,9 +208,19 @@ fun create(
                 setenv("_KONTAINER_NOTIFY_SOCKET", notifySocketPath, 1)
                 setenv("_KONTAINER_CONTAINER_ID", containerId, 1)
 
-                // Console socket path for PTY master fd handoff
+                // Console socket: connect NOW, while still in the host
+                // namespace with full credentials.  Inside a user namespace the
+                // init process's effective host UID is the mapped UID (e.g.
+                // 100000), which may not have permission to connect to a socket
+                // owned by root.  By connecting here and passing the fd, the
+                // init process avoids the permission check entirely.
                 if (consoleSocket != null) {
-                    setenv("_KONTAINER_CONSOLE_SOCKET", consoleSocket, 1)
+                    val csFd = connectConsoleSocket(consoleSocket)
+                    if (csFd < 0) {
+                        fprintf(stderr, "failed to connect to console socket: %s\n", consoleSocket)
+                        _exit(1)
+                    }
+                    setenv("_KONTAINER_CONSOLE_SOCKET_FD", csFd.toString(), 1)
                 }
 
                 // Pass any spec.linux.namespaces[].path entries to bootstrap.c
@@ -208,7 +231,8 @@ fun create(
                 // namespace join must happen pre-fork. The env var key matches
                 // ENV_NS_PATH_PREFIX in bootstrap.c.
                 spec.linux?.namespaces?.forEach { ns ->
-                    val path = ns.path ?: return@forEach
+                    val path = ns.path
+                    if (path.isNullOrEmpty()) return@forEach
                     val envKey =
                         when (ns.type) {
                             "mount" -> "_KONTAINER_NS_PATH_MOUNT"
@@ -217,6 +241,7 @@ fun create(
                             "ipc" -> "_KONTAINER_NS_PATH_IPC"
                             "user" -> "_KONTAINER_NS_PATH_USER"
                             "cgroup" -> "_KONTAINER_NS_PATH_CGROUP"
+                            "time" -> "_KONTAINER_NS_PATH_TIME"
                             "pid" -> "_KONTAINER_NS_PATH_PID"
                             else -> return@forEach
                         }
@@ -264,24 +289,17 @@ fun create(
                     initSender = initSender,
                     initReceiver = initReceiver,
                 )
-                Logger.debug("runMainProcess returned, create() completing")
+
+                // Reap Stage-1 to avoid zombies. Stage-1 exits after the
+                // bootstrap sync protocol completes, which is well before
+                // runMainProcess returns. Use WNOHANG as a safety measure —
+                // if Stage-1 is somehow still running we don't block.
+                val rc = waitpid(stage1Pid, null, WNOHANG)
+                if (rc == 0) {
+                    // Stage-1 hasn't exited yet — do a blocking wait.
+                    waitpid(stage1Pid, null, 0)
+                }
+                Logger.debug("reaped Stage-1 (pid=$stage1Pid)")
             }
         }
     }
-
-/**
- * Clone with CLONE_PARENT flag using raw syscall
- * Makes the child process a sibling of the caller (same parent)
- *
- * This ensures Stage-1 becomes a sibling of Create.kt (both children of containerd-shim)
- * When Stage-1 exits, it won't become a zombie waiting for Create.kt to reap it
- *
- * @return PID of cloned child on success, -1 on error
- */
-@OptIn(ExperimentalForeignApi::class)
-private fun cloneWithParent(): Int {
-    // CLONE_PARENT = 0x00008000
-    // syscall(SYS_clone, flags, child_stack, parent_tid, child_tid, tls)
-    val pid = syscall(SYS_clone.toLong(), SIGCHLD.toLong() or 0x00008000L, 0L, 0L, 0L, 0L)
-    return pid.toInt()
-}

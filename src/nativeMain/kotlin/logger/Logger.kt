@@ -55,7 +55,8 @@ object Logger {
         JSON,
     }
 
-    // Current log level threshold
+    // Current log level threshold.  detectLogLevel() may also flip
+    // stderrEnabled when the env var explicitly requests debug output.
     private var currentLevel: Level = detectLogLevel()
 
     // Process context (main/intermediate/init)
@@ -63,6 +64,18 @@ object Logger {
 
     // Log file handle (null means stderr only)
     private var logFile: CPointer<FILE>? = null
+
+    // Whether stderr output is enabled. Default false — runc only emits
+    // log messages to stderr when --debug is explicitly passed. Without
+    // this gate, diagnostic output pollutes the container's stderr and
+    // breaks bats tests that check exact output lines.
+    private var stderrEnabled: Boolean = false
+
+    // An fd-backed FILE* that replaces stderr for log output. Used by the
+    // init process to redirect Logger writes to a dup of the original stderr
+    // BEFORE wireStdio replaces fd 2 with the PTY slave, so diagnostic
+    // messages go to the runtime's stderr (not the container's PTY).
+    private var stderrOverride: CPointer<FILE>? = null
 
     // Log format (text or json)
     private var logFormat: Format = Format.TEXT
@@ -75,7 +88,12 @@ object Logger {
         val envVar = getenv("KONTAINER_LOG_LEVEL")?.toKString()
 
         if (envVar != null) {
-            Level.fromString(envVar)?.let { return it }
+            Level.fromString(envVar)?.let { level ->
+                if (level <= Level.DEBUG) {
+                    stderrEnabled = true
+                }
+                return level
+            }
         }
 
         // Default log level from build configuration
@@ -88,6 +106,30 @@ object Logger {
      */
     fun setContext(context: String) {
         processContext = context
+    }
+
+    /**
+     * Redirect stderr-targeted log output to the given file descriptor.
+     * Used by the init process to preserve the original stderr before
+     * wireStdio replaces fd 2 with the PTY slave.
+     */
+    fun redirectToFd(fd: Int) {
+        val f = fdopen(fd, "w")
+        if (f != null) {
+            stderrOverride = f
+        }
+    }
+
+    /**
+     * Close the stderr override fd, reverting to normal stderr.
+     * Used by the init process to release the caller's stderr pipe
+     * before blocking for the start signal.
+     */
+    fun closeRedirect() {
+        stderrOverride?.let {
+            fclose(it)
+            stderrOverride = null
+        }
     }
 
     /**
@@ -172,6 +214,11 @@ object Logger {
      */
     fun setLogLevel(level: Level) {
         currentLevel = level
+        // When debug level is explicitly requested (e.g. via --debug flag),
+        // enable stderr output to match runc's behavior.
+        if (level <= Level.DEBUG) {
+            stderrEnabled = true
+        }
     }
 
     /**
@@ -204,31 +251,23 @@ object Logger {
 
             when (logFormat) {
                 Format.TEXT -> {
-                    val formattedMessage = "[%s] [%s] [%s] %s\n"
+                    // Use logrus-compatible format: time="..." level=info msg="..."
+                    // This matches runc's debug output format expected by bats tests.
+                    val escapedMsg = message.replace("\"", "\\\"")
+                    val formattedMessage =
+                        "time=\"$timestamp\" level=${level.label.lowercase()} msg=\"$escapedMsg\"\n"
 
-                    // Log to stderr only if no log file is configured
-                    // This prevents polluting stdout when used with containerd (--log option)
-                    if (logFile == null) {
-                        fprintf(
-                            stderr,
-                            formattedMessage,
-                            timestamp,
-                            level.label,
-                            processContext,
-                            message,
-                        )
+                    // Write to stderr (or its override fd) when explicitly
+                    // enabled and no log file redirects output elsewhere.
+                    if (stderrEnabled && logFile == null) {
+                        val target = stderrOverride ?: stderr
+                        fprintf(target, "%s", formattedMessage)
+                        if (stderrOverride != null) fflush(target)
                     }
 
                     // Log to file if configured
                     logFile?.let { file ->
-                        fprintf(
-                            file,
-                            formattedMessage,
-                            timestamp,
-                            level.label,
-                            processContext,
-                            message,
-                        )
+                        fprintf(file, "%s", formattedMessage)
                         fflush(file) // Ensure immediate write
                     }
                 }
@@ -240,10 +279,10 @@ object Logger {
                         "{\"timestamp\":\"$timestamp\",\"level\":\"${level.label}\"," +
                             "\"context\":\"$processContext\",\"message\":\"$escapedMessage\"}\n"
 
-                    // Log to stderr only if no log file is configured
-                    // This prevents polluting stdout when used with containerd (--log option)
-                    if (logFile == null) {
-                        fprintf(stderr, "%s", jsonMessage)
+                    if (stderrEnabled && logFile == null) {
+                        val target = stderrOverride ?: stderr
+                        fprintf(target, "%s", jsonMessage)
+                        if (stderrOverride != null) fflush(target)
                     }
 
                     // Log to file if configured

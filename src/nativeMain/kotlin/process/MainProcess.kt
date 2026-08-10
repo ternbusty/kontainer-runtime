@@ -15,6 +15,7 @@ import logger.Logger
 import platform.posix.*
 import seccomp.seccompUsesNotify
 import seccomp.sendToSeccompListener
+import spec.LinuxDeviceCgroup
 import spec.LinuxIdMapping
 import spec.Spec
 import state.ContainerStatus
@@ -67,29 +68,67 @@ private fun runMainProcessInternal(
         // CgroupV2.resolveCgroupPath() for the rules.
         val resolvedCgroupPath = CgroupV2.resolveCgroupPath(spec.linux?.cgroupsPath, containerId)
 
-        // Setup cgroup for Stage-1 BEFORE syncing with child
-        // Stage-1 → Stage-2 are both included in the cgroup (inherited through fork)
-        cgroup.setup(stage1Pid, resolvedCgroupPath, spec.linux?.resources)
+        // Create the cgroup directory, enable controllers, and apply resource
+        // limits.  Do NOT add Stage-1's PID — Stage-1 is a short-lived bootstrap
+        // process that races against us: by the time we write its PID to
+        // cgroup.procs it may have already exited (ESRCH).  Stage-2's PID is
+        // added after we receive it via the sync pipe (see addProcess below).
+        cgroup.setup(pid = null, cgroupPath = resolvedCgroupPath, resources = spec.linux?.resources)
 
         // Attach eBPF device-cgroup program ONCE, right after the cgroup
         // directory exists. The program applies to all processes in the
-        // cgroup (including Stage-2 which inherits into the same leaf),
-        // so we must NOT call it again when Stage-2 PID arrives — a
-        // second BPF_PROG_ATTACH would stack a duplicate filter.
-        val deviceRules = spec.linux?.resources?.devices
-        if (!deviceRules.isNullOrEmpty()) {
+        // cgroup (including Stage-2 which will be added below), so we must
+        // NOT call it again when Stage-2 PID arrives — a second
+        // BPF_PROG_ATTACH would stack a duplicate filter.
+        //
+        // Ensure that spec.linux.devices[] entries have matching allow rules
+        // so the init process can mknod them. The spec SHOULD include these,
+        // but without them the eBPF filter would block mknod, causing the
+        // device creation to fall back to a /dev/null bind mount (wrong
+        // major/minor/permissions). This matches runc's behavior of allowing
+        // devices that the runtime itself needs to create.
+        val deviceRules =
+            spec.linux
+                ?.resources
+                ?.devices
+                ?.toMutableList() ?: mutableListOf()
+        val specDevices = spec.linux?.devices
+        if (!specDevices.isNullOrEmpty() && deviceRules.isNotEmpty()) {
+            for (d in specDevices) {
+                val alreadyAllowed =
+                    deviceRules.any { rule ->
+                        rule.allow && (rule.type == null || rule.type == d.type) &&
+                            (rule.major == null || rule.major == d.major) &&
+                            (rule.minor == null || rule.minor == d.minor)
+                    }
+                if (!alreadyAllowed) {
+                    // Insert at position 0 so the allow rule comes BEFORE
+                    // any deny-all rule in the spec.  The eBPF program
+                    // evaluates rules in order (first match wins), so an
+                    // allow rule after a deny-all would be unreachable.
+                    deviceRules.add(
+                        0,
+                        LinuxDeviceCgroup(
+                            allow = true,
+                            type = d.type,
+                            major = d.major,
+                            minor = d.minor,
+                            access = "rwm",
+                        ),
+                    )
+                    Logger.debug("auto-allowed device ${d.path} (${d.type} ${d.major}:${d.minor}) for mknod")
+                }
+            }
+        }
+        if (deviceRules.isNotEmpty()) {
             val cgroupDirPath = "/sys/fs/cgroup/${resolvedCgroupPath.removePrefix("/")}"
             DeviceCgroup.apply(cgroupDirPath, deviceRules)
         }
 
-        // Apply rlimits to Stage-1 BEFORE entering user namespace
-        // Rlimits are inherited: Stage-1 → Stage-2
-        syscall.applyRlimits(stage1Pid, spec.process.rlimits)
-
-        // Handle UID/GID mapping if user namespace is configured
-        // This must be done BEFORE receiving Stage-2 PID, as Stage-1 waits for mapping completion
-        // before forking Stage-2
-        val hasUserNamespace = spec.hasNamespace("user")
+        // Handle UID/GID mapping only when CREATING a new user namespace.
+        // When joining an existing user namespace (path is set), the bootstrap
+        // doesn't send SYNC_USERMAP_PLS — the mapping already exists.
+        val hasUserNamespace = spec.createsNamespace("user")
         if (hasUserNamespace) {
             Logger.debug("user namespace configured, handling UID/GID mapping")
 
@@ -146,11 +185,69 @@ private fun runMainProcessInternal(
             Logger.debug("sent mapping ack to Stage-1")
         }
 
+        // Handle timens_offsets only when CREATING a new time namespace.
+        // When joining (path is set), bootstrap doesn't unshare CLONE_NEWTIME
+        // and doesn't send SYNC_TIMEOFFSETS_PLS.
+        val hasTimeNamespace = spec.createsNamespace("time")
+        val timeOffsets = spec.linux?.timeOffsets
+        if (hasTimeNamespace && !timeOffsets.isNullOrEmpty()) {
+            val request = readInt32(syncFd, "Failed to read timens request from Stage-1")
+            if (request != 0x42) { // SYNC_TIMEOFFSETS_PLS
+                throw Exception("Expected SYNC_TIMEOFFSETS_PLS (0x42), got 0x${request.toString(16)}")
+            }
+            val timensPid = readInt32(syncFd, "Failed to read PID for timens_offsets")
+            Logger.debug("received timens_offsets request for pid $timensPid")
+
+            // Each line: "<clock-id> <offset-secs> <offset-nanosecs>"
+            // Clock names from the spec map to kernel identifiers.
+            for ((clockName, offset) in timeOffsets) {
+                val line = "$clockName ${offset.secs} ${offset.nanosecs}\n"
+                Logger.debug("writing timens_offset: ${line.trim()}")
+                fs.writeTextFile("/proc/$timensPid/timens_offsets", line)
+            }
+
+            val ackValue = 0x43 // SYNC_TIMEOFFSETS_ACK
+            writeInt32(syncFd, ackValue, "Failed to send timens ack")
+            Logger.debug("sent timens_offsets ack")
+        } else if (hasTimeNamespace) {
+            // Time namespace configured but no offsets — still need to
+            // consume the sync messages to keep the protocol in sync.
+            val request = readInt32(syncFd, "Failed to read timens request from Stage-1")
+            if (request == 0x42) {
+                val timensPid = readInt32(syncFd, "Failed to read PID for timens_offsets")
+                Logger.debug("time namespace with no offsets, acking (pid=$timensPid)")
+                val ackValue = 0x43 // SYNC_TIMEOFFSETS_ACK
+                writeInt32(syncFd, ackValue, "Failed to send timens ack")
+            }
+        }
+
         // Wait for Stage-2 PID from bootstrap
         val stage2Pid = readInt32(syncFd, "Failed to read Stage-2 PID from sync pipe")
         Logger.debug("received Stage-2 PID from bootstrap: $stage2Pid")
 
+        // Place Stage-2 (the long-lived init process) into the cgroup that
+        // was prepared above.  Stage-2 is guaranteed to be alive here — it is
+        // blocked in bootstrap.c waiting for SYNC_GRANDCHILD from Stage-1.
+        if (resolvedCgroupPath.isNotEmpty()) {
+            cgroup.addProcess(stage2Pid, resolvedCgroupPath)
+        }
+
+        // Signal Stage-1 that cgroup setup is complete. Stage-1 will then
+        // send SYNC_GRANDCHILD to Stage-2, which will unshare(CLONE_NEWCGROUP)
+        // AFTER being in the container's cgroup — so /proc/self/cgroup shows
+        // "0::/" (the cgroup namespace root) instead of the host path.
+        val syncCgroupDone = 0x46 // SYNC_CGROUP_DONE
+        writeInt32(syncFd, syncCgroupDone, "Failed to send SYNC_CGROUP_DONE to Stage-1")
+        Logger.debug("sent SYNC_CGROUP_DONE to Stage-1")
         close(syncFd)
+
+        // Apply rlimits to Stage-2.  We target Stage-2 directly instead of
+        // Stage-1 because Stage-1 may already have exited by the time we
+        // reach this point.  prlimit64 works on any live process, and
+        // Stage-2 has not yet started the user workload (it is still waiting
+        // for the start signal), so the limits are in effect before any
+        // container process runs.
+        syscall.applyRlimits(stage2Pid, spec.process.rlimits)
 
         // Close senders and receivers that this process doesn't need
         // Keep mainReceiver and initSender - will be used to communicate with Stage-2
