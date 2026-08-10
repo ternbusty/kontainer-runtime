@@ -102,7 +102,12 @@ private fun runMainProcessInternal(
                             (rule.minor == null || rule.minor == d.minor)
                     }
                 if (!alreadyAllowed) {
+                    // Insert at position 0 so the allow rule comes BEFORE
+                    // any deny-all rule in the spec.  The eBPF program
+                    // evaluates rules in order (first match wins), so an
+                    // allow rule after a deny-all would be unreachable.
                     deviceRules.add(
+                        0,
                         LinuxDeviceCgroup(
                             allow = true,
                             type = d.type,
