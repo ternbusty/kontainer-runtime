@@ -133,14 +133,24 @@ class CgroupTest :
 
         // addProcess
 
-        test("addProcess throws on non-existent cgroup path") {
-            // addProcess uses direct POSIX open()/write() (not FileSystem)
-            // to capture exact kernel errno strings, so it cannot be
-            // tested with FakeFileSystem.  Verify the error path instead.
+        test("addProcess writes pid to cgroup.procs") {
             val fs = FakeFileSystem()
+            CgroupV2(fs).addProcess(42, "test-cg")
+            fs.files["/sys/fs/cgroup/test-cg/cgroup.procs"] shouldBe "42"
+        }
+
+        test("addProcess strips leading slash from cgroupPath") {
+            val fs = FakeFileSystem()
+            CgroupV2(fs).addProcess(99, "/test-cg")
+            fs.files["/sys/fs/cgroup/test-cg/cgroup.procs"] shouldBe "99"
+        }
+
+        test("addProcess throws on write failure") {
+            val fs = FakeFileSystem()
+            fs.failOnWrite = true
             val ex =
                 shouldThrow<Exception> {
-                    CgroupV2(fs).addProcess(42, "nonexistent-cgroup-path-for-test")
+                    CgroupV2(fs).addProcess(42, "fail-cg")
                 }
             ex.message shouldContain "cgroup.procs"
         }

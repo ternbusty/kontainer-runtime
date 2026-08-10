@@ -16,8 +16,9 @@ class RealFileSystem : FileSystem {
         val fp = fopen(path, "w")
         if (fp == null) {
             val errNum = errno
-            Logger.error("failed to open $path for writing (errno=$errNum)")
-            throw Exception("Failed to open $path for writing: errno=$errNum")
+            val errMsg = strerror(errNum)?.toKString()?.lowercase() ?: "unknown error"
+            Logger.error("failed to open $path for writing ($errMsg)")
+            throw Exception("Failed to open $path for writing: $errMsg")
         }
 
         try {
@@ -34,21 +35,24 @@ class RealFileSystem : FileSystem {
 
                 if (ferror(fp) != 0) {
                     val errNum = errno
-                    Logger.error("write error detected for $path (errno=$errNum)")
-                    throw Exception("Write error for $path: errno=$errNum")
+                    val errMsg = strerror(errNum)?.toKString()?.lowercase() ?: "unknown error"
+                    Logger.error("write error detected for $path ($errMsg)")
+                    throw Exception("Write error for $path: $errMsg")
                 }
 
                 if (fflush(fp) != 0) {
                     val errNum = errno
-                    Logger.error("failed to flush $path (errno=$errNum)")
-                    throw Exception("Failed to flush $path: errno=$errNum")
+                    val errMsg = strerror(errNum)?.toKString()?.lowercase() ?: "unknown error"
+                    Logger.error("failed to flush $path ($errMsg)")
+                    throw Exception("Failed to flush $path: $errMsg")
                 }
             }
 
             if (fclose(fp) != 0) {
                 val errNum = errno
-                Logger.error("failed to close $path (errno=$errNum)")
-                throw Exception("Failed to close $path: errno=$errNum")
+                val errMsg = strerror(errNum)?.toKString()?.lowercase() ?: "unknown error"
+                Logger.error("failed to close $path ($errMsg)")
+                throw Exception("Failed to close $path: $errMsg")
             }
 
             Logger.debug("successfully wrote $path")

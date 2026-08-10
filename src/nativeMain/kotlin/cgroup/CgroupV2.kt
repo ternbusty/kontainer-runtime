@@ -100,26 +100,14 @@ class CgroupV2(
         val normalizedPath = cgroupPath.removePrefix("/")
         val procsPath = "$CGROUP_ROOT/$normalizedPath/$CGROUP_PROCS"
 
-        // Use direct write so we capture the exact kernel errno string
-        // (e.g. "no such file or directory", "device or resource busy").
-        // Callers rely on the wording for fallback logic, and cgroupfs
-        // errors are only accurate with unbuffered writes.
-        val fd = open(procsPath, O_WRONLY)
-        if (fd < 0) {
-            val errMsg = strerror(errno)?.toKString()?.lowercase() ?: "unknown error"
-            throw Exception("adding pid $pid to $procsPath: $errMsg")
+        try {
+            fs.writeTextFile(procsPath, pid.toString())
+        } catch (e: Exception) {
+            // Unwrap the FileSystem message into the format callers expect:
+            //   "adding pid <pid> to <path>: <strerror text>"
+            val cause = e.message?.substringAfterLast(": ") ?: "unknown error"
+            throw Exception("adding pid $pid to $procsPath: $cause")
         }
-        val data = pid.toString()
-        val rc =
-            memScoped {
-                write(fd, data.cstr.ptr, data.length.toULong())
-            }
-        if (rc < 0) {
-            val errMsg = strerror(errno)?.toKString()?.lowercase() ?: "unknown error"
-            close(fd)
-            throw Exception("adding pid $pid to $procsPath: $errMsg")
-        }
-        close(fd)
         Logger.debug("added PID $pid to cgroup $normalizedPath")
     }
 
