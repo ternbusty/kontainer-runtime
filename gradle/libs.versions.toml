@@ -2,7 +2,7 @@
 kotlin = "2.4.10"
 kotlinxSerialization = "1.11.0"
 clikt = "5.1.0"
-kotest = "6.2.3"
+kotest = "6.2.4"
 ksp = "2.3.11"
 ktlint = "14.2.0"
 
