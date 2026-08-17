@@ -32,7 +32,7 @@ jobs:
           echo "KONTAINER_BIN=$BIN" >> "$GITHUB_ENV"
 
       - name: Set up Go (for runc test helpers)
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: '1.22'
 
