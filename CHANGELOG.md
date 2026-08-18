@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.4.0](https://github.com/ternbusty/kontainer-runtime/compare/v0.3.1...v0.4.0) (2026-08-17)
+
+
+### Features
+
+* add CVE-2019-5736 mitigation via cloned binary (memfd) ([#82](https://github.com/ternbusty/kontainer-runtime/issues/82)) ([62fd748](https://github.com/ternbusty/kontainer-runtime/commit/62fd7484657967ec080c25e2011b1d13fef683cc))
+* add exec flags, run/list commands, device cgroup, sysctl, pause/resume/update/events, PTY ([#78](https://github.com/ternbusty/kontainer-runtime/issues/78)) ([40f3708](https://github.com/ternbusty/kontainer-runtime/commit/40f37083d43ed2a3d0b8947aa6ff1bd40fd5d28e))
+* migrate CLI parser to clikt, fix cgroup ESRCH race condition ([#80](https://github.com/ternbusty/kontainer-runtime/issues/80)) ([5c82189](https://github.com/ternbusty/kontainer-runtime/commit/5c82189fe8539f1adbe12ee2fbad08fc41ec0e63))
+
+
+### Bug Fixes
+
+* add workflow_call trigger to ci.yml for release workflow ([#86](https://github.com/ternbusty/kontainer-runtime/issues/86)) ([5f621b1](https://github.com/ternbusty/kontainer-runtime/commit/5f621b178f1ff0621fcf87858388ef8a63ad0f78))
+* **exec:** close remaining gaps from the PR [#75](https://github.com/ternbusty/kontainer-runtime/issues/75) review, on top of main ([#76](https://github.com/ternbusty/kontainer-runtime/issues/76)) ([629b3df](https://github.com/ternbusty/kontainer-runtime/commit/629b3dff121c98fdcd309644e114f36571d81546))
+
+
+### Performance Improvements
+
+* use overlayfs for zero-copy exeseal (CVE-2019-5736) ([#88](https://github.com/ternbusty/kontainer-runtime/issues/88)) ([9990326](https://github.com/ternbusty/kontainer-runtime/commit/9990326cbbf92643b3cec10edeb2b57cfddf7687))
+
 ## [0.3.1](https://github.com/ternbusty/kontainer-runtime/compare/v0.3.0...v0.3.1) (2026-08-01)
 
 
