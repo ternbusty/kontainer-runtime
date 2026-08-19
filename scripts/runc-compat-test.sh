@@ -8,7 +8,7 @@
 # Environment variables (all optional):
 #   RUNC_REPO_DIR  — path to an existing runc checkout (skips clone)
 #   KONTAINER_BIN  — path to the kontainer-runtime binary
-#   RUNC_TAG       — runc tag to clone (default: v1.2.9)
+#   RUNC_TAG       — runc tag to clone (default: v1.5.1)
 #   SUMMARY_FILE   — file to append a Markdown summary to (default: stdout)
 #   BATS_JOBS      — parallel jobs for bats (default: 1; root tests are
 #                    not parallelisable in general)
@@ -21,7 +21,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-RUNC_TAG="${RUNC_TAG:-v1.2.9}"
+RUNC_TAG="${RUNC_TAG:-v1.5.1}"
 RUNC_REPO_DIR="${RUNC_REPO_DIR:-}"
 KONTAINER_BIN="${KONTAINER_BIN:-${PROJECT_ROOT}/build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe}"
 SUMMARY_FILE="${SUMMARY_FILE:-}"
@@ -50,20 +50,25 @@ INCLUDE_TESTS=(
   spec.bats
   start_detached.bats
   tty.bats
+  seccomp-notify.bats
+  pidfd-socket.bats
+  hooks_so.bats
+  mounts_sshfs.bats
+  idmap.bats
 )
 
 # Tests that need runc-specific helper binaries or features we deliberately
 # skip.  Maintained here so the exclude list is visible and extensible.
 EXCLUDE_TESTS=(
-  checkpoint.bats          # needs criu
-  seccomp-notify.bats      # needs seccompagent helper binary (Go)
-  seccomp-notify-compat.bats
-  pidfd-socket.bats        # needs pidfd-kill helper binary (Go)
-  hooks_so.bats            # needs a Go .so hook plugin
-  mounts_sshfs.bats        # needs sshfs
-  idmap.bats               # needs fs-idmap helper binary (Go)
-  selinux.bats             # needs SELinux enabled host (use --selinux)
-  cgroup_delegation.bats   # needs systemd + sd-helper binary (Go)
+  checkpoint.bats            # needs criu (not in Ubuntu 24.04 repos)
+  seccomp-notify-compat.bats # needs kernel < 5.6 (always skipped on modern runners)
+)
+
+# Tests that require RUNC_USE_SYSTEMD=yes.  Run in a separate pass after
+# the main (no-systemd) pass so they don't conflict with tests that
+# require no_systemd (e.g. hooks_so.bats).
+SYSTEMD_TESTS=(
+  cgroup_delegation.bats
 )
 
 # SELinux-specific tests — only included with --selinux flag (requires
@@ -137,6 +142,7 @@ chmod +x "${INTEGRATION_DIR}/get-images.sh"
 # ---------------------------------------------------------------------------
 if [[ "$SELINUX_MODE" == "true" ]]; then
   INCLUDE_TESTS=("${SELINUX_TESTS[@]}")
+  SYSTEMD_TESTS=()  # skip systemd pass in SELinux mode
   echo ">>> SELinux mode — running only: ${SELINUX_TESTS[*]}"
 fi
 
@@ -153,47 +159,83 @@ for t in "${INCLUDE_TESTS[@]}"; do
   fi
 done
 
-if [[ ${#TEST_FILES[@]} -eq 0 ]]; then
+SYSTEMD_TEST_FILES=()
+for t in "${SYSTEMD_TESTS[@]}"; do
+  f="${INTEGRATION_DIR}/${t}"
+  if [[ -f "$f" ]]; then
+    SYSTEMD_TEST_FILES+=("$f")
+  else
+    echo "WARNING: systemd test file not found, skipping: $t" >&2
+  fi
+done
+
+if [[ ${#TEST_FILES[@]} -eq 0 && ${#SYSTEMD_TEST_FILES[@]} -eq 0 ]]; then
   echo "ERROR: no test files to run" >&2
   exit 1
 fi
 
-echo ">>> Running ${#TEST_FILES[@]} bats test files against $(basename "$KONTAINER_BIN")"
+TOTAL_FILES=$(( ${#TEST_FILES[@]} + ${#SYSTEMD_TEST_FILES[@]} ))
+echo ">>> Running ${TOTAL_FILES} bats test files against $(basename "$KONTAINER_BIN")"
 echo "    Binary: $KONTAINER_BIN"
 echo ""
 
 # ---------------------------------------------------------------------------
 # Run bats — one file at a time with a per-file timeout so a single
 # hanging test doesn't block the entire suite.
+#
+# run_bats_files <file>...
+#   Runs each file through bats, appending TAP output to $TAP_OUTPUT.
+#   Extra env vars for bats can be set by the caller before invoking.
 # ---------------------------------------------------------------------------
 TAP_OUTPUT="${TAP_OUTPUT:-$(mktemp)}"
 BATS_RC=0
 
 : > "$TAP_OUTPUT"  # truncate
 
-FILE_INDEX=0
-for tf in "${TEST_FILES[@]}"; do
-  FILE_INDEX=$((FILE_INDEX + 1))
-  echo ">>> [$FILE_INDEX/${#TEST_FILES[@]}] $(basename "$tf")" >&2
-  set +e
-  # Build --negative-filter regex from SKIP_TEST_NAMES (if any).
-  NEGATIVE_FILTER_ARGS=()
-  if [[ ${#SKIP_TEST_NAMES[@]} -gt 0 ]]; then
-    # Join patterns with | for a single regex alternation.
-    OLDIFS="$IFS"; IFS='|'
-    NEGATIVE_FILTER_ARGS=(--negative-filter "${SKIP_TEST_NAMES[*]}")
-    IFS="$OLDIFS"
-  fi
-  timeout "${BATS_TEST_TIMEOUT}" env RUNC="$KONTAINER_BIN" bats --tap "${NEGATIVE_FILTER_ARGS[@]}" "$tf" 2>&1 | tee -a "$TAP_OUTPUT"
-  rc=${PIPESTATUS[0]}
-  set -e
-  if [[ $rc -ne 0 ]]; then
-    BATS_RC=1
-    if [[ $rc -eq 124 ]]; then
-      echo "# TIMEOUT: $(basename "$tf") exceeded ${BATS_TEST_TIMEOUT}s" | tee -a "$TAP_OUTPUT"
+GLOBAL_FILE_INDEX=0
+GLOBAL_FILE_TOTAL=$((${#TEST_FILES[@]} + ${#SYSTEMD_TEST_FILES[@]}))
+
+run_bats_files() {
+  local files=("$@")
+
+  for tf in "${files[@]}"; do
+    GLOBAL_FILE_INDEX=$((GLOBAL_FILE_INDEX + 1))
+    echo ">>> [$GLOBAL_FILE_INDEX/$GLOBAL_FILE_TOTAL] $(basename "$tf")" >&2
+    set +e
+    # Build --negative-filter regex from SKIP_TEST_NAMES (if any).
+    NEGATIVE_FILTER_ARGS=()
+    if [[ ${#SKIP_TEST_NAMES[@]} -gt 0 ]]; then
+      # Join patterns with | for a single regex alternation.
+      OLDIFS="$IFS"; IFS='|'
+      NEGATIVE_FILTER_ARGS=(--negative-filter "${SKIP_TEST_NAMES[*]}")
+      IFS="$OLDIFS"
     fi
-  fi
-done
+    timeout "${BATS_TEST_TIMEOUT}" env RUNC="$KONTAINER_BIN" "${BATS_EXTRA_ENV[@]}" \
+      bats --tap "${NEGATIVE_FILTER_ARGS[@]}" "$tf" 2>&1 | tee -a "$TAP_OUTPUT"
+    rc=${PIPESTATUS[0]}
+    set -e
+    if [[ $rc -ne 0 ]]; then
+      BATS_RC=1
+      if [[ $rc -eq 124 ]]; then
+        echo "# TIMEOUT: $(basename "$tf") exceeded ${BATS_TEST_TIMEOUT}s" | tee -a "$TAP_OUTPUT"
+      fi
+    fi
+  done
+}
+
+# --- Pass 1: main tests (no RUNC_USE_SYSTEMD) ---
+echo ""
+echo "=== Pass 1: main tests (no systemd) ==="
+BATS_EXTRA_ENV=()
+run_bats_files "${TEST_FILES[@]}"
+
+# --- Pass 2: systemd tests (RUNC_USE_SYSTEMD=yes) ---
+if [[ ${#SYSTEMD_TEST_FILES[@]} -gt 0 ]]; then
+  echo ""
+  echo "=== Pass 2: systemd tests (RUNC_USE_SYSTEMD=yes) ==="
+  BATS_EXTRA_ENV=(RUNC_USE_SYSTEMD=yes)
+  run_bats_files "${SYSTEMD_TEST_FILES[@]}"
+fi
 
 # ---------------------------------------------------------------------------
 # Parse TAP output
@@ -284,6 +326,14 @@ write_summary() {
       echo "- $t"
     done
     echo ""
+    if [[ ${#SYSTEMD_TESTS[@]} -gt 0 ]]; then
+      echo "### Systemd test files (RUNC_USE_SYSTEMD=yes)"
+      echo ""
+      for t in "${SYSTEMD_TESTS[@]}"; do
+        echo "- $t"
+      done
+      echo ""
+    fi
     if [[ ${#SKIP_TEST_NAMES[@]} -gt 0 ]]; then
       echo "### Skipped individual tests (runc-specific)"
       echo ""
