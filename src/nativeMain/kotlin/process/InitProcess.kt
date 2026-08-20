@@ -334,9 +334,9 @@ private fun initProcessInternal(
         // silently drops others (even from ancestor namespaces, except
         // SIGKILL/SIGSTOP). Without these handlers, pidfd_send_signal()
         // with SIGTERM from the container manager would be silently ignored.
-        signal(SIGTERM, staticCFunction<Int, Unit> { _ -> _exit(130) })
-        signal(SIGINT, staticCFunction<Int, Unit> { _ -> _exit(130) })
-        signal(SIGHUP, staticCFunction<Int, Unit> { _ -> _exit(130) })
+        signal(SIGTERM, staticCFunction<Int, Unit> { _ -> _exit(128 + SIGTERM) })
+        signal(SIGINT, staticCFunction<Int, Unit> { _ -> _exit(128 + SIGINT) })
+        signal(SIGHUP, staticCFunction<Int, Unit> { _ -> _exit(128 + SIGHUP) })
 
         // Explicitly close all leaked FDs before blocking in "created"
         // state.  closeRange (above) only sets CLOEXEC which fires at

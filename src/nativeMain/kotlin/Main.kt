@@ -597,8 +597,8 @@ private val SUBCOMMAND_DESCRIPTIONS =
         "update" to "update container resource constraints",
     )
 
-/** Get the runtime binary name — original name saved before exeseal, or "runc" as fallback. */
-private fun getRuntimeName(): String = getenv("_KONTAINER_BINARY_NAME")?.toKString() ?: "runc"
+/** Get the runtime binary name — original name saved before exeseal, or fallback. */
+private fun getRuntimeName(): String = getenv("_KONTAINER_BINARY_NAME")?.toKString() ?: "kontainer-runtime"
 
 private fun printRuncHelp() {
     val name = getRuntimeName()
