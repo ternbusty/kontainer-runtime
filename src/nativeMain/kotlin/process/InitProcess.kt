@@ -211,6 +211,18 @@ private fun initProcessInternal(
                 0
             }
 
+        // Set up the container's session keyring. Must happen BEFORE
+        // applyProcessSecurity so the keyring is created while we still
+        // have capabilities, and with the correct SELinux label set on
+        // /proc/self/attr/keycreate.
+        // See: runc/libcontainer/standard_init_linux.go
+        setupSessionKeyring(
+            containerId = containerId,
+            processLabel = spec.process.selinuxLabel,
+            hasUserNamespace = spec.hasNamespace("user"),
+            isExec = false,
+        )
+
         // Apply the shared spec.process security profile (umask, NNP, seccomp,
         // capabilities, setgid/setuid, AppArmor/SELinux). The seccomp notify FD,
         // if any, is forwarded to the main process over the channel.

@@ -20,6 +20,7 @@ import namespace.nsJoinList
 import platform.posix.*
 import process.applyProcessEnv
 import process.applyProcessSecurity
+import process.setupSessionKeyring
 import process.syncSeccompNotifyFd
 import seccomp.seccompUsesNotify
 import seccomp.sendToSeccompListener
@@ -318,6 +319,7 @@ fun exec(
             runExecChild(
                 syscall,
                 execSpec,
+                containerId,
                 joins,
                 nsFds,
                 setupPipe,
@@ -481,6 +483,7 @@ fun exec(
 private fun runExecChild(
     syscall: Syscall,
     spec: Spec,
+    containerId: String,
     joins: List<NsJoin>,
     nsFds: Map<String, Int>,
     setupPipe: IntArray,
@@ -569,7 +572,7 @@ private fun runExecChild(
         close(pidPipe[1])
         if (masterFd >= 0) close(masterFd)
         try {
-            runExecGrandchild(syscall, spec, notifyMainSender, notifyInitReceiver, preserveFds, slaveFd, setupPipe[0])
+            runExecGrandchild(syscall, spec, containerId, notifyMainSender, notifyInitReceiver, preserveFds, slaveFd, setupPipe[0])
         } catch (t: Throwable) {
             fprintf(stderr, "exec: setup failed: %s\n", t.message ?: "unknown error")
         }
@@ -630,6 +633,7 @@ private fun runExecChild(
 private fun runExecGrandchild(
     syscall: Syscall,
     spec: Spec,
+    containerId: String,
     notifyMainSender: MainSender?,
     notifyInitReceiver: InitReceiver?,
     preserveFds: Int = 0,
@@ -672,6 +676,17 @@ private fun runExecGrandchild(
         fprintf(stderr, "exec: chdir(%s) failed: %s\n", cwd, strerror(errno))
         _exit(1)
     }
+
+    // Join the container's session keyring. In the exec path we only
+    // join (no permission modification) — the init process already
+    // created the keyring with the correct permissions.
+    // See: runc/libcontainer/setns_init_linux.go
+    setupSessionKeyring(
+        containerId = containerId,
+        processLabel = spec.process.selinuxLabel,
+        hasUserNamespace = spec.hasNamespace("user"),
+        isExec = true,
+    )
 
     applyProcessSecurity(syscall, spec.process, spec.linux?.seccomp) { notifyFd ->
         if (notifyMainSender != null && notifyInitReceiver != null) {
