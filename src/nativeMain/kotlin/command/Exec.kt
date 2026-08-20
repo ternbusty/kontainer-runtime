@@ -233,13 +233,34 @@ fun exec(
 
     // Append the --cgroup subcgroup path (if given). A leading "/" means
     // "relative to the container's cgroup root", not an absolute host path.
-    val cgroupPath =
+    var cgroupPath =
         if (cgroupOverride.isNotEmpty()) {
             val sub = cgroupOverride.first().removePrefix("/")
             if (sub.isEmpty()) baseCgroupPath else "$baseCgroupPath/$sub"
         } else {
             baseCgroupPath
         }
+
+    // Fallback: when NO explicit --cgroup was given, if the resolved cgroup
+    // path no longer exists (e.g. the container's init process moved itself
+    // to a different cgroup and the original was removed), use the init
+    // process's current cgroup. This matches runc's fallback behaviour in
+    // getExecCgroupPath(). When --cgroup IS given, the user explicitly wants
+    // a specific subcgroup — no fallback, let it fail naturally.
+    if (cgroupOverride.isEmpty()) {
+        val normalizedCgroupPath = cgroupPath.removePrefix("/")
+        val cgroupProcsPath = "/sys/fs/cgroup/$normalizedCgroupPath/cgroup.procs"
+        if (access(cgroupProcsPath, F_OK) != 0) {
+            Logger.debug("exec: original cgroup $cgroupPath no longer exists, falling back to init's cgroup")
+            val initCgroup = readInitCgroup(initPid)
+            if (initCgroup != null) {
+                Logger.debug("exec: using init's current cgroup: $initCgroup")
+                cgroupPath = initCgroup
+            } else {
+                Logger.warn("exec: could not determine init's cgroup, using original path")
+            }
+        }
+    }
 
     // Join the namespaces the SPEC defines, not whatever exists under
     // /proc/<pid>/ns/ (an entry exists there for every type; setns into our
