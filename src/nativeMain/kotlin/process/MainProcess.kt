@@ -277,7 +277,7 @@ private fun runMainProcessInternal(
                         annotations = null,
                         created = null, // Not set yet during creating phase
                     )
-                sendToSeccompListener(listenerPath, containerState, notifyFd)
+                sendToSeccompListener(listenerPath, containerState, notifyFd, spec.linux.seccomp.listenerMetadata)
                 Logger.debug("forwarded seccomp notify FD to listener")
             } ?: run {
                 Logger.warn("seccomp notify FD received but no listenerPath specified")

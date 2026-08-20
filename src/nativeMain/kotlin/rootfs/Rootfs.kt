@@ -3,6 +3,7 @@ package rootfs
 import kotlinx.cinterop.*
 import logger.Logger
 import platform.posix.*
+import spec.LinuxIdMapping
 import syscall.Syscall
 
 // Mount flags (from linux/mount.h)
@@ -21,6 +22,9 @@ const val MS_STRICTATIME = 16777216 // 1 << 24
 const val MS_PRIVATE = 262144 // 1 << 18
 const val MS_SHARED = 1048576 // 1 << 20
 const val MS_UNBINDABLE = 131072 // 1 << 17
+const val MS_SYNCHRONOUS = 16
+const val MS_MANDLOCK = 64
+const val MS_NOSYMFOLLOW = 256 // 1 << 8
 
 // Umount flags
 const val MNT_DETACH = 2
@@ -765,28 +769,66 @@ private data class ParsedMountOptions(
     val flags: ULong,
     val propagation: ULong,
     val data: String?,
+    val clearedFlags: ULong = 0uL,
+    val idmap: Boolean = false,
+    val ridmap: Boolean = false,
 )
 
 private fun parseMountOptions(options: List<String>?): ParsedMountOptions {
-    if (options.isNullOrEmpty()) return ParsedMountOptions(0uL, 0uL, null)
+    if (options.isNullOrEmpty()) return ParsedMountOptions(0uL, 0uL, null, 0uL)
     var flags = 0uL
     var propagation = 0uL
+    var clearedFlags = 0uL
+    var hasIdmap = false
+    var hasRidmap = false
     val dataParts = mutableListOf<String>()
     for (opt in options) {
         when (opt) {
             "ro" -> flags = flags or MS_RDONLY.toULong()
-            "rw" -> flags = flags and MS_RDONLY.toULong().inv()
+            "rw" -> {
+                flags = flags and MS_RDONLY.toULong().inv()
+                clearedFlags = clearedFlags or MS_RDONLY.toULong()
+            }
             "nosuid" -> flags = flags or MS_NOSUID.toULong()
-            "suid" -> flags = flags and MS_NOSUID.toULong().inv()
+            "suid" -> {
+                flags = flags and MS_NOSUID.toULong().inv()
+                clearedFlags = clearedFlags or MS_NOSUID.toULong()
+            }
             "nodev" -> flags = flags or MS_NODEV.toULong()
-            "dev" -> flags = flags and MS_NODEV.toULong().inv()
+            "dev" -> {
+                flags = flags and MS_NODEV.toULong().inv()
+                clearedFlags = clearedFlags or MS_NODEV.toULong()
+            }
             "noexec" -> flags = flags or MS_NOEXEC.toULong()
-            "exec" -> flags = flags and MS_NOEXEC.toULong().inv()
+            "exec" -> {
+                flags = flags and MS_NOEXEC.toULong().inv()
+                clearedFlags = clearedFlags or MS_NOEXEC.toULong()
+            }
             "noatime" -> flags = flags or MS_NOATIME.toULong()
-            "atime" -> flags = flags and MS_NOATIME.toULong().inv()
+            "atime" -> {
+                flags = flags and MS_NOATIME.toULong().inv()
+                clearedFlags = clearedFlags or MS_NOATIME.toULong()
+            }
             "nodiratime" -> flags = flags or MS_NODIRATIME.toULong()
+            "diratime" -> {
+                flags = flags and MS_NODIRATIME.toULong().inv()
+                clearedFlags = clearedFlags or MS_NODIRATIME.toULong()
+            }
             "relatime" -> flags = flags or MS_RELATIME.toULong()
+            "norelatime" -> {
+                flags = flags and MS_RELATIME.toULong().inv()
+                clearedFlags = clearedFlags or MS_RELATIME.toULong()
+            }
             "strictatime" -> flags = flags or MS_STRICTATIME.toULong()
+            "nostrictatime" -> {
+                flags = flags and MS_STRICTATIME.toULong().inv()
+                clearedFlags = clearedFlags or MS_STRICTATIME.toULong()
+            }
+            "nosymfollow" -> flags = flags or MS_NOSYMFOLLOW.toULong()
+            "symfollow" -> {
+                flags = flags and MS_NOSYMFOLLOW.toULong().inv()
+                clearedFlags = clearedFlags or MS_NOSYMFOLLOW.toULong()
+            }
             "remount" -> flags = flags or MS_REMOUNT.toULong()
             "bind" -> flags = flags or MS_BIND.toULong()
             "rbind" -> flags = flags or MS_BIND.toULong() or MS_REC.toULong()
@@ -799,11 +841,46 @@ private fun parseMountOptions(options: List<String>?): ParsedMountOptions {
             "unbindable" -> propagation = propagation or MS_UNBINDABLE.toULong()
             "runbindable" -> propagation = propagation or MS_UNBINDABLE.toULong() or MS_REC.toULong()
             "defaults" -> { /* no-op */ }
+            "idmap" -> hasIdmap = true
+            "ridmap" -> hasRidmap = true
             else -> dataParts.add(opt)
         }
     }
     val data = if (dataParts.isEmpty()) null else dataParts.joinToString(",")
-    return ParsedMountOptions(flags, propagation, data)
+    return ParsedMountOptions(flags, propagation, data, clearedFlags, idmap = hasIdmap, ridmap = hasRidmap)
+}
+
+// statfs() f_flags constants (from linux/statfs.h).
+// These differ from MS_* for some flags (e.g., ST_RELATIME vs MS_RELATIME).
+private const val ST_RDONLY = 1uL
+private const val ST_NOSUID = 2uL
+private const val ST_NODEV = 4uL
+private const val ST_NOEXEC = 8uL
+private const val ST_SYNCHRONOUS = 16uL
+private const val ST_MANDLOCK = 64uL
+private const val ST_NOATIME = 1024uL
+private const val ST_NODIRATIME = 2048uL
+private const val ST_RELATIME = 4096uL
+private const val ST_NOSYMFOLLOW = 8192uL
+
+/**
+ * Convert statfs(2) f_flags (ST_* bits) to mount(2) flags (MS_* bits).
+ * Most ST_* values coincide with their MS_* counterparts, but ST_RELATIME
+ * and ST_NOSYMFOLLOW differ, so a manual per-bit translation is required.
+ */
+private fun statfsToMountFlags(stFlags: ULong): ULong {
+    var mntFlags = 0uL
+    if (stFlags and ST_RDONLY != 0uL) mntFlags = mntFlags or MS_RDONLY.toULong()
+    if (stFlags and ST_NOSUID != 0uL) mntFlags = mntFlags or MS_NOSUID.toULong()
+    if (stFlags and ST_NODEV != 0uL) mntFlags = mntFlags or MS_NODEV.toULong()
+    if (stFlags and ST_NOEXEC != 0uL) mntFlags = mntFlags or MS_NOEXEC.toULong()
+    if (stFlags and ST_SYNCHRONOUS != 0uL) mntFlags = mntFlags or MS_SYNCHRONOUS.toULong()
+    if (stFlags and ST_MANDLOCK != 0uL) mntFlags = mntFlags or MS_MANDLOCK.toULong()
+    if (stFlags and ST_NOATIME != 0uL) mntFlags = mntFlags or MS_NOATIME.toULong()
+    if (stFlags and ST_NODIRATIME != 0uL) mntFlags = mntFlags or MS_NODIRATIME.toULong()
+    if (stFlags and ST_RELATIME != 0uL) mntFlags = mntFlags or MS_RELATIME.toULong()
+    if (stFlags and ST_NOSYMFOLLOW != 0uL) mntFlags = mntFlags or MS_NOSYMFOLLOW.toULong()
+    return mntFlags
 }
 
 /**
@@ -836,6 +913,7 @@ fun applySpecMounts(
     syscall: Syscall,
     mounts: List<spec.Mount>?,
     rootfsPath: String,
+    specLinux: spec.Linux? = null,
 ) {
     if (mounts.isNullOrEmpty()) return
     // prepareRootfs() already establishes these defaults; skip to avoid double-mount.
@@ -910,15 +988,81 @@ fun applySpecMounts(
             parsed.flags != (MS_BIND or MS_REC).toULong()
         ) {
             val remountFlags = parsed.flags or MS_REMOUNT.toULong()
-            if (syscall.mount(
+            val remountRc =
+                syscall.mount(
                     source = source,
                     target = target,
                     fstype = null,
                     flags = remountFlags,
                     data = parsed.data,
-                ) != 0
-            ) {
-                Logger.warn("bind-remount of ${m.destination} failed (errno=$errno)")
+                )
+            if (remountRc != 0) {
+                val remountErrno = errno
+                if (remountErrno == EPERM) {
+                    // In user namespaces, bind-remount fails with EPERM when the
+                    // source mount has MNT_LOCKED flags that are not included in
+                    // our remount flags.  Read the source's flags via statfs() and
+                    // merge the locked flags in, mirroring runc's fallback.
+                    Logger.debug("bind-remount of ${m.destination} got EPERM, trying locked-flag fallback")
+                    memScoped {
+                        val st = alloc<platform.linux.statfs>()
+                        val statfsPath = m.source ?: target
+                        if (platform.linux.statfs(statfsPath, st.ptr) != 0) {
+                            val statfsErrno = errno
+                            Logger.warn("statfs $statfsPath failed (errno=$statfsErrno), cannot retry bind-remount")
+                        } else {
+                            val sourceMountFlags = statfsToMountFlags(st.f_flags.toULong())
+
+                            // MNT_LOCKED flags: flags the kernel locks in a user
+                            // namespace so an unprivileged remount cannot clear them.
+                            val mntLockedFlags =
+                                (
+                                    MS_RDONLY or MS_NODEV or MS_NOEXEC or MS_NOSUID or
+                                        MS_NOATIME or MS_NODIRATIME
+                                ).toULong() or MS_RELATIME.toULong() or MS_NOSYMFOLLOW.toULong()
+
+                            // Determine which locked flags the source imposes.
+                            val lockedFromSource = sourceMountFlags and mntLockedFlags
+
+                            // If the user explicitly cleared a locked flag that the
+                            // source still has set, we cannot honour that request in
+                            // a user namespace — report the conflict.
+                            val conflict = lockedFromSource and parsed.clearedFlags
+                            if (conflict != 0uL) {
+                                Logger.warn(
+                                    "bind-remount of ${m.destination} failed: user namespace " +
+                                        "does not allow clearing locked mount flags " +
+                                        "(conflicting flags=0x${conflict.toString(16)})",
+                                )
+                            } else {
+                                // Merge the locked flags from the source into our
+                                // remount flags and retry.
+                                val adjustedFlags = remountFlags or lockedFromSource
+                                if (syscall.mount(
+                                        source = source,
+                                        target = target,
+                                        fstype = null,
+                                        flags = adjustedFlags,
+                                        data = parsed.data,
+                                    ) != 0
+                                ) {
+                                    val retryErrno = errno
+                                    Logger.warn(
+                                        "bind-remount of ${m.destination} failed even with " +
+                                            "locked-flag fallback (errno=$retryErrno)",
+                                    )
+                                } else {
+                                    Logger.debug(
+                                        "bind-remount of ${m.destination} succeeded with " +
+                                            "locked-flag fallback (adjustedFlags=0x${adjustedFlags.toString(16)})",
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Logger.warn("bind-remount of ${m.destination} failed (errno=$remountErrno)")
+                }
             }
         }
 
@@ -934,7 +1078,147 @@ fun applySpecMounts(
                 Logger.warn("failed to set propagation on ${m.destination} (errno=$errno)")
             }
         }
+
+        // Apply MOUNT_ATTR_IDMAP if the mount has explicit per-mount mappings
+        // or the "idmap"/"ridmap" option was given.
+        val needsIdmap = !m.uidMappings.isNullOrEmpty() || !m.gidMappings.isNullOrEmpty() || parsed.idmap || parsed.ridmap
+        if (needsIdmap) {
+            val recursive = parsed.ridmap || !m.gidMappings.isNullOrEmpty()
+            // Determine which UID/GID mappings to use: per-mount if present,
+            // otherwise fall back to the container-level mappings from spec.linux.
+            val uidMappings = m.uidMappings?.takeIf { it.isNotEmpty() } ?: specLinux?.uidMappings
+            val gidMappings = m.gidMappings?.takeIf { it.isNotEmpty() } ?: specLinux?.gidMappings
+
+            if (uidMappings.isNullOrEmpty() && gidMappings.isNullOrEmpty()) {
+                Logger.warn("idmap requested for ${m.destination} but no UID/GID mappings available")
+            } else {
+                applyIdmapMount(target, uidMappings, gidMappings, recursive)
+            }
+        }
     }
+}
+
+/**
+ * Apply MOUNT_ATTR_IDMAP to an existing mount. This replaces the mount at
+ * [target] with an ID-mapped clone that translates UID/GID ownership
+ * according to the given mappings.
+ *
+ * Algorithm:
+ * 1. Create a user namespace with the desired UID/GID mappings (via
+ *    fork + unshare(CLONE_NEWUSER) + write uid_map/gid_map).
+ * 2. open_tree() the target mount to get a detached mount fd.
+ * 3. mount_setattr() with MOUNT_ATTR_IDMAP pointing at the userns fd.
+ * 4. move_mount() the modified tree back to the original target.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun applyIdmapMount(
+    target: String,
+    uidMappings: List<LinuxIdMapping>?,
+    gidMappings: List<LinuxIdMapping>?,
+    recursive: Boolean,
+) {
+    Logger.debug("applying MOUNT_ATTR_IDMAP to $target (recursive=$recursive)")
+
+    // Build mapping strings in the kernel format: "containerID hostID size\n"
+    val uidMapStr = buildMappingString(uidMappings)
+    val gidMapStr = buildMappingString(gidMappings)
+
+    Logger.debug("idmap uid_map: ${uidMapStr.trim()}")
+    Logger.debug("idmap gid_map: ${gidMapStr.trim()}")
+
+    // Step 1: Create a user namespace with the desired mappings.
+    val userNsFd = platform.linux._create_userns_with_mappings(uidMapStr, gidMapStr)
+    if (userNsFd < 0) {
+        val errNum = errno
+        Logger.error("failed to create user namespace for idmap on $target (errno=$errNum)")
+        throw Exception("Failed to create user namespace for idmap on $target (errno=$errNum)")
+    }
+    Logger.debug("created userns fd=$userNsFd for idmap")
+
+    try {
+        // Step 2: open_tree() to get a detached copy of the mount.
+        var openTreeFlags = platform.linux._OPEN_TREE_CLONE() or platform.linux._OPEN_TREE_CLOEXEC()
+        if (recursive) {
+            openTreeFlags = openTreeFlags or platform.linux._AT_RECURSIVE()
+        }
+        val treeFd = platform.linux._open_tree(-1, target, openTreeFlags)
+        if (treeFd < 0) {
+            val errNum = errno
+            Logger.error("open_tree($target) failed (errno=$errNum)")
+            throw Exception("open_tree failed for idmap on $target (errno=$errNum)")
+        }
+        Logger.debug("open_tree fd=$treeFd for idmap")
+
+        try {
+            // Step 3: mount_setattr() with MOUNT_ATTR_IDMAP.
+            memScoped {
+                val attr = alloc<platform.linux._mount_attr>()
+                attr.attr_set = platform.linux._MOUNT_ATTR_IDMAP()
+                attr.attr_clr = 0uL
+                attr.propagation = 0uL
+                attr.userns_fd = userNsFd.toULong()
+
+                var setattrFlags = platform.linux._AT_EMPTY_PATH()
+                if (recursive) {
+                    setattrFlags = setattrFlags or platform.linux._AT_RECURSIVE()
+                }
+
+                val rc =
+                    platform.linux._mount_setattr(
+                        treeFd,
+                        "",
+                        setattrFlags,
+                        attr.ptr,
+                        platform.linux._sizeof_mount_attr(),
+                    )
+                if (rc < 0) {
+                    val errNum = errno
+                    Logger.error("mount_setattr(MOUNT_ATTR_IDMAP) failed for $target (errno=$errNum)")
+                    throw Exception("mount_setattr(MOUNT_ATTR_IDMAP) failed for $target (errno=$errNum)")
+                }
+                Logger.debug("mount_setattr MOUNT_ATTR_IDMAP applied to tree fd=$treeFd")
+            }
+
+            // Step 4: move_mount() to replace the original mount with the idmapped one.
+            val targetFd = open(target, platform.linux._O_PATH_FLAG() or O_DIRECTORY or O_CLOEXEC, 0u)
+            if (targetFd < 0) {
+                val errNum = errno
+                Logger.error("failed to open target $target for move_mount (errno=$errNum)")
+                throw Exception("Failed to open $target for move_mount (errno=$errNum)")
+            }
+
+            try {
+                val moveMountFlags =
+                    platform.linux._MOVE_MOUNT_F_EMPTY_PATH() or
+                        platform.linux._MOVE_MOUNT_T_EMPTY_PATH()
+                val rc = platform.linux._move_mount(treeFd, "", targetFd, "", moveMountFlags)
+                if (rc < 0) {
+                    val errNum = errno
+                    Logger.error("move_mount failed for idmap on $target (errno=$errNum)")
+                    throw Exception("move_mount failed for idmap on $target (errno=$errNum)")
+                }
+                Logger.debug("move_mount completed, idmap mount active at $target")
+            } finally {
+                close(targetFd)
+            }
+        } finally {
+            close(treeFd)
+        }
+    } finally {
+        close(userNsFd)
+    }
+}
+
+/**
+ * Build a kernel-format mapping string from a list of [LinuxIdMapping].
+ * Format: "containerID hostID size\n" for each entry. If the list is
+ * null or empty, falls back to an identity mapping "0 0 4294967295\n".
+ */
+private fun buildMappingString(mappings: List<LinuxIdMapping>?): String {
+    if (mappings.isNullOrEmpty()) {
+        return "0 0 4294967295\n"
+    }
+    return mappings.joinToString("") { "${it.containerID} ${it.hostID} ${it.size}\n" }
 }
 
 /**

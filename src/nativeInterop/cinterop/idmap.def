@@ -1,0 +1,199 @@
+headers = unistd.h sys/syscall.h
+headerFilter = unistd.h
+package = platform.linux
+compilerOpts = -D_GNU_SOURCE
+---
+
+#include <unistd.h>
+#include <sys/syscall.h>
+#include <errno.h>
+#include <signal.h>
+#include <sched.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <fcntl.h>
+
+/* Syscall numbers for the new mount API (stable ABI, same on x86_64 and aarch64). */
+#ifndef __NR_open_tree
+#define __NR_open_tree 428
+#endif
+#ifndef __NR_move_mount
+#define __NR_move_mount 429
+#endif
+#ifndef __NR_mount_setattr
+#define __NR_mount_setattr 442
+#endif
+
+/* Expose syscall numbers as functions (K/N cannot read C macros directly). */
+static inline long _NR_open_tree(void)      { return __NR_open_tree; }
+static inline long _NR_move_mount(void)     { return __NR_move_mount; }
+static inline long _NR_mount_setattr(void)  { return __NR_mount_setattr; }
+
+/* Constants exposed as functions. */
+static inline unsigned long _MOUNT_ATTR_IDMAP(void)       { return 0x00100000UL; }
+static inline unsigned int  _AT_RECURSIVE(void)           { return 0x8000; }
+static inline unsigned int  _OPEN_TREE_CLONE(void)        { return 1; }
+static inline unsigned int  _OPEN_TREE_CLOEXEC(void)      { return 0x80000; }
+static inline unsigned int  _MOVE_MOUNT_F_EMPTY_PATH(void){ return 0x00000004; }
+static inline unsigned int  _MOVE_MOUNT_T_EMPTY_PATH(void){ return 0x00000200; }
+static inline unsigned int  _AT_EMPTY_PATH(void)          { return 0x1000; }
+
+/* O_PATH may not be in the K/N bundled sysroot headers. */
+#ifndef O_PATH
+#define O_PATH 010000000
+#endif
+static inline int _O_PATH_FLAG(void)                      { return O_PATH; }
+
+/* open_tree(2) wrapper. */
+static inline int _open_tree(int dfd, const char *pathname, unsigned int flags) {
+    return (int)syscall(__NR_open_tree, dfd, pathname, flags);
+}
+
+/* move_mount(2) wrapper. */
+static inline int _move_mount(int from_dfd, const char *from_pathname,
+                              int to_dfd, const char *to_pathname,
+                              unsigned int flags) {
+    return (int)syscall(__NR_move_mount, from_dfd, from_pathname,
+                        to_dfd, to_pathname, flags);
+}
+
+/* mount_setattr(2) — needs a struct mount_attr argument.
+ * We define our own copy of the struct because the K/N sysroot may
+ * not have linux/mount.h with this definition. */
+struct _mount_attr {
+    unsigned long long attr_set;
+    unsigned long long attr_clr;
+    unsigned long long propagation;
+    unsigned long long userns_fd;
+};
+
+static inline int _mount_setattr(int dfd, const char *path,
+                                 unsigned int flags,
+                                 struct _mount_attr *attr,
+                                 unsigned long size) {
+    return (int)syscall(__NR_mount_setattr, dfd, path, flags, attr, size);
+}
+
+static inline unsigned long _sizeof_mount_attr(void) {
+    return sizeof(struct _mount_attr);
+}
+
+/* ----------  User namespace helper for ID-mapped mounts  ----------
+ *
+ * Creates a short-lived child process in a new user namespace,
+ * writes the requested UID/GID mappings into its /proc/<pid>/…,
+ * opens /proc/<child>/ns/user, kills the child, and returns the
+ * userns fd.  Returns -1 on failure with errno set.
+ *
+ * The mapping strings are newline-separated "containerID hostID size"
+ * lines terminated with a trailing newline (the caller builds them).
+ */
+static inline int _create_userns_with_mappings(const char *uid_map,
+                                                const char *gid_map) {
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) < 0)
+        return -1;
+
+    pid_t child = fork();
+    if (child < 0) {
+        close(sv[0]);
+        close(sv[1]);
+        return -1;
+    }
+
+    if (child == 0) {
+        /* Child: enter a new user namespace, signal parent, then sleep. */
+        close(sv[0]);
+        if (unshare(CLONE_NEWUSER) < 0)
+            _exit(1);
+        /* Signal readiness. */
+        char ready = 'R';
+        if (write(sv[1], &ready, 1) != 1)
+            _exit(1);
+        /* Wait until killed. */
+        char buf;
+        (void)read(sv[1], &buf, 1);
+        _exit(0);
+    }
+
+    /* Parent. */
+    close(sv[1]);
+
+    /* Wait for the child to be ready. */
+    char ready;
+    if (read(sv[0], &ready, 1) != 1 || ready != 'R') {
+        close(sv[0]);
+        kill(child, SIGKILL);
+        waitpid(child, NULL, 0);
+        errno = ECHILD;
+        return -1;
+    }
+
+    /* Write "deny" to setgroups before gid_map (kernel requirement). */
+    char path[256];
+    snprintf(path, sizeof(path), "/proc/%d/setgroups", (int)child);
+    int fd = open(path, O_WRONLY);
+    if (fd >= 0) {
+        (void)write(fd, "deny", 4);
+        close(fd);
+    }
+
+    /* Write uid_map. */
+    snprintf(path, sizeof(path), "/proc/%d/uid_map", (int)child);
+    fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        close(sv[0]);
+        kill(child, SIGKILL);
+        waitpid(child, NULL, 0);
+        return -1;
+    }
+    if (write(fd, uid_map, strlen(uid_map)) < 0) {
+        int saved = errno;
+        close(fd);
+        close(sv[0]);
+        kill(child, SIGKILL);
+        waitpid(child, NULL, 0);
+        errno = saved;
+        return -1;
+    }
+    close(fd);
+
+    /* Write gid_map. */
+    snprintf(path, sizeof(path), "/proc/%d/gid_map", (int)child);
+    fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        close(sv[0]);
+        kill(child, SIGKILL);
+        waitpid(child, NULL, 0);
+        return -1;
+    }
+    if (write(fd, gid_map, strlen(gid_map)) < 0) {
+        int saved = errno;
+        close(fd);
+        close(sv[0]);
+        kill(child, SIGKILL);
+        waitpid(child, NULL, 0);
+        errno = saved;
+        return -1;
+    }
+    close(fd);
+
+    /* Open the userns fd from /proc/<child>/ns/user. */
+    snprintf(path, sizeof(path), "/proc/%d/ns/user", (int)child);
+    int userns_fd = open(path, O_RDONLY | O_CLOEXEC);
+    int saved_errno = errno;
+
+    /* Clean up child. */
+    close(sv[0]);
+    kill(child, SIGKILL);
+    waitpid(child, NULL, 0);
+
+    if (userns_fd < 0) {
+        errno = saved_errno;
+        return -1;
+    }
+    return userns_fd;
+}

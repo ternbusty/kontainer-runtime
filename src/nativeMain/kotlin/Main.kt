@@ -23,14 +23,9 @@ import com.github.ajalt.clikt.parameters.types.int
 import command.*
 import config.BuildConfig
 import exeseal.ensureSelfCloned
-import kotlinx.cinterop.toKString
+import kotlinx.cinterop.*
 import logger.Logger
-import platform.posix._exit
-import platform.posix.exit
-import platform.posix.fprintf
-import platform.posix.getenv
-import platform.posix.getpid
-import platform.posix.stderr
+import platform.posix.*
 import process.runInitProcess
 import spec.loadSpec
 import syscall.LinuxSyscall
@@ -43,6 +38,7 @@ private val EXEC_VALUE_FLAGS =
         "--process",
         "--pid-file",
         "--console-socket",
+        "--pidfd-socket",
         "--cwd",
         "--user",
         "-u",
@@ -74,6 +70,7 @@ private val EXEC_EQ_VALUE_PREFIXES =
         "--pid-file=",
         "--process=",
         "--console-socket=",
+        "--pidfd-socket=",
     )
 
 /**
@@ -214,6 +211,10 @@ class CreateCommand : CoreCliktCommand(name = "create") {
         "--console-socket",
         help = "Path to AF_UNIX socket for PTY master fd handoff",
     )
+    val pidfdSocket by option(
+        "--pidfd-socket",
+        help = "Path to AF_UNIX socket for pidfd handoff",
+    )
     val containerId by argument(help = "Container ID")
     val config by requireObject<GlobalConfig>()
 
@@ -227,6 +228,7 @@ class CreateCommand : CoreCliktCommand(name = "create") {
             bundle,
             pidFile,
             consoleSocket,
+            pidfdSocket,
         )
         // create() returns normally so run() can chain start().
         // Standalone create must use _exit to bypass the Kotlin/Native
@@ -243,6 +245,10 @@ class RunCommand : CoreCliktCommand(name = "run") {
     val consoleSocket by option(
         "--console-socket",
         help = "Path to AF_UNIX socket for PTY master fd handoff",
+    )
+    val pidfdSocket by option(
+        "--pidfd-socket",
+        help = "Path to AF_UNIX socket for pidfd handoff",
     )
     val detach by option(
         "--detach",
@@ -268,6 +274,7 @@ class RunCommand : CoreCliktCommand(name = "run") {
             consoleSocket,
             detach,
             keep,
+            pidfdSocket,
         )
         _exit(0)
     }
@@ -471,6 +478,10 @@ class ExecCommand : CoreCliktCommand(name = "exec") {
         "--console-socket",
         help = "Path to AF_UNIX socket to receive the PTY master (detached terminal mode)",
     )
+    val pidfdSocket by option(
+        "--pidfd-socket",
+        help = "Path to AF_UNIX socket for pidfd handoff",
+    )
     val cwdOverride by option(
         "--cwd",
         help = "Override the working directory for the exec'd process",
@@ -522,6 +533,7 @@ class ExecCommand : CoreCliktCommand(name = "exec") {
             additionalGids = additionalGids,
             preserveFds = preserveFds,
             cgroupOverride = cgroupOverride,
+            pidfdSocket = pidfdSocket,
         )
     }
 }
@@ -585,8 +597,11 @@ private val SUBCOMMAND_DESCRIPTIONS =
         "update" to "update container resource constraints",
     )
 
+/** Get the runtime binary name — original name saved before exeseal, or "runc" as fallback. */
+private fun getRuntimeName(): String = getenv("_KONTAINER_BINARY_NAME")?.toKString() ?: "runc"
+
 private fun printRuncHelp() {
-    val name = "runc"
+    val name = getRuntimeName()
     println("NAME:")
     println("   $name - Open Container Initiative runtime")
     println()
@@ -608,7 +623,7 @@ private fun printRuncHelp() {
 }
 
 private fun printSubcommandHelp(subcommand: String) {
-    val name = "runc"
+    val name = getRuntimeName()
     val desc = SUBCOMMAND_DESCRIPTIONS[subcommand] ?: subcommand
     println("NAME:")
     println("   $name $subcommand - $desc")
@@ -679,6 +694,21 @@ fun main(args: Array<String>) {
     // Skip for the init process (Stage-2) — it was already exec'd from the
     // cloned binary by the parent.
     if (isInit == 0) {
+        // Save the binary name before exeseal re-execs from a memfd — after
+        // re-exec /proc/self/exe points to the memfd, not the original binary.
+        // The help output and version strings need the original name.
+        if (getenv("_KONTAINER_BINARY_NAME") == null) {
+            memScoped {
+                val buf = allocArray<ByteVar>(PATH_MAX)
+                val len = readlink("/proc/self/exe", buf, (PATH_MAX - 1).convert())
+                if (len > 0) {
+                    buf[len.toInt()] = 0
+                    val exePath = buf.toKString()
+                    val baseName = exePath.substringAfterLast('/')
+                    setenv("_KONTAINER_BINARY_NAME", baseName, 1)
+                }
+            }
+        }
         ensureSelfCloned(args)
     }
 

@@ -199,6 +199,7 @@ kotlin {
             create("pty")
             create("inotify")
             create("exeseal")
+            create("idmap")
         }
     }
 

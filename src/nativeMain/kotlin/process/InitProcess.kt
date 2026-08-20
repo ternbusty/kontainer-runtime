@@ -123,7 +123,7 @@ private fun initProcessInternal(
             prepareRootfs(syscall, rootfsPath, spec.linux?.rootfsPropagation, spec.mounts)
             // Process spec.mounts BEFORE pivot_root so bind-mount source paths from
             // the host are still reachable. Targets are inside rootfsPath.
-            applySpecMounts(syscall, spec.mounts, rootfsPath)
+            applySpecMounts(syscall, spec.mounts, rootfsPath, spec.linux)
 
             // createContainer hooks run after the container's mount namespace
             // is established but BEFORE pivot_root — they can still see the
@@ -222,6 +222,15 @@ private fun initProcessInternal(
             hasUserNamespace = spec.hasNamespace("user"),
             isExec = false,
         )
+
+        // Send a pidfd for ourselves over the pre-connected pidfd socket.
+        // Done after namespace setup (so the pidfd refers to a process
+        // inside the container namespaces) and before execve.
+        val pidfdSocketFd = getenv("_KONTAINER_PIDFD_SOCKET_FD")?.toKString()?.toIntOrNull()
+        if (pidfdSocketFd != null && pidfdSocketFd >= 0) {
+            Logger.debug("sending pidfd over pre-connected socket fd=$pidfdSocketFd")
+            sendPidfd(pidfdSocketFd, "standard")
+        }
 
         // Apply the shared spec.process security profile (umask, NNP, seccomp,
         // capabilities, setgid/setuid, AppArmor/SELinux). The seccomp notify FD,

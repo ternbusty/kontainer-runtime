@@ -21,6 +21,7 @@ import platform.posix.*
 import process.applyProcessEnv
 import process.applyProcessSecurity
 import process.ensureHomeEnv
+import process.sendPidfd
 import process.setupSessionKeyring
 import process.syncSeccompNotifyFd
 import seccomp.seccompUsesNotify
@@ -94,6 +95,7 @@ fun exec(
     additionalGids: List<String> = emptyList(),
     preserveFds: Int = 0,
     cgroupOverride: List<String> = emptyList(),
+    pidfdSocket: String? = null,
 ) {
     if (processSpecPath != null && args.isNotEmpty()) {
         Logger.error("exec: --process cannot be combined with a positional command")
@@ -307,6 +309,20 @@ fun exec(
         }
     }
 
+    // Pidfd socket: connect from the host context (before forking into
+    // the container's namespaces). The grandchild will open a pidfd for
+    // itself and send it over this pre-connected fd via SCM_RIGHTS.
+    var pidfdSocketFd = -1
+    if (pidfdSocket != null) {
+        pidfdSocketFd = connectConsoleSocket(pidfdSocket)
+        if (pidfdSocketFd < 0) {
+            Logger.error("exec: failed to connect to pidfd socket: $pidfdSocket")
+            nsFds.values.forEach { close(it) }
+            if (consoleSocketFd >= 0) close(consoleSocketFd)
+            exit(1)
+        }
+    }
+
     val pid = fork()
     if (pid < 0) {
         Logger.error("exec: fork() failed (errno=$errno)")
@@ -330,6 +346,7 @@ fun exec(
                 notifyInitReceiver,
                 preserveFds,
                 consoleSocketFd,
+                pidfdSocketFd,
             )
         } catch (t: Throwable) {
             fprintf(stderr, "exec: %s\n", t.message ?: "unknown error")
@@ -337,6 +354,7 @@ fun exec(
         _exit(1)
     }
     if (consoleSocketFd >= 0) close(consoleSocketFd)
+    if (pidfdSocketFd >= 0) close(pidfdSocketFd)
 
     // Parent: read the grandchild PID first (the child reports it after
     // setns + fork), then attach the GRANDCHILD — not the intermediate
@@ -494,6 +512,7 @@ private fun runExecChild(
     notifyInitReceiver: InitReceiver?,
     preserveFds: Int = 0,
     consoleSocketFd: Int = -1,
+    pidfdSocketFd: Int = -1,
 ) {
     close(pidPipe[0])
     close(setupPipe[1])
@@ -573,12 +592,25 @@ private fun runExecChild(
         close(pidPipe[1])
         if (masterFd >= 0) close(masterFd)
         try {
-            runExecGrandchild(syscall, spec, containerId, notifyMainSender, notifyInitReceiver, preserveFds, slaveFd, setupPipe[0])
+            runExecGrandchild(
+                syscall,
+                spec,
+                containerId,
+                notifyMainSender,
+                notifyInitReceiver,
+                preserveFds,
+                slaveFd,
+                setupPipe[0],
+                pidfdSocketFd,
+            )
         } catch (t: Throwable) {
             fprintf(stderr, "exec: setup failed: %s\n", t.message ?: "unknown error")
         }
         _exit(1)
     }
+
+    // Child: close pidfd socket fd — only the grandchild uses it.
+    if (pidfdSocketFd >= 0) close(pidfdSocketFd)
 
     // Child: close setupPipe read end — only the grandchild needs it now.
     close(setupPipe[0])
@@ -640,6 +672,7 @@ private fun runExecGrandchild(
     preserveFds: Int = 0,
     slaveFd: Int = -1,
     setupFd: Int = -1,
+    pidfdSocketFd: Int = -1,
 ) {
     // Wait for the parent to add this process to the container's cgroup and
     // raise its hard rlimits.  One byte = go; EOF = the parent failed and
@@ -688,6 +721,14 @@ private fun runExecGrandchild(
         hasUserNamespace = spec.hasNamespace("user"),
         isExec = true,
     )
+
+    // Send a pidfd for ourselves over the pre-connected pidfd socket.
+    // Done after namespace setup (so the pidfd refers to a process
+    // inside the container namespaces) and before execve.
+    if (pidfdSocketFd >= 0) {
+        Logger.debug("exec: sending pidfd over pre-connected socket fd=$pidfdSocketFd")
+        sendPidfd(pidfdSocketFd, "setns")
+    }
 
     applyProcessSecurity(syscall, spec.process, spec.linux?.seccomp) { notifyFd ->
         if (notifyMainSender != null && notifyInitReceiver != null) {
@@ -766,7 +807,7 @@ private fun forwardSeccompNotify(
                     bundle = state.bundle,
                     annotations = spec.annotations,
                 )
-            sendToSeccompListener(listenerPath, containerState, notifyFd)
+            sendToSeccompListener(listenerPath, containerState, notifyFd, spec.linux?.seccomp?.listenerMetadata)
             Logger.debug("exec: forwarded seccomp notify FD to listener")
         } else {
             Logger.warn("exec: seccomp notify FD received but no listenerPath specified")
