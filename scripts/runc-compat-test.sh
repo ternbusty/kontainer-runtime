@@ -82,7 +82,6 @@ SELINUX_TESTS=(
 SKIP_TEST_NAMES=(
   "runc run \\[/proc/self/exe clone\\]"  # asserts runc-dmz debug output string
   "runc -h"                               # hardcodes literal "runc" in assertion
-  "SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV"  # requires libseccomp >= 2.5.5 SCMP_FLTATR_CTL_WAITKILL
 )
 
 # ---------------------------------------------------------------------------

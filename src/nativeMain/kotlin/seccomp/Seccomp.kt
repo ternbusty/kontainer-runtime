@@ -136,6 +136,11 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int? {
             Logger.warn("failed to set SCMP_FLTATR_CTL_NNP")
         }
 
+        // Process seccomp flags from the OCI spec
+        seccomp.flags?.forEach { flag ->
+            applySeccompFlag(ctx, flag)
+        }
+
         // Handle architecture specification and Add specified architectures
         if (seccomp.architectures != null && seccomp.architectures.isNotEmpty()) {
             Logger.debug("processing ${seccomp.architectures.size} architecture(s)")
@@ -290,6 +295,80 @@ private fun addSyscallRule(
             }
         }
     }
+}
+
+/**
+ * Check if the linked libseccomp version is at least major.minor.micro.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun libseccompVersionAtLeast(
+    major: Int,
+    minor: Int,
+    micro: Int,
+): Boolean {
+    val curMajor = _seccomp_version_major()
+    val curMinor = _seccomp_version_minor()
+    val curMicro = _seccomp_version_micro()
+    if (curMajor < 0) return false // seccomp_version() failed
+    return curMajor > major ||
+        (curMajor == major && curMinor > minor) ||
+        (curMajor == major && curMinor == minor && curMicro >= micro)
+}
+
+/**
+ * Apply a single OCI seccomp flag to the filter context.
+ *
+ * Maps OCI spec flag names (SECCOMP_FILTER_FLAG_*) to the corresponding
+ * libseccomp filter attributes.  Some flags require a minimum libseccomp
+ * version — when the linked library is too old, we throw so that callers
+ * (and bats tests) get a clear error rather than silently ignoring the flag.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun applySeccompFlag(
+    ctx: COpaquePointer?,
+    flag: String,
+) {
+    when (flag) {
+        "SECCOMP_FILTER_FLAG_TSYNC" -> {
+            if (seccomp_attr_set(ctx, SCMP_FLTATR_CTL_TSYNC, 1u) < 0) {
+                perror("seccomp_attr_set(SCMP_FLTATR_CTL_TSYNC)")
+                throw Exception("Failed to set seccomp flag: $flag")
+            }
+        }
+        "SECCOMP_FILTER_FLAG_LOG" -> {
+            if (seccomp_attr_set(ctx, SCMP_FLTATR_CTL_LOG, 1u) < 0) {
+                perror("seccomp_attr_set(SCMP_FLTATR_CTL_LOG)")
+                throw Exception("Failed to set seccomp flag: $flag")
+            }
+        }
+        "SECCOMP_FILTER_FLAG_SPEC_ALLOW" -> {
+            if (seccomp_attr_set(ctx, SCMP_FLTATR_CTL_SSB, 1u) < 0) {
+                perror("seccomp_attr_set(SCMP_FLTATR_CTL_SSB)")
+                throw Exception("Failed to set seccomp flag: $flag")
+            }
+        }
+        "SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV" -> {
+            if (!libseccompVersionAtLeast(2, 6, 0)) {
+                // Match runc's error format so the bats test can detect and skip gracefully.
+                throw Exception(
+                    "error adding WaitKill flag to seccomp filter: " +
+                        "SetWaitKill requires libseccomp >= 2.6.0 " +
+                        "(have ${_seccomp_version_major()}.${_seccomp_version_minor()}.${_seccomp_version_micro()})",
+                )
+            }
+            if (seccomp_attr_set(ctx, _SCMP_FLTATR_CTL_WAITKILL(), 1u) < 0) {
+                perror("seccomp_attr_set(SCMP_FLTATR_CTL_WAITKILL)")
+                throw Exception(
+                    "error adding WaitKill flag to seccomp filter: " +
+                        "SetWaitKill requires libseccomp >= 2.6.0",
+                )
+            }
+        }
+        else -> {
+            Logger.warn("unknown seccomp flag: $flag (ignored)")
+        }
+    }
+    Logger.debug("applied seccomp flag: $flag")
 }
 
 /**
