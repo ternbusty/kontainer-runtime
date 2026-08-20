@@ -11,6 +11,7 @@ import namespace.calculateCloneFlags
 import platform.posix.*
 import process.runMainProcess
 import rootfs.validateSysctls
+import seccomp.validateSeccompFlags
 import spec.loadSpec
 import state.containerExists
 import state.getContainerDir
@@ -36,6 +37,7 @@ fun create(
     bundlePath: String = ".",
     pidFile: String? = null,
     consoleSocket: String? = null,
+    pidfdSocket: String? = null,
 ): Unit =
     memScoped {
         if (containerExists(fs, rootPath, containerId)) {
@@ -149,6 +151,10 @@ fun create(
         val exePathBuf = "/proc/self/exe".cstr.ptr
         Logger.debug("executable path (for re-exec): /proc/self/exe")
 
+        // Validate seccomp flags before forking — after fork, errors from
+        // the child process are not visible in the parent's output.
+        spec.linux?.seccomp?.let { validateSeccompFlags(it) }
+
         // Fork and exec to trigger bootstrap constructor.
         // We use a plain fork() (not CLONE_PARENT) so that Stage-1 becomes a
         // child of this process.  bootstrap.c's clone_parent() then creates
@@ -215,6 +221,19 @@ fun create(
                         _exit(1)
                     }
                     setenv("_KONTAINER_CONSOLE_SOCKET_FD", csFd.toString(), 1)
+                }
+
+                // Pidfd socket: connect NOW, while still in the host
+                // namespace, for the same reason as the console socket above.
+                // The init process will open a pidfd for itself and send it
+                // over this pre-connected fd via SCM_RIGHTS.
+                if (pidfdSocket != null) {
+                    val pfFd = connectConsoleSocket(pidfdSocket)
+                    if (pfFd < 0) {
+                        fprintf(stderr, "failed to connect to pidfd socket: %s\n", pidfdSocket)
+                        _exit(1)
+                    }
+                    setenv("_KONTAINER_PIDFD_SOCKET_FD", pfFd.toString(), 1)
                 }
 
                 // Pass any spec.linux.namespaces[].path entries to bootstrap.c

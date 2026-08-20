@@ -150,7 +150,72 @@ private fun receiveMessageWithFd(socket: Int): Pair<Message, Int> {
         }
 
         if (receivedFd == -1) {
-            throw Exception("Failed to extract FD from control message")
+            // Error messages from the init process don't carry an FD.
+            // Propagate the actual error instead of a generic "Failed to
+            // extract FD" message so callers see the real cause.
+            when (message) {
+                is Message.OtherError -> throw Exception("Error: ${message.error}")
+                is Message.ExecFailed -> throw Exception("Exec failed: ${message.error}")
+                else -> throw Exception("Failed to extract FD from control message")
+            }
+        }
+
+        return Pair(message, receivedFd)
+    }
+}
+
+/**
+ * Receive a message that MAY carry an SCM_RIGHTS fd. Returns -1 as the
+ * fd when no ancillary data is present (e.g. InitReady, MountFdDone).
+ * Error messages are propagated as exceptions.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun receiveMessageOptionalFd(socket: Int): Pair<Message, Int> {
+    memScoped {
+        val buffer = allocArray<ByteVar>(4096)
+        val iov = alloc<iovec>()
+        iov.iov_base = buffer
+        iov.iov_len = 4095u
+
+        val cmsgSpace = _CMSG_SPACE(sizeOf<IntVar>().toULong())
+        val cmsgBuf = allocArray<ByteVar>(cmsgSpace.toInt())
+
+        val msg = alloc<msghdr>()
+        msg.msg_name = null
+        msg.msg_namelen = 0u
+        msg.msg_iov = iov.ptr
+        msg.msg_iovlen = 1u
+        msg.msg_control = cmsgBuf
+        msg.msg_controllen = cmsgSpace
+        msg.msg_flags = 0
+
+        val received = recvmsg(socket, msg.ptr, 0)
+        if (received == -1L) {
+            perror("recvmsg")
+            throw Exception("Failed to receive message")
+        }
+        if (received == 0L) {
+            throw Exception("Connection closed")
+        }
+
+        buffer[received.toInt()] = 0
+        val json = buffer.toKString()
+        val message = JsonCodec.decode<Message>(json)
+
+        var receivedFd = -1
+        val cmsg = _CMSG_FIRSTHDR(msg.ptr)
+        if (cmsg != null && cmsg.pointed.cmsg_level == SOL_SOCKET && cmsg.pointed.cmsg_type == SCM_RIGHTS) {
+            val dataPtr = _CMSG_DATA(cmsg)
+            if (dataPtr != null) {
+                receivedFd = dataPtr.reinterpret<IntVar>().pointed.value
+            }
+        }
+
+        // Error messages are always propagated, regardless of fd presence.
+        when (message) {
+            is Message.OtherError -> throw Exception("Error: ${message.error}")
+            is Message.ExecFailed -> throw Exception("Exec failed: ${message.error}")
+            else -> {}
         }
 
         return Pair(message, receivedFd)
@@ -173,6 +238,25 @@ class SocketMainSender(
 
     override fun seccompNotifyRequest(fd: Int) {
         sendMessageWithFd(socket, Message.SeccompNotify, fd)
+    }
+
+    override fun mountFdRequest(
+        treeFd: Int,
+        uidMap: String?,
+        gidMap: String?,
+        recursive: Boolean,
+        implied: Boolean,
+    ) {
+        sendMessageWithFd(
+            socket,
+            Message.MountFdRequest(
+                uidMap = uidMap,
+                gidMap = gidMap,
+                recursive = recursive,
+                implied = implied,
+            ),
+            treeFd,
+        )
     }
 
     override fun execFailed(error: String) {
@@ -221,6 +305,8 @@ class SocketMainReceiver(
         }
     }
 
+    override fun receiveNextMessage(): Pair<Message, Int> = receiveMessageOptionalFd(socket)
+
     override fun close() {
         close(socket)
     }
@@ -238,6 +324,10 @@ class SocketInitSender(
 
     override fun seccompNotifyDone() {
         sendMessage(socket, Message.SeccompNotifyDone)
+    }
+
+    override fun mountFdDone() {
+        sendMessage(socket, Message.MountFdDone)
     }
 
     override fun close() {
@@ -262,6 +352,14 @@ class SocketInitReceiver(
         when (val msg = receiveMessage(socket)) {
             is Message.SeccompNotifyDone -> return
             else -> throw Exception("Unexpected message: $msg, expected SeccompNotifyDone")
+        }
+    }
+
+    override fun waitForMountFdDone() {
+        when (val msg = receiveMessage(socket)) {
+            is Message.MountFdDone -> return
+            is Message.OtherError -> throw Exception("Error: ${msg.error}")
+            else -> throw Exception("Unexpected message: $msg, expected MountFdDone")
         }
     }
 

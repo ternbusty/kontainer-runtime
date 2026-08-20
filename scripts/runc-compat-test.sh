@@ -50,6 +50,10 @@ INCLUDE_TESTS=(
   spec.bats
   start_detached.bats
   tty.bats
+  seccomp-notify.bats
+  pidfd-socket.bats
+  mounts_sshfs.bats
+  idmap.bats
 )
 
 # Tests that need runc-specific helper binaries or features we deliberately
@@ -57,11 +61,7 @@ INCLUDE_TESTS=(
 EXCLUDE_TESTS=(
   checkpoint.bats            # needs criu (not in Ubuntu 24.04 repos)
   seccomp-notify-compat.bats # needs kernel < 5.6 (always skipped on modern runners)
-  seccomp-notify.bats        # protocol mismatch: sendmsg JSON+FD must be combined
-  pidfd-socket.bats          # --pidfd-socket flag not implemented
   hooks_so.bats              # shared-library hook loading is runc-specific
-  mounts_sshfs.bats          # bind mount locked-flag fallback not implemented
-  idmap.bats                 # MOUNT_ATTR_IDMAP not applied
   cgroup_delegation.bats     # systemd cgroup manager not implemented
 )
 
@@ -81,9 +81,7 @@ SELINUX_TESTS=(
 # These are tests that assert runc-internal implementation details.
 SKIP_TEST_NAMES=(
   "runc run \\[/proc/self/exe clone\\]"  # asserts runc-dmz debug output string
-  "runc command -h"                       # iterates over checkpoint/restore/features commands
-  "events --stats with hugetlb"           # hugetlb stats not collected in events
-  "events oom"                            # OOM event notification not implemented (hangs)
+  "runc -h"                               # hardcodes literal "runc" in assertion
 )
 
 # ---------------------------------------------------------------------------
@@ -139,6 +137,35 @@ fi
 echo ">>> Fetching rootfs images ..."
 chmod +x "${INTEGRATION_DIR}/get-images.sh"
 "${INTEGRATION_DIR}/get-images.sh" >/dev/null
+
+# ---------------------------------------------------------------------------
+# Build runc test helper binaries (needed by idmap, pidfd-socket, etc.)
+# ---------------------------------------------------------------------------
+TESTBINDIR="${RUNC_REPO_DIR}/tests/cmd/_bin"
+mkdir -p "$TESTBINDIR"
+echo ">>> Building runc test helper binaries ..."
+if make -C "$RUNC_REPO_DIR" test-binaries 2>/dev/null; then
+  echo "    built via 'make test-binaries'"
+else
+  # Fallback: build each helper individually (works when the runc
+  # Makefile has other unmet dependencies like containerd).
+  for helper in remap-rootfs fs-idmap seccompagent pidfd-kill recvtty; do
+    helperdir="${RUNC_REPO_DIR}/tests/cmd/${helper}"
+    if [[ -d "$helperdir" ]] && [[ ! -x "${TESTBINDIR}/${helper}" ]]; then
+      echo "    building ${helper} ..."
+      # seccompagent requires the seccomp build tag to enable actual
+      # seccomp-agent functionality (without it, it prints "Not supported").
+      local build_tags=""
+      if [[ "$helper" == "seccompagent" ]]; then
+        build_tags="-tags seccomp"
+      fi
+      # shellcheck disable=SC2086
+      (cd "$helperdir" && go build $build_tags -o "${TESTBINDIR}/${helper}" .) || {
+        echo "WARNING: failed to build ${helper}, some tests may be skipped" >&2
+      }
+    fi
+  done
+fi
 
 # ---------------------------------------------------------------------------
 # SELinux mode: run ONLY the SELinux-specific tests

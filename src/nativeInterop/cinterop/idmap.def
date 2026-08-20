@@ -1,0 +1,305 @@
+headers = unistd.h sys/syscall.h
+headerFilter = unistd.h
+package = platform.linux
+compilerOpts = -D_GNU_SOURCE
+---
+
+#include <unistd.h>
+#include <sys/syscall.h>
+#include <errno.h>
+#include <signal.h>
+#include <sched.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <sys/mount.h>
+#include <sys/prctl.h>
+
+/* Syscall numbers for the new mount API (stable ABI, same on x86_64 and aarch64). */
+#ifndef __NR_open_tree
+#define __NR_open_tree 428
+#endif
+#ifndef __NR_move_mount
+#define __NR_move_mount 429
+#endif
+#ifndef __NR_mount_setattr
+#define __NR_mount_setattr 442
+#endif
+
+/* Expose syscall numbers as functions (K/N cannot read C macros directly). */
+static inline long _NR_open_tree(void)      { return __NR_open_tree; }
+static inline long _NR_move_mount(void)     { return __NR_move_mount; }
+static inline long _NR_mount_setattr(void)  { return __NR_mount_setattr; }
+
+/* Constants exposed as functions. */
+static inline unsigned long _MOUNT_ATTR_IDMAP(void)       { return 0x00100000UL; }
+static inline unsigned int  _AT_RECURSIVE(void)           { return 0x8000; }
+static inline unsigned int  _OPEN_TREE_CLONE(void)        { return 1; }
+static inline unsigned int  _OPEN_TREE_CLOEXEC(void)      { return 0x80000; }
+static inline unsigned int  _MOVE_MOUNT_F_EMPTY_PATH(void){ return 0x00000004; }
+static inline unsigned int  _MOVE_MOUNT_T_EMPTY_PATH(void){ return 0x00000040; }
+static inline unsigned int  _MOVE_MOUNT_T_SYMLINKS(void)  { return 0x00000020; }
+static inline unsigned int  _AT_EMPTY_PATH(void)          { return 0x1000; }
+
+/* Direct mount(2) wrapper — avoids K/N's variadic-arg handling in syscall(). */
+static inline int _mount(const char *source, const char *target,
+                         const char *fstype, unsigned long flags,
+                         const void *data) {
+    return mount(source, target, fstype, flags, data);
+}
+
+/**
+ * Set mount propagation by reopening the mount point fd and applying
+ * via /proc/self/fd/<fd>. This matches runc's reopenAfterMount +
+ * mountPropagate pattern and ensures we target the TOP mount when
+ * mounts are stacked (e.g. after move_mount on top of a bind mount).
+ *
+ * Returns 0 on success, -1 on failure with errno set.
+ */
+static inline int _set_mount_propagation(const char *target,
+                                          unsigned long flags) {
+    return mount(NULL, target, NULL, flags, NULL);
+}
+
+/* O_PATH may not be in the K/N bundled sysroot headers. */
+#ifndef O_PATH
+#define O_PATH 010000000
+#endif
+static inline int _O_PATH_FLAG(void)                      { return O_PATH; }
+
+/* open_tree(2) wrapper. */
+static inline int _open_tree(int dfd, const char *pathname, unsigned int flags) {
+    return (int)syscall(__NR_open_tree, dfd, pathname, flags);
+}
+
+/* move_mount(2) wrapper. */
+static inline int _move_mount(int from_dfd, const char *from_pathname,
+                              int to_dfd, const char *to_pathname,
+                              unsigned int flags) {
+    return (int)syscall(__NR_move_mount, from_dfd, from_pathname,
+                        to_dfd, to_pathname, flags);
+}
+
+/* mount_setattr(2) — needs a struct mount_attr argument.
+ * We define our own copy of the struct because the K/N sysroot may
+ * not have linux/mount.h with this definition. */
+struct _mount_attr {
+    unsigned long long attr_set;
+    unsigned long long attr_clr;
+    unsigned long long propagation;
+    unsigned long long userns_fd;
+};
+
+static inline int _mount_setattr(int dfd, const char *path,
+                                 unsigned int flags,
+                                 struct _mount_attr *attr,
+                                 unsigned long size) {
+    return (int)syscall(__NR_mount_setattr, dfd, path, flags, attr, size);
+}
+
+static inline unsigned long _sizeof_mount_attr(void) {
+    return sizeof(struct _mount_attr);
+}
+
+/* ----------  User namespace helper for ID-mapped mounts  ----------
+ *
+ * Creates a short-lived child process in a new user namespace,
+ * writes the requested UID/GID mappings, and returns a fd referencing
+ * the new user namespace.  Returns -1 on failure with errno set.
+ *
+ * Called from the main process (host user namespace) where /proc
+ * is the host's procfs and the parent has full access to the child's
+ * /proc/$pid/ entries.
+ *
+ * The mapping strings are newline-separated "containerID hostID size"
+ * lines terminated with a trailing newline (the caller builds them).
+ */
+
+/* Send a single fd over a Unix socket via SCM_RIGHTS. */
+static inline int _send_fd(int sock, int fd_to_send) {
+    struct msghdr msg = {0};
+    struct iovec iov;
+    char buf = 'F';
+    iov.iov_base = &buf;
+    iov.iov_len = 1;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    char cmsgbuf[CMSG_SPACE(sizeof(int))];
+    memset(cmsgbuf, 0, sizeof(cmsgbuf));
+    msg.msg_control = cmsgbuf;
+    msg.msg_controllen = sizeof(cmsgbuf);
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(cmsg), &fd_to_send, sizeof(int));
+    return (int)sendmsg(sock, &msg, 0);
+}
+
+/* Receive a single fd from a Unix socket via SCM_RIGHTS. */
+static inline int _recv_fd(int sock) {
+    struct msghdr msg = {0};
+    struct iovec iov;
+    char buf;
+    iov.iov_base = &buf;
+    iov.iov_len = 1;
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    char cmsgbuf[CMSG_SPACE(sizeof(int))];
+    memset(cmsgbuf, 0, sizeof(cmsgbuf));
+    msg.msg_control = cmsgbuf;
+    msg.msg_controllen = sizeof(cmsgbuf);
+    if (recvmsg(sock, &msg, 0) < 0)
+        return -1;
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+    if (!cmsg || cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS)
+        return -1;
+    int fd;
+    memcpy(&fd, CMSG_DATA(cmsg), sizeof(int));
+    return fd;
+}
+
+static inline int _write_file(const char *path, const char *data) {
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) return -1;
+    ssize_t len = strlen(data);
+    ssize_t written = write(fd, data, len);
+    int saved = errno;
+    close(fd);
+    if (written != len) { errno = saved; return -1; }
+    return 0;
+}
+
+/**
+ * Create a user namespace with the given UID/GID mappings and return
+ * a file descriptor referencing it.
+ *
+ * @param uid_map  Mapping string for uid_map  ("containerID hostID size\n")
+ * @param gid_map  Mapping string for gid_map
+ *
+ * Architecture:
+ *   1. Parent forks a child.
+ *   2. Child calls unshare(CLONE_NEWUSER), then signals readiness
+ *      via a sync pipe.
+ *   3. Parent writes uid_map/gid_map via /proc/$child_pid/.
+ *   4. Parent signals the child that mappings are done.
+ *   5. Child opens /proc/self/ns/user and sends the fd back via
+ *      SCM_RIGHTS.
+ *
+ * Called from the main process (host userns), so /proc/$child_pid
+ * resolves correctly and the parent has full ptrace access.
+ */
+static inline int _create_userns_with_mappings(const char *uid_map,
+                                                const char *gid_map) {
+    int sv[2];   /* SCM_RIGHTS socket for returning the userns fd */
+    int pp[2];   /* sync pipe: parent->child */
+    int cp[2];   /* sync pipe: child->parent */
+
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) < 0)
+        return -1;
+    if (pipe(pp) < 0) { close(sv[0]); close(sv[1]); return -1; }
+    if (pipe(cp) < 0) { close(sv[0]); close(sv[1]); close(pp[0]); close(pp[1]); return -1; }
+
+    pid_t child = fork();
+    if (child < 0) {
+        close(sv[0]); close(sv[1]);
+        close(pp[0]); close(pp[1]);
+        close(cp[0]); close(cp[1]);
+        return -1;
+    }
+
+    if (child == 0) {
+        /* Child */
+        close(sv[0]);
+        close(pp[1]);
+        close(cp[0]);
+
+        if (unshare(CLONE_NEWUSER) < 0)
+            _exit(1);
+
+        /* Signal parent: "I've unshared, write my mappings" */
+        char sig = 'R';
+        if (write(cp[1], &sig, 1) != 1)
+            _exit(6);
+
+        /* Wait for parent to finish writing mappings */
+        if (read(pp[0], &sig, 1) != 1 || sig == 'F')
+            _exit(7);
+
+        close(pp[0]);
+        close(cp[1]);
+
+        /* /proc/self always resolves correctly regardless of PID namespace. */
+        int nsfd = open("/proc/self/ns/user", O_RDONLY | O_CLOEXEC);
+        if (nsfd < 0)
+            _exit(4);
+        if (_send_fd(sv[1], nsfd) < 0) {
+            close(nsfd);
+            _exit(5);
+        }
+        close(nsfd);
+        _exit(0);
+    }
+
+    /* Parent */
+    close(sv[1]);
+    close(pp[0]);
+    close(cp[1]);
+
+    /* Wait for child to unshare */
+    char sig;
+    if (read(cp[0], &sig, 1) != 1) {
+        close(sv[0]); close(pp[1]); close(cp[0]);
+        waitpid(child, NULL, 0);
+        errno = ESRCH;
+        return -1;
+    }
+    close(cp[0]);
+
+    /* Write mappings via /proc. */
+    char path[PATH_MAX];
+    int ok = 1;
+    snprintf(path, sizeof(path), "/proc/%d/setgroups", child);
+    _write_file(path, "deny");  /* best-effort; may fail if already denied */
+    snprintf(path, sizeof(path), "/proc/%d/uid_map", child);
+    if (_write_file(path, uid_map) < 0)
+        ok = 0;
+    if (ok) {
+        snprintf(path, sizeof(path), "/proc/%d/gid_map", child);
+        if (_write_file(path, gid_map) < 0)
+            ok = 0;
+    }
+
+    /* Signal child */
+    sig = ok ? 'D' : 'F';
+    write(pp[1], &sig, 1);
+    close(pp[1]);
+
+    /* Receive the userns fd from the child. */
+    int userns_fd = -1;
+    if (ok) {
+        userns_fd = _recv_fd(sv[0]);
+    }
+    int saved_errno = errno;
+
+    close(sv[0]);
+
+    int wstatus;
+    waitpid(child, &wstatus, 0);
+
+    if (userns_fd < 0) {
+        if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) != 0) {
+            errno = 1000 + WEXITSTATUS(wstatus);
+        } else if (!ok) {
+            errno = EPERM;
+        } else {
+            errno = saved_errno;
+        }
+        return -1;
+    }
+    return userns_fd;
+}

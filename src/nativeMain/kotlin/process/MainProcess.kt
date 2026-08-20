@@ -4,6 +4,7 @@ import cgroup.Cgroup
 import cgroup.CgroupV2
 import cgroup.DeviceCgroup
 import channel.*
+import channel.Message
 import config.KontainerConfig
 import config.saveKontainerConfig
 import hook.runHooks
@@ -13,8 +14,10 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.usePinned
 import logger.Logger
 import platform.posix.*
+import rootfs.handleMountFdRequest
 import seccomp.seccompUsesNotify
 import seccomp.sendToSeccompListener
+import seccomp.validateSeccompFlags
 import spec.LinuxDeviceCgroup
 import spec.LinuxIdMapping
 import spec.Spec
@@ -257,38 +260,86 @@ private fun runMainProcessInternal(
         // Close notify listener in main process (only used by Stage-2)
         notifyListener.close()
 
-        // Check if seccomp notify is used in the spec
-        val hasSeccompNotify = spec.linux?.seccomp?.let { seccompUsesNotify(it) } ?: false
-        if (hasSeccompNotify) {
-            Logger.debug("seccomp notify is enabled, waiting for notify FD")
-            val notifyFd = mainReceiver.waitForSeccompRequest()
-            Logger.debug("received seccomp notify FD: $notifyFd")
-
-            // If listenerPath is specified, forward the FD to the listener
-            spec.linux.seccomp.listenerPath?.let { listenerPath ->
-                Logger.debug("forwarding seccomp notify FD to listener: $listenerPath")
-                val containerState =
-                    State(
-                        ociVersion = spec.ociVersion,
-                        id = containerId,
-                        status = ContainerStatus.CREATING,
-                        pid = stage2Pid,
-                        bundle = bundlePath,
-                        annotations = null,
-                        created = null, // Not set yet during creating phase
+        // Message loop: handle MountFdRequest (idmap), SeccompNotify,
+        // and InitReady from the init process. Init sends these in order
+        // as it progresses through rootfs setup → seccomp → ready, but
+        // the loop handles them generically.
+        Logger.debug("entering init message loop")
+        var initDone = false
+        while (!initDone) {
+            val (msg, fd) = mainReceiver.receiveNextMessage()
+            when (msg) {
+                is Message.MountFdRequest -> {
+                    Logger.debug("received mount fd request (implied=${msg.implied}, recursive=${msg.recursive})")
+                    if (fd < 0) {
+                        throw Exception("MountFdRequest received without tree fd")
+                    }
+                    handleMountFdRequest(
+                        treeFd = fd,
+                        uidMap = msg.uidMap,
+                        gidMap = msg.gidMap,
+                        recursive = msg.recursive,
+                        implied = msg.implied,
+                        stage2Pid = stage2Pid,
                     )
-                sendToSeccompListener(listenerPath, containerState, notifyFd)
-                Logger.debug("forwarded seccomp notify FD to listener")
-            } ?: run {
-                Logger.warn("seccomp notify FD received but no listenerPath specified")
+                    initSender.mountFdDone()
+                    Logger.debug("sent mount fd done")
+                }
+                is Message.SeccompNotify -> {
+                    Logger.debug("received seccomp notify FD: $fd")
+                    if (fd < 0) {
+                        throw Exception("SeccompNotify received without fd")
+                    }
+                    // Forward the seccomp notify FD to the listener if configured.
+                    // If the listener connection fails, we must still notify init
+                    // (otherwise it hangs waiting for the done signal), and then
+                    // propagate the error.
+                    var seccompError: Exception? = null
+                    spec.linux?.seccomp?.listenerPath?.let { listenerPath ->
+                        if (listenerPath.isNotEmpty()) {
+                            Logger.debug("forwarding seccomp notify FD to listener: $listenerPath")
+                            val containerState =
+                                State(
+                                    ociVersion = spec.ociVersion,
+                                    id = containerId,
+                                    status = ContainerStatus.CREATING,
+                                    pid = stage2Pid,
+                                    bundle = bundlePath,
+                                    annotations = null,
+                                    created = null,
+                                )
+                            try {
+                                sendToSeccompListener(listenerPath, containerState, fd, spec.linux.seccomp.listenerMetadata)
+                                Logger.debug("forwarded seccomp notify FD to listener")
+                            } catch (e: Exception) {
+                                seccompError = e
+                                Logger.error("failed to forward seccomp notify FD: ${e.message}")
+                            }
+                        } else {
+                            seccompError = Exception("seccomp listener path is empty")
+                        }
+                    } ?: run {
+                        Logger.warn("seccomp notify FD received but no listenerPath specified")
+                    }
+                    // Close our copy of the seccomp notify FD. The seccomp
+                    // agent now holds the only reference; when it dies, the
+                    // kernel returns ENOSYS to notified syscalls.
+                    close(fd)
+                    initSender.seccompNotifyDone()
+                    Logger.debug("sent seccomp notify done signal")
+                    if (seccompError != null) {
+                        throw seccompError!!
+                    }
+                }
+                is Message.InitReady -> {
+                    Logger.debug("init process is ready")
+                    initDone = true
+                }
+                else -> {
+                    throw Exception("Unexpected message from init: $msg")
+                }
             }
-
-            initSender.seccompNotifyDone()
-            Logger.debug("sent seccomp notify done signal")
         }
-
-        mainReceiver.waitForInitReady()
-        Logger.debug("init process is ready")
 
         mainReceiver.close()
         initSender.close()
@@ -397,7 +448,22 @@ fun runMainProcess(
             initReceiver,
         )
     } catch (e: Exception) {
-        Logger.error("main process failed: ${e.message ?: "unknown"}")
+        val errMsg = e.message ?: "unknown"
+        Logger.error("main process failed: $errMsg")
+
+        // For runc bats compatibility, output init errors in runc's format.
+        // runc hardcodes "runc run failed: unable to start container process:
+        // error during container init: <error>" — compatible runtimes must
+        // match this pattern so bats assertion globs pass.
+        val initPrefix = "Error: Init process failed: "
+        if (errMsg.startsWith(initPrefix)) {
+            val innerError = errMsg.removePrefix(initPrefix)
+            Logger.error(
+                "runc run failed: unable to start container process: " +
+                    "error during container init: $innerError",
+            )
+        }
+
         close(syncFd)
         notifyListener.close()
         _exit(1)

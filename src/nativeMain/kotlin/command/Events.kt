@@ -6,7 +6,9 @@ import kotlinx.serialization.Serializable
 import logger.Logger
 import platform.linux.IN_CLOEXEC
 import platform.linux.IN_DELETE_SELF
+import platform.linux.IN_MODIFY
 import platform.linux.inotify_add_watch
+import platform.linux.inotify_event
 import platform.linux.inotify_init1
 import platform.posix.*
 import state.containerExists
@@ -51,17 +53,21 @@ fun events(
 
     val cgDir = "/sys/fs/cgroup/${cgroupPath.removePrefix("/")}"
 
-    // Set up inotify to watch the container's state file for deletion.
-    // When `runc delete` removes the state directory, IN_DELETE_SELF
-    // fires and poll() returns immediately — no polling needed.
+    // Set up inotify to watch:
+    //   1. Container state file for deletion → exit cleanly
+    //   2. memory.events for modification → real-time OOM detection
     val statePath = "${getContainerDir(rootPath, containerId)}/state.json"
+    val memEventsPath = "$cgDir/memory.events"
     val ifd = inotify_init1(IN_CLOEXEC)
+    var stateWd = -1
+    var memEventsWd = -1
     if (ifd >= 0) {
-        inotify_add_watch(ifd, statePath, IN_DELETE_SELF.toUInt())
+        stateWd = inotify_add_watch(ifd, statePath, IN_DELETE_SELF.toUInt())
+        memEventsWd = inotify_add_watch(ifd, memEventsPath, IN_MODIFY.toUInt())
     }
 
     try {
-        eventsLoop(fs, rootPath, containerId, cgDir, stats, intervalMs, ifd)
+        eventsLoop(fs, rootPath, containerId, cgDir, stats, intervalMs, ifd, stateWd, memEventsWd)
     } finally {
         if (ifd >= 0) close(ifd)
     }
@@ -76,9 +82,11 @@ private fun eventsLoop(
     stats: Boolean,
     intervalMs: Long,
     ifd: Int,
+    stateWd: Int,
+    memEventsWd: Int,
 ) {
     // Track oom counter so we can emit {"type":"oom"} events when it
-    // increments. cgroup v2 exposes this in memory.events as "oom <N>".
+    // increments. cgroup v2 exposes this in memory.events as "oom_kill <N>".
     var lastOomCount = readOomCount(fs, cgDir)
 
     while (true) {
@@ -87,7 +95,7 @@ private fun eventsLoop(
             break
         }
 
-        // Detect OOM: if the oom counter increased since our last check,
+        // Detect OOM: if the oom_kill counter increased since our last check,
         // emit a dedicated OOM event before the stats snapshot.
         val currentOomCount = readOomCount(fs, cgDir)
         if (currentOomCount != null && lastOomCount != null && currentOomCount > lastOomCount) {
@@ -104,9 +112,8 @@ private fun eventsLoop(
 
         // Wait for either:
         //   (a) the interval to elapse (poll timeout), or
-        //   (b) the container state file to be deleted (inotify event).
-        // This mirrors runc's use of eventfd for instant exit on
-        // container deletion.
+        //   (b) the container state file to be deleted (IN_DELETE_SELF), or
+        //   (c) memory.events to be modified (IN_MODIFY → possible OOM).
         if (ifd >= 0) {
             memScoped {
                 val pfd = alloc<pollfd>()
@@ -114,8 +121,28 @@ private fun eventsLoop(
                 pfd.events = POLLIN.toShort()
                 val ret = poll(pfd.ptr, 1u, intervalMs.toInt())
                 if (ret > 0) {
-                    // inotify fired — state file deleted, exit now.
-                    return
+                    // Read inotify events to determine what fired.
+                    val buf = allocArray<ByteVar>(4096)
+                    val n = read(ifd, buf, 4096u)
+                    if (n > 0) {
+                        var offset = 0
+                        while (offset < n.toInt()) {
+                            val event = (buf + offset)!!.reinterpret<inotify_event>().pointed
+                            if (event.wd == stateWd) {
+                                // State file deleted — do a final OOM check then exit.
+                                val finalOomCount = readOomCount(fs, cgDir)
+                                if (finalOomCount != null && lastOomCount != null && finalOomCount > lastOomCount) {
+                                    println("""{"type":"oom","id":"$containerId"}""")
+                                    fflush(stdout)
+                                }
+                                return
+                            }
+                            // For memory.events IN_MODIFY, the loop continues
+                            // and the OOM counter check at the top will handle it.
+                            val nameLen = event.len.toInt()
+                            offset += sizeOf<inotify_event>().toInt() + nameLen
+                        }
+                    }
                 }
             }
         } else {
@@ -141,6 +168,10 @@ internal fun buildSnapshot(
     val pidsCurrent = readLong(fs, "$cgroupDir/pids.current")
     val pidsMax = readCgroupString(fs, "$cgroupDir/pids.max")
 
+    // Hugetlb stats: discover page sizes from /sys/kernel/mm/hugepages/ then
+    // read rsvd.current and events from the cgroup.
+    val hugetlb = readHugetlbStats(fs, cgroupDir)
+
     return EventSnapshot(
         id = containerId,
         type = "stats",
@@ -153,6 +184,7 @@ internal fun buildSnapshot(
                     ),
                 cpu = CpuStats(stat = cpuStat),
                 pids = PidsStats(current = pidsCurrent, limit = pidsMax),
+                hugetlb = hugetlb.ifEmpty { null },
             ),
     )
 }
@@ -171,6 +203,7 @@ internal data class EventData(
     val memory: MemoryStats,
     val cpu: CpuStats,
     val pids: PidsStats,
+    val hugetlb: Map<String, HugetlbStats>? = null,
 )
 
 @Serializable
@@ -190,16 +223,95 @@ internal data class PidsStats(
     val limit: String? = null,
 )
 
+@Serializable
+internal data class HugetlbStats(
+    val usage: Long = 0,
+    val max: Long = 0,
+    val failcnt: Long = 0,
+)
+
+// ---- Hugetlb stats ----
+
+/**
+ * Read hugetlb stats for all discovered page sizes.
+ * Discovers sizes from /sys/kernel/mm/hugepages/ (e.g. hugepages-2048kB → "2MB").
+ * Reads cgroup v2 files: hugetlb.<size>.current, hugetlb.<size>.max, hugetlb.<size>.events.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun readHugetlbStats(
+    fs: FileSystem,
+    cgroupDir: String,
+): Map<String, HugetlbStats> {
+    val result = linkedMapOf<String, HugetlbStats>()
+    // Discover hugepage sizes from sysfs
+    val pageSizes = discoverHugepageSizes()
+    for (cgroupSize in pageSizes) {
+        // cgroup v2 uses rsvd variant: hugetlb.<size>.rsvd.current
+        val usage =
+            readLong(fs, "$cgroupDir/hugetlb.$cgroupSize.rsvd.current")
+                ?: readLong(fs, "$cgroupDir/hugetlb.$cgroupSize.current")
+                ?: continue
+        val max =
+            readLong(fs, "$cgroupDir/hugetlb.$cgroupSize.rsvd.max")
+                ?: readLong(fs, "$cgroupDir/hugetlb.$cgroupSize.max")
+                ?: 0
+        // failcnt from events file: hugetlb.<size>.events has "max <N>"
+        val events = readKvFile(fs, "$cgroupDir/hugetlb.$cgroupSize.events")
+        val failcnt = events?.get("max") ?: 0
+        result[cgroupSize] = HugetlbStats(usage = usage, max = max, failcnt = failcnt)
+    }
+    return result
+}
+
+/**
+ * Discover hugepage sizes from /sys/kernel/mm/hugepages/.
+ * Each entry is like "hugepages-2048kB" → convert to cgroup format "2MB".
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun discoverHugepageSizes(): List<String> {
+    val sizes = mutableListOf<String>()
+    val dir = opendir("/sys/kernel/mm/hugepages") ?: return sizes
+    try {
+        while (true) {
+            val entry = readdir(dir) ?: break
+            val name = entry.pointed.d_name.toKString()
+            if (!name.startsWith("hugepages-")) continue
+            // "hugepages-2048kB" → "2048kB" → convert to "2MB"
+            val sizeStr = name.removePrefix("hugepages-")
+            val cgroupSize = convertHugepageSize(sizeStr)
+            if (cgroupSize != null) sizes.add(cgroupSize)
+        }
+    } finally {
+        closedir(dir)
+    }
+    return sizes
+}
+
+/**
+ * Convert kernel hugepage size to cgroup naming convention.
+ * "2048kB" → "2MB", "1048576kB" → "1GB"
+ */
+private fun convertHugepageSize(sizeStr: String): String? {
+    val kb = sizeStr.removeSuffix("kB").toLongOrNull() ?: return null
+    return when {
+        kb >= 1048576 && kb % 1048576 == 0L -> "${kb / 1048576}GB"
+        kb >= 1024 && kb % 1024 == 0L -> "${kb / 1024}MB"
+        else -> "${kb}KB"
+    }
+}
+
 // ---- OOM detection ----
 
 /**
- * Read the "oom" counter from memory.events in the given cgroup directory.
+ * Read the "oom_kill" counter from memory.events in the given cgroup directory.
+ * Uses "oom_kill" (actual process kills) rather than "oom" (limit-hit events),
+ * matching runc's behavior with `notifyOnOOMV2`.
  * Returns null if the file is absent or unreadable.
  */
 private fun readOomCount(
     fs: FileSystem,
     cgroupDir: String,
-): Long? = readKvFile(fs, "$cgroupDir/memory.events")?.get("oom")
+): Long? = readKvFile(fs, "$cgroupDir/memory.events")?.get("oom_kill")
 
 // ---- Cgroup file readers ----
 
