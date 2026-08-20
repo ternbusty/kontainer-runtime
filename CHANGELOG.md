@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/ternbusty/kontainer-runtime/compare/v0.4.0...v0.5.0) (2026-08-20)
+
+
+### Features
+
+* implement runc bats test feature gaps ([#99](https://github.com/ternbusty/kontainer-runtime/issues/99)) ([b9ce8bf](https://github.com/ternbusty/kontainer-runtime/commit/b9ce8bf30316950627c7fffa0c3e2c78e851ae36))
+
+
+### Bug Fixes
+
+* add arm64 apt sources to release workflow ([#93](https://github.com/ternbusty/kontainer-runtime/issues/93)) ([6dc2fe1](https://github.com/ternbusty/kontainer-runtime/commit/6dc2fe19b46da57db3dcec5ba92b2b554d05adde))
+
 ## [0.4.0](https://github.com/ternbusty/kontainer-runtime/compare/v0.3.1...v0.4.0) (2026-08-17)
 
 
