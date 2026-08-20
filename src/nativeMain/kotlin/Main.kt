@@ -166,6 +166,8 @@ data class GlobalConfig(
     val fs: RealFileSystem,
     val cgroup: CgroupV2,
     val execCommandArgs: List<String>,
+    /** True when the user explicitly passed `--root`. */
+    val rootExplicit: Boolean = false,
 )
 
 // ---------------------------------------------------------------------------
@@ -176,8 +178,9 @@ class KontainerRuntime(
     private val originalArgs: Array<String>,
     private val execCommandArgs: List<String>,
 ) : CoreCliktCommand(name = "kontainer-runtime") {
-    val rootPath by option("--root", help = "Root directory for container state")
-        .default("/run/kontainer")
+    private val rootPathOpt by option("--root", help = "Root directory for container state")
+    val rootPath get() = rootPathOpt ?: "/run/kontainer"
+    val rootExplicit get() = rootPathOpt != null
     val logFile by option("--log", "-l", help = "Log file path")
     val logFormat by option("--log-format", help = "Log format (text or json)")
     val debug by option("--debug", help = "Enable debug logging").flag()
@@ -194,7 +197,7 @@ class KontainerRuntime(
         val syscall = LinuxSyscall()
         val fs = RealFileSystem()
         val cgroup = CgroupV2(fs)
-        currentContext.obj = GlobalConfig(rootPath, syscall, fs, cgroup, execCommandArgs)
+        currentContext.obj = GlobalConfig(rootPath, syscall, fs, cgroup, execCommandArgs, rootExplicit)
     }
 }
 
@@ -325,7 +328,7 @@ class ListCommand : CoreCliktCommand(name = "list") {
     val config by requireObject<GlobalConfig>()
 
     override fun run() {
-        list(config.fs, config.rootPath, format, quiet)
+        list(config.fs, config.rootPath, format, quiet, config.rootExplicit)
     }
 }
 

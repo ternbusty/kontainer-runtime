@@ -31,11 +31,19 @@ fun list(
     rootPath: String,
     format: String,
     quiet: Boolean,
+    rootExplicit: Boolean = false,
 ) {
-    // runc exits non-zero when the root directory does not exist.
     if (access(rootPath, F_OK) != 0) {
-        val err = strerror(platform.posix.errno)?.toKString() ?: "no such file or directory"
-        throw Exception("$rootPath: $err")
+        if (rootExplicit) {
+            // runc reports an error when --root is explicitly set to a
+            // non-existent path.
+            val err = strerror(platform.posix.errno)?.toKString() ?: "no such file or directory"
+            throw Exception("$rootPath: $err")
+        }
+        // Default root doesn't exist yet (no containers created) — return
+        // an empty list, matching runc behaviour.
+        print(formatContainerList(fs, rootPath, format, quiet))
+        return
     }
     print(formatContainerList(fs, rootPath, format, quiet))
 }

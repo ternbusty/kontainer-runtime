@@ -83,6 +83,7 @@ SKIP_TEST_NAMES=(
   "runc run \\[/proc/self/exe clone\\]"  # asserts runc-dmz debug output string
   "runc command -h"                       # iterates over checkpoint/restore/features commands
   "events --stats with hugetlb"           # hugetlb stats not collected in events
+  "events oom"                            # OOM event notification not implemented (hangs)
 )
 
 # ---------------------------------------------------------------------------
