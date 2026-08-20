@@ -34,19 +34,24 @@ jobs:
       - name: Set up Go (for runc test helpers)
         uses: actions/setup-go@v7
         with:
-          go-version: '1.22'
+          go-version: stable
 
       - name: Install dependencies
         run: |
           sudo apt-get update || true
-          sudo apt-get install -y libseccomp-dev jq
+          sudo apt-get install -y libseccomp-dev jq sshfs
 
       # ── clone runc & install bats ─────────────────────────────────
-      - name: Clone runc v1.2.9 (shallow)
+      - name: Clone runc (latest stable)
         run: |
-          git clone --depth 1 --branch v1.2.9 \
+          RUNC_TAG="v$(git ls-remote --tags --sort=-v:refname \
+            https://github.com/opencontainers/runc.git 'v[0-9]*' \
+            | grep -oP 'refs/tags/v\K[0-9]+\.[0-9]+\.[0-9]+$' | head -1)"
+          echo ">>> Using runc $RUNC_TAG"
+          git clone --depth 1 --branch "$RUNC_TAG" \
             https://github.com/opencontainers/runc "$HOME/runc"
           echo "RUNC_REPO_DIR=$HOME/runc" >> "$GITHUB_ENV"
+          echo "RUNC_TAG=$RUNC_TAG" >> "$GITHUB_ENV"
 
       - name: Install bats-core
         run: |
@@ -55,14 +60,12 @@ jobs:
           bats --version
 
       # ── build runc test helper binaries ──────────────────────────
-      - name: Build runc test helpers (recvtty, etc.)
+      - name: Build runc test helpers
         run: |
           cd "$HOME/runc"
-          # recvtty — required for --console-socket tests
-          go build -o tests/cmd/recvtty/recvtty ./tests/cmd/recvtty/
-          # remap-rootfs — required for user-namespace tests that run as root
-          go build -o tests/cmd/remap-rootfs/remap-rootfs ./tests/cmd/remap-rootfs/
-          ls -la tests/cmd/recvtty/recvtty tests/cmd/remap-rootfs/remap-rootfs
+          # Use runc's own Makefile target — builds all helpers into tests/cmd/_bin/
+          make test-binaries
+          ls -la tests/cmd/_bin/
 
       # ── fetch rootfs images ──────────────────────────────────────
       - name: Fetch rootfs images (busybox / debian)
@@ -77,6 +80,7 @@ jobs:
           chmod +x scripts/runc-compat-test.sh
           sudo env \
             KONTAINER_BIN="$KONTAINER_BIN" \
+            RUNC_TAG="$RUNC_TAG" \
             SUMMARY_FILE="$GITHUB_STEP_SUMMARY" \
             TAP_OUTPUT="$PWD/tap-output.log" \
             scripts/runc-compat-test.sh \
@@ -175,13 +179,16 @@ jobs:
         run: |
           set -eux -o pipefail
 
-          # Clone runc inside the VM.
-          lima git clone --depth 1 --branch v1.2.9 \
+          # Clone runc (latest stable) inside the VM.
+          RUNC_TAG="v$(git ls-remote --tags --sort=-v:refname \
+            https://github.com/opencontainers/runc.git 'v[0-9]*' \
+            | grep -oP 'refs/tags/v\K[0-9]+\.[0-9]+\.[0-9]+$' | head -1)"
+          echo ">>> Using runc $RUNC_TAG"
+          lima git clone --depth 1 --branch "$RUNC_TAG" \
             https://github.com/opencontainers/runc /tmp/runc
 
-          # Build test helpers.
-          lima bash -c 'cd /tmp/runc && go build -o tests/cmd/recvtty/recvtty ./tests/cmd/recvtty/'
-          lima bash -c 'cd /tmp/runc && go build -o tests/cmd/remap-rootfs/remap-rootfs ./tests/cmd/remap-rootfs/'
+          # Build test helpers using runc's Makefile.
+          lima bash -c 'cd /tmp/runc && make test-binaries'
 
       # ── Run SELinux bats tests ───────────────────────────────────
       - name: Run runc bats SELinux tests

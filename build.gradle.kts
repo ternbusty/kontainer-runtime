@@ -193,6 +193,7 @@ kotlin {
             create("capability")
             create("bootstrap")
             create("prlimit")
+            create("keyctl")
             create("network")
             create("bpf")
             create("pty")

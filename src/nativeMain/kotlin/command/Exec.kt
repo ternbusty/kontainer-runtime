@@ -20,6 +20,8 @@ import namespace.nsJoinList
 import platform.posix.*
 import process.applyProcessEnv
 import process.applyProcessSecurity
+import process.ensureHomeEnv
+import process.setupSessionKeyring
 import process.syncSeccompNotifyFd
 import seccomp.seccompUsesNotify
 import seccomp.sendToSeccompListener
@@ -205,7 +207,7 @@ fun exec(
     if (cgroupOverride.isNotEmpty()) {
         val subPath = cgroupOverride.first()
         if (subPath.contains("..")) {
-            fprintf(stderr, "exec failed: invalid sub-cgroup path \"%s\": .. is not a sub cgroup path\n", subPath)
+            fprintf(stderr, "exec failed: bad sub cgroup path \"%s\": .. is not a sub cgroup path\n", subPath)
             exit(1)
             return
         }
@@ -318,6 +320,7 @@ fun exec(
             runExecChild(
                 syscall,
                 execSpec,
+                containerId,
                 joins,
                 nsFds,
                 setupPipe,
@@ -481,6 +484,7 @@ fun exec(
 private fun runExecChild(
     syscall: Syscall,
     spec: Spec,
+    containerId: String,
     joins: List<NsJoin>,
     nsFds: Map<String, Int>,
     setupPipe: IntArray,
@@ -569,7 +573,7 @@ private fun runExecChild(
         close(pidPipe[1])
         if (masterFd >= 0) close(masterFd)
         try {
-            runExecGrandchild(syscall, spec, notifyMainSender, notifyInitReceiver, preserveFds, slaveFd, setupPipe[0])
+            runExecGrandchild(syscall, spec, containerId, notifyMainSender, notifyInitReceiver, preserveFds, slaveFd, setupPipe[0])
         } catch (t: Throwable) {
             fprintf(stderr, "exec: setup failed: %s\n", t.message ?: "unknown error")
         }
@@ -630,6 +634,7 @@ private fun runExecChild(
 private fun runExecGrandchild(
     syscall: Syscall,
     spec: Spec,
+    containerId: String,
     notifyMainSender: MainSender?,
     notifyInitReceiver: InitReceiver?,
     preserveFds: Int = 0,
@@ -673,6 +678,17 @@ private fun runExecGrandchild(
         _exit(1)
     }
 
+    // Join the container's session keyring. In the exec path we only
+    // join (no permission modification) — the init process already
+    // created the keyring with the correct permissions.
+    // See: runc/libcontainer/setns_init_linux.go
+    setupSessionKeyring(
+        containerId = containerId,
+        processLabel = spec.process.selinuxLabel,
+        hasUserNamespace = spec.hasNamespace("user"),
+        isExec = true,
+    )
+
     applyProcessSecurity(syscall, spec.process, spec.linux?.seccomp) { notifyFd ->
         if (notifyMainSender != null && notifyInitReceiver != null) {
             // Same synchronization as init: blocks until the parent has
@@ -686,7 +702,11 @@ private fun runExecGrandchild(
     notifyMainSender?.close()
     notifyInitReceiver?.close()
 
-    applyProcessEnv(spec.process.env ?: emptyList())
+    // Resolve HOME from /etc/passwd if not already set in spec.
+    // After setns(CLONE_NEWNS), /etc/passwd is the container's file.
+    val execEnv = (spec.process.env ?: emptyList()).toMutableList()
+    ensureHomeEnv(execEnv, spec.process.user.uid)
+    applyProcessEnv(execEnv)
 
     // Flag every inherited runtime fd CLOEXEC so nothing leaks into the user
     // process (CVE-2024-21626 hygiene).

@@ -1,0 +1,30 @@
+headers = unistd.h sys/syscall.h
+headerFilter = unistd.h
+package = platform.linux
+compilerOpts = -D_GNU_SOURCE
+---
+
+#include <sys/syscall.h>
+#include <unistd.h>
+
+// keyctl(2) wrappers — the glibc keyctl() requires -lkeyutils, so
+// we go through the raw syscall(2) interface instead.
+
+// Join or create a named session keyring.
+// Returns the key serial number on success, or -1 with errno set.
+static inline long keyctl_join_session_keyring(const char *name) {
+    return syscall(__NR_keyctl, 1 /*KEYCTL_JOIN_SESSION_KEYRING*/, name);
+}
+
+// Describe a key into the given buffer.
+// Returns the total size needed (may exceed buflen) on success,
+// or -1 with errno set.
+static inline long keyctl_describe_key(int key_id, char *buf, unsigned long buflen) {
+    return syscall(__NR_keyctl, 6 /*KEYCTL_DESCRIBE*/, key_id, buf, buflen);
+}
+
+// Set permissions on a key.
+// Returns 0 on success, or -1 with errno set.
+static inline long keyctl_set_perm(int key_id, unsigned int perm) {
+    return syscall(__NR_keyctl, 5 /*KEYCTL_SETPERM*/, key_id, perm);
+}
