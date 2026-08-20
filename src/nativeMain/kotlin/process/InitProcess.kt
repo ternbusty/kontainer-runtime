@@ -323,6 +323,16 @@ private fun initProcessInternal(
         Logger.debug("waiting for start signal...")
         Logger.closeRedirect()
 
+        // Install signal handlers so that PID 1 (init) can receive signals
+        // from ancestor PID namespaces. In a PID namespace, PID 1 only
+        // receives signals for which it has installed a handler; the kernel
+        // silently drops others (even from ancestor namespaces, except
+        // SIGKILL/SIGSTOP). Without these handlers, pidfd_send_signal()
+        // with SIGTERM from the container manager would be silently ignored.
+        signal(SIGTERM, staticCFunction<Int, Unit> { _ -> _exit(130) })
+        signal(SIGINT, staticCFunction<Int, Unit> { _ -> _exit(130) })
+        signal(SIGHUP, staticCFunction<Int, Unit> { _ -> _exit(130) })
+
         // Explicitly close all leaked FDs before blocking in "created"
         // state.  closeRange (above) only sets CLOEXEC which fires at
         // execve, but tools like runc's FD-leak test inspect

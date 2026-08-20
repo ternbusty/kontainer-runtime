@@ -984,9 +984,16 @@ fun applySpecMounts(
         // Bind-remount once more with the requested flags. The kernel ignores flag
         // bits other than MS_BIND/MS_REC on the initial bind mount; MS_RDONLY etc.
         // only take effect via a subsequent MS_REMOUNT.
-        if ((parsed.flags and MS_BIND.toULong()) != 0uL && parsed.flags != MS_BIND.toULong() &&
-            parsed.flags != (MS_BIND or MS_REC).toULong()
-        ) {
+        //
+        // We need a remount whenever the user specified any option beyond plain
+        // "bind"/"rbind", even if that option only CLEARS a flag (e.g. "dev"
+        // clears MS_NODEV). In runc's semantics, specifying ANY mount option
+        // on a bind mount means "I want exactly these flags, clear everything
+        // else" — which differs from mount(8)'s default inherit-all behavior.
+        val isBindMount = (parsed.flags and MS_BIND.toULong()) != 0uL
+        val justBind = parsed.flags == MS_BIND.toULong() || parsed.flags == (MS_BIND or MS_REC).toULong()
+        val hasExtraOptions = !justBind || parsed.clearedFlags != 0uL
+        if (isBindMount && hasExtraOptions) {
             val remountFlags = parsed.flags or MS_REMOUNT.toULong()
             val remountRc =
                 syscall.mount(
@@ -1009,7 +1016,11 @@ fun applySpecMounts(
                         val statfsPath = m.source ?: target
                         if (platform.linux.statfs(statfsPath, st.ptr) != 0) {
                             val statfsErrno = errno
-                            Logger.warn("statfs $statfsPath failed (errno=$statfsErrno), cannot retry bind-remount")
+                            Logger.error("statfs $statfsPath failed (errno=$statfsErrno), cannot retry bind-remount")
+                            throw Exception(
+                                "error mounting \"${m.source ?: ""}\" to \"${m.destination}\" " +
+                                    "mount destination: statfs failed (errno=$statfsErrno): operation not permitted",
+                            )
                         } else {
                             val sourceMountFlags = statfsToMountFlags(st.f_flags.toULong())
 
@@ -1026,13 +1037,17 @@ fun applySpecMounts(
 
                             // If the user explicitly cleared a locked flag that the
                             // source still has set, we cannot honour that request in
-                            // a user namespace — report the conflict.
+                            // a user namespace — this is a hard error matching runc.
                             val conflict = lockedFromSource and parsed.clearedFlags
                             if (conflict != 0uL) {
-                                Logger.warn(
+                                Logger.error(
                                     "bind-remount of ${m.destination} failed: user namespace " +
                                         "does not allow clearing locked mount flags " +
                                         "(conflicting flags=0x${conflict.toString(16)})",
+                                )
+                                throw Exception(
+                                    "error mounting \"${m.source ?: ""}\" to \"${m.destination}\" " +
+                                        "mount destination: operation not permitted",
                                 )
                             } else {
                                 // Merge the locked flags from the source into our
@@ -1083,14 +1098,17 @@ fun applySpecMounts(
         // or the "idmap"/"ridmap" option was given.
         val needsIdmap = !m.uidMappings.isNullOrEmpty() || !m.gidMappings.isNullOrEmpty() || parsed.idmap || parsed.ridmap
         if (needsIdmap) {
-            val recursive = parsed.ridmap || !m.gidMappings.isNullOrEmpty()
+            val recursive = parsed.ridmap
             // Determine which UID/GID mappings to use: per-mount if present,
             // otherwise fall back to the container-level mappings from spec.linux.
             val uidMappings = m.uidMappings?.takeIf { it.isNotEmpty() } ?: specLinux?.uidMappings
             val gidMappings = m.gidMappings?.takeIf { it.isNotEmpty() } ?: specLinux?.gidMappings
 
             if (uidMappings.isNullOrEmpty() && gidMappings.isNullOrEmpty()) {
-                Logger.warn("idmap requested for ${m.destination} but no UID/GID mappings available")
+                // Implied mapping: when "idmap"/"ridmap" option is specified
+                // without explicit UID/GID mappings, use the current user
+                // namespace's mapping (like runc's "implied mapping" behavior).
+                applyIdmapMountImplied(target, recursive)
             } else {
                 applyIdmapMount(target, uidMappings, gidMappings, recursive)
             }
@@ -1198,6 +1216,104 @@ private fun applyIdmapMount(
                     throw Exception("move_mount failed for idmap on $target (errno=$errNum)")
                 }
                 Logger.debug("move_mount completed, idmap mount active at $target")
+            } finally {
+                close(targetFd)
+            }
+        } finally {
+            close(treeFd)
+        }
+    } finally {
+        close(userNsFd)
+    }
+}
+
+/**
+ * Apply MOUNT_ATTR_IDMAP using the current process's user namespace
+ * (implied mapping). Used when the "idmap"/"ridmap" option is specified
+ * without explicit UID/GID mappings on the mount spec.
+ *
+ * Instead of creating a new user namespace, opens /proc/self/ns/user
+ * and passes it to mount_setattr. This uses the container's own user
+ * namespace mappings for the idmap, matching runc's "implied mapping"
+ * behavior.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun applyIdmapMountImplied(
+    target: String,
+    recursive: Boolean,
+) {
+    Logger.debug("applying MOUNT_ATTR_IDMAP (implied mapping) to $target (recursive=$recursive)")
+
+    // Open the current user namespace.
+    val userNsFd = open("/proc/self/ns/user", O_RDONLY or O_CLOEXEC)
+    if (userNsFd < 0) {
+        val errNum = errno
+        Logger.error("failed to open /proc/self/ns/user for implied idmap on $target (errno=$errNum)")
+        throw Exception("Failed to open userns for implied idmap on $target (errno=$errNum)")
+    }
+    Logger.debug("using current userns fd=$userNsFd for implied idmap")
+
+    try {
+        // open_tree() to get a detached copy of the mount.
+        var openTreeFlags = platform.linux._OPEN_TREE_CLONE() or platform.linux._OPEN_TREE_CLOEXEC()
+        if (recursive) {
+            openTreeFlags = openTreeFlags or platform.linux._AT_RECURSIVE()
+        }
+        val treeFd = platform.linux._open_tree(-1, target, openTreeFlags)
+        if (treeFd < 0) {
+            val errNum = errno
+            Logger.error("open_tree($target) failed (errno=$errNum)")
+            throw Exception("open_tree failed for implied idmap on $target (errno=$errNum)")
+        }
+
+        try {
+            // mount_setattr() with MOUNT_ATTR_IDMAP.
+            memScoped {
+                val attr = alloc<platform.linux._mount_attr>()
+                attr.attr_set = platform.linux._MOUNT_ATTR_IDMAP()
+                attr.attr_clr = 0uL
+                attr.propagation = 0uL
+                attr.userns_fd = userNsFd.toULong()
+
+                var setattrFlags = platform.linux._AT_EMPTY_PATH()
+                if (recursive) {
+                    setattrFlags = setattrFlags or platform.linux._AT_RECURSIVE()
+                }
+
+                val rc =
+                    platform.linux._mount_setattr(
+                        treeFd,
+                        "",
+                        setattrFlags,
+                        attr.ptr,
+                        platform.linux._sizeof_mount_attr(),
+                    )
+                if (rc < 0) {
+                    val errNum = errno
+                    Logger.error("mount_setattr(MOUNT_ATTR_IDMAP) failed for implied idmap on $target (errno=$errNum)")
+                    throw Exception("mount_setattr(MOUNT_ATTR_IDMAP) failed for implied idmap on $target (errno=$errNum)")
+                }
+            }
+
+            // move_mount() to replace the original mount.
+            val targetFd = open(target, platform.linux._O_PATH_FLAG() or O_DIRECTORY or O_CLOEXEC, 0u)
+            if (targetFd < 0) {
+                val errNum = errno
+                Logger.error("failed to open target $target for move_mount (errno=$errNum)")
+                throw Exception("Failed to open $target for move_mount (errno=$errNum)")
+            }
+
+            try {
+                val moveMountFlags =
+                    platform.linux._MOVE_MOUNT_F_EMPTY_PATH() or
+                        platform.linux._MOVE_MOUNT_T_EMPTY_PATH()
+                val rc = platform.linux._move_mount(treeFd, "", targetFd, "", moveMountFlags)
+                if (rc < 0) {
+                    val errNum = errno
+                    Logger.error("move_mount failed for implied idmap on $target (errno=$errNum)")
+                    throw Exception("move_mount failed for implied idmap on $target (errno=$errNum)")
+                }
+                Logger.debug("move_mount completed, implied idmap mount active at $target")
             } finally {
                 close(targetFd)
             }
