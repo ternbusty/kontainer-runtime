@@ -105,6 +105,50 @@ private fun translateOp(op: String): scmp_compare =
 fun seccompUsesNotify(seccomp: LinuxSeccomp): Boolean = seccomp.syscalls?.any { it.action == "SCMP_ACT_NOTIFY" } ?: false
 
 /**
+ * Validate that all seccomp flags in the spec are supported by the
+ * linked libseccomp.  Called from the parent process *before* forking
+ * so that error messages are visible in the runtime's output (the
+ * child's unhandled-exception output is lost after fork).
+ *
+ * @throws Exception when an unsupported flag is requested
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun validateSeccompFlags(seccomp: LinuxSeccomp) {
+    seccomp.flags?.forEach { flag ->
+        when (flag) {
+            "SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV" -> {
+                if (!libseccompVersionAtLeast(2, 6, 0)) {
+                    throw Exception(
+                        "error adding WaitKill flag to seccomp filter: " +
+                            "SetWaitKill requires libseccomp >= 2.6.0 " +
+                            "(have ${_seccomp_version_major()}.${_seccomp_version_minor()}.${_seccomp_version_micro()})",
+                    )
+                }
+            }
+            "SECCOMP_FILTER_FLAG_TSYNC",
+            "SECCOMP_FILTER_FLAG_LOG",
+            "SECCOMP_FILTER_FLAG_SPEC_ALLOW",
+            -> {} // always supported
+            else -> {} // unknown flags are warned at apply time
+        }
+    }
+
+    // If SCMP_ACT_NOTIFY is used, the listenerPath must be non-empty.
+    // An empty or missing listenerPath means nobody is listening for the
+    // seccomp notifications and the container will hang on the first
+    // notified syscall.
+    if (seccompUsesNotify(seccomp)) {
+        val listenerPath = seccomp.listenerPath
+        if (listenerPath.isNullOrEmpty()) {
+            throw Exception(
+                "seccomp SCMP_ACT_NOTIFY action is used but no listener path is configured; " +
+                    "set linux.seccomp.listenerPath to the Unix socket path of the seccomp agent",
+            )
+        }
+    }
+}
+
+/**
  * Initialize and load seccomp filter based on OCI spec
  *
  * @return notify FD if SCMP_ACT_NOTIFY is used, null otherwise, or throws on error
@@ -230,10 +274,12 @@ private fun addSyscallRule(
         return
     }
 
-    // Validation: SCMP_ACT_NOTIFY cannot be used for write syscall
+    // Validation: SCMP_ACT_NOTIFY cannot be used for write syscall.
+    // After seccomp init, we need to write the seccomp fd on the sync pipe
+    // to the parent; if write is notified, we deadlock.
     if (syscall.action == "SCMP_ACT_NOTIFY" && syscall.names.contains("write")) {
-        Logger.error("SCMP_ACT_NOTIFY cannot be used for write syscall")
-        throw Exception("SCMP_ACT_NOTIFY cannot be used for write syscall")
+        Logger.error("SCMP_ACT_NOTIFY cannot be used for the write syscall")
+        throw Exception("SCMP_ACT_NOTIFY cannot be used for the write syscall")
     }
 
     syscall.names.forEach { name ->

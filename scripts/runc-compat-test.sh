@@ -139,6 +139,35 @@ chmod +x "${INTEGRATION_DIR}/get-images.sh"
 "${INTEGRATION_DIR}/get-images.sh" >/dev/null
 
 # ---------------------------------------------------------------------------
+# Build runc test helper binaries (needed by idmap, pidfd-socket, etc.)
+# ---------------------------------------------------------------------------
+TESTBINDIR="${RUNC_REPO_DIR}/tests/cmd/_bin"
+mkdir -p "$TESTBINDIR"
+echo ">>> Building runc test helper binaries ..."
+if make -C "$RUNC_REPO_DIR" test-binaries 2>/dev/null; then
+  echo "    built via 'make test-binaries'"
+else
+  # Fallback: build each helper individually (works when the runc
+  # Makefile has other unmet dependencies like containerd).
+  for helper in remap-rootfs fs-idmap seccompagent pidfd-kill recvtty; do
+    helperdir="${RUNC_REPO_DIR}/tests/cmd/${helper}"
+    if [[ -d "$helperdir" ]] && [[ ! -x "${TESTBINDIR}/${helper}" ]]; then
+      echo "    building ${helper} ..."
+      # seccompagent requires the seccomp build tag to enable actual
+      # seccomp-agent functionality (without it, it prints "Not supported").
+      local build_tags=""
+      if [[ "$helper" == "seccompagent" ]]; then
+        build_tags="-tags seccomp"
+      fi
+      # shellcheck disable=SC2086
+      (cd "$helperdir" && go build $build_tags -o "${TESTBINDIR}/${helper}" .) || {
+        echo "WARNING: failed to build ${helper}, some tests may be skipped" >&2
+      }
+    fi
+  done
+fi
+
+# ---------------------------------------------------------------------------
 # SELinux mode: run ONLY the SELinux-specific tests
 # ---------------------------------------------------------------------------
 if [[ "$SELINUX_MODE" == "true" ]]; then

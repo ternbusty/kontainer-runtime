@@ -105,9 +105,11 @@ fun sendToSeccompListener(
 
             val addrSize = sizeOf<sockaddr_un>().toUInt()
             if (connect(sock, addr.ptr.reinterpret(), addrSize) == -1) {
-                perror("connect")
-                Logger.error("failed to connect to seccomp listener: $listenerPath")
-                throw Exception("Failed to connect to seccomp listener")
+                val errNum = errno
+                Logger.error("failed to connect with seccomp agent at $listenerPath (errno=$errNum)")
+                throw Exception(
+                    "failed to connect with seccomp agent at $listenerPath: ${strerror(errNum)?.toKString() ?: "errno=$errNum"}",
+                )
             }
         }
 

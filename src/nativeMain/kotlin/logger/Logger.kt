@@ -257,12 +257,16 @@ object Logger {
                     val formattedMessage =
                         "time=\"$timestamp\" level=${level.label.lowercase()} msg=\"$escapedMsg\"\n"
 
-                    // Write to stderr (or its override fd) when explicitly
-                    // enabled and no log file redirects output elsewhere.
-                    if (stderrEnabled && logFile == null) {
+                    // Write to stderr (or its override fd).
+                    // Error/fatal messages are ALWAYS emitted — they must be
+                    // visible even without --debug, matching runc's behavior.
+                    // Lower-severity messages require explicit opt-in via
+                    // --debug or KONTAINER_LOG_LEVEL.
+                    val shouldWriteStderr = (stderrEnabled || level >= Level.ERROR) && logFile == null
+                    if (shouldWriteStderr) {
                         val target = stderrOverride ?: stderr
                         fprintf(target, "%s", formattedMessage)
-                        if (stderrOverride != null) fflush(target)
+                        fflush(target)
                     }
 
                     // Log to file if configured
@@ -279,10 +283,11 @@ object Logger {
                         "{\"timestamp\":\"$timestamp\",\"level\":\"${level.label}\"," +
                             "\"context\":\"$processContext\",\"message\":\"$escapedMessage\"}\n"
 
-                    if (stderrEnabled && logFile == null) {
+                    val shouldWriteStderrJson = (stderrEnabled || level >= Level.ERROR) && logFile == null
+                    if (shouldWriteStderrJson) {
                         val target = stderrOverride ?: stderr
                         fprintf(target, "%s", jsonMessage)
-                        if (stderrOverride != null) fflush(target)
+                        fflush(target)
                     }
 
                     // Log to file if configured

@@ -21,6 +21,15 @@ interface MainSender {
 
     fun seccompNotifyRequest(fd: Int)
 
+    /** Send a mount tree fd with an idmap request to the main process. */
+    fun mountFdRequest(
+        treeFd: Int,
+        uidMap: String?,
+        gidMap: String?,
+        recursive: Boolean,
+        implied: Boolean,
+    )
+
     fun execFailed(error: String)
 
     fun sendError(error: String)
@@ -40,6 +49,14 @@ interface MainReceiver {
 
     fun waitForSeccompRequest(): Int
 
+    /**
+     * Receive the next message from init, along with an optional fd
+     * carried via SCM_RIGHTS (-1 when no fd is attached). Used by
+     * the main process message loop to handle MountFdRequest,
+     * SeccompNotify, and InitReady in any order.
+     */
+    fun receiveNextMessage(): Pair<Message, Int>
+
     fun close()
 }
 
@@ -53,6 +70,9 @@ interface InitSender {
 
     fun seccompNotifyDone()
 
+    /** Notify init that mount_setattr has been applied to the tree fd. */
+    fun mountFdDone()
+
     fun close()
 }
 
@@ -65,6 +85,9 @@ interface InitReceiver {
     fun waitForMappingAck()
 
     fun waitForSeccompRequestDone()
+
+    /** Block until main confirms mount_setattr is done. */
+    fun waitForMountFdDone()
 
     fun close()
 }

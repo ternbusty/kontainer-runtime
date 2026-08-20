@@ -1,5 +1,7 @@
 package rootfs
 
+import channel.InitReceiver
+import channel.MainSender
 import kotlinx.cinterop.*
 import logger.Logger
 import platform.posix.*
@@ -412,7 +414,9 @@ fun pivotRoot(
 ) {
     Logger.debug("pivoting root to $newRoot")
 
-    // Open newroot directory before pivot_root so we can fchdir back to it after.
+    // Open newroot directory so we can fchdir into it before pivot_root.
+    // After pivot_root(".", "."), "." refers to put_old (the old root),
+    // and "/" refers to the new root. This matches runc's approach.
     val newrootFd = open(newRoot, O_DIRECTORY or O_RDONLY, 0u)
     if (newrootFd < 0) {
         val errNum = errno
@@ -421,21 +425,35 @@ fun pivotRoot(
         throw Exception("Failed to open $newRoot (errno=$errNum)")
     }
 
-    // Use newroot for both arguments so the old root ends up at the same location.
-    if (syscall.pivotRoot(newRoot, newRoot) == -1) {
+    // Change into the rootfs directory before pivot_root so that after
+    // pivot_root(".", "."), "." refers to the old root (put_old).
+    if (fchdir(newrootFd) != 0) {
+        val errNum = errno
+        perror("fchdir")
+        close(newrootFd)
+        Logger.error("failed to fchdir to newroot (errno=$errNum)")
+        throw Exception("Failed to fchdir to newroot (errno=$errNum)")
+    }
+    close(newrootFd)
+
+    // pivot_root(".", ".") — the new root is "." (which is newRoot), and
+    // the old root is put at "." (which will be resolved after pivot to
+    // the old root directory). See runc's pivotRoot for this pattern.
+    if (syscall.pivotRoot(".", ".") == -1) {
         val errNum = errno
         perror("pivot_root")
-        close(newrootFd)
         Logger.error("failed to pivot_root (errno=$errNum)")
         throw Exception("Failed to pivot_root (errno=$errNum)")
     }
     Logger.debug("pivot_root syscall completed")
 
-    // Make the old root (now at /) a slave mount BEFORE fchdir so umount events
-    // don't propagate to the host.
+    // After pivot_root(".", "."), "." is the old root. Make it slave so
+    // umount events don't propagate to the host. This targets ONLY the
+    // old root, not the new root — preserving any propagation settings
+    // (e.g. "shared") set on individual mounts.
     if (syscall.mount(
             source = null,
-            target = "/",
+            target = ".",
             fstype = null,
             flags = (MS_SLAVE or MS_REC).toULong(),
         ) != 0
@@ -447,8 +465,8 @@ fun pivotRoot(
         Logger.debug("made old root slave")
     }
 
-    // Lazy unmount of the old root, also BEFORE fchdir.
-    if (syscall.umount2("/", MNT_DETACH) != 0) {
+    // Lazy unmount of the old root.
+    if (syscall.umount2(".", MNT_DETACH) != 0) {
         val errNum = errno
         perror("umount2 old root")
         Logger.warn("failed to unmount old root (errno=$errNum)")
@@ -456,17 +474,7 @@ fun pivotRoot(
         Logger.debug("unmounted old root")
     }
 
-    if (fchdir(newrootFd) != 0) {
-        val errNum = errno
-        perror("fchdir")
-        close(newrootFd)
-        Logger.error("failed to fchdir to newroot (errno=$errNum)")
-        throw Exception("Failed to fchdir to newroot (errno=$errNum)")
-    }
-    Logger.debug("changed to new root")
-
-    close(newrootFd)
-
+    // Change to the new root "/" (which is now the container rootfs).
     if (syscall.chdir("/") != 0) {
         val errNum = errno
         perror("chdir /")
@@ -610,6 +618,12 @@ fun applyLinuxDevices(
 /**
  * Apply spec.linux.rootfsPropagation to "/" AFTER pivot_root. The kernel rejects
  * pivot_root when the new root is MS_SHARED, so propagation must be set last.
+ *
+ * Private/slave variants are already covered by the rslave applied in
+ * prepareRootfs — applying them again here (especially rprivate) would
+ * recursively reset ALL mounts to private, undoing per-mount propagation
+ * flags (e.g. "shared") set during applySpecMounts.  This matches runc's
+ * post-pivot logic which skips MS_PRIVATE|MS_SLAVE.
  */
 @OptIn(ExperimentalForeignApi::class)
 fun applyRootfsPropagation(
@@ -620,12 +634,12 @@ fun applyRootfsPropagation(
         when (rootfsPropagation) {
             "shared" -> "shared" to MS_SHARED.toULong()
             "rshared" -> "rshared" to (MS_SHARED or MS_REC).toULong()
-            "private" -> "private" to MS_PRIVATE.toULong()
-            "rprivate" -> "rprivate" to (MS_PRIVATE or MS_REC).toULong()
-            "slave" -> "slave" to MS_SLAVE.toULong()
             "unbindable" -> "unbindable" to MS_UNBINDABLE.toULong()
             "runbindable" -> "runbindable" to (MS_UNBINDABLE or MS_REC).toULong()
-            null, "rslave" -> return // already rslave from prepareRootfs
+            // private/slave variants (including recursive) are already covered
+            // by the rslave set in prepareRootfs.  Reapplying rprivate post-pivot
+            // would clobber per-mount propagation flags set during applySpecMounts.
+            null, "rslave", "slave", "private", "rprivate" -> return
             else -> {
                 Logger.warn("unknown rootfsPropagation $rootfsPropagation, leaving as rslave")
                 return
@@ -868,6 +882,11 @@ private const val ST_NOSYMFOLLOW = 8192uL
  * Most ST_* values coincide with their MS_* counterparts, but ST_RELATIME
  * and ST_NOSYMFOLLOW differ, so a manual per-bit translation is required.
  */
+// The atime "enum" flags (mutually exclusive) and combined atime flags.
+// These match runc's mntAtimeEnumFlags / mntAtimeFlags definitions.
+private val MNT_ATIME_ENUM_FLAGS = (MS_NOATIME or MS_RELATIME or MS_STRICTATIME).toULong()
+private val MNT_ATIME_FLAGS = MNT_ATIME_ENUM_FLAGS or MS_NODIRATIME.toULong()
+
 private fun statfsToMountFlags(stFlags: ULong): ULong {
     var mntFlags = 0uL
     if (stFlags and ST_RDONLY != 0uL) mntFlags = mntFlags or MS_RDONLY.toULong()
@@ -880,6 +899,12 @@ private fun statfsToMountFlags(stFlags: ULong): ULong {
     if (stFlags and ST_NODIRATIME != 0uL) mntFlags = mntFlags or MS_NODIRATIME.toULong()
     if (stFlags and ST_RELATIME != 0uL) mntFlags = mntFlags or MS_RELATIME.toULong()
     if (stFlags and ST_NOSYMFOLLOW != 0uL) mntFlags = mntFlags or MS_NOSYMFOLLOW.toULong()
+    // MS_STRICTATIME is a "fake" MS_* flag — it isn't stored in mnt->mnt_flags,
+    // so it doesn't appear in statfs(2). If none of the other atime enum flags
+    // are present, the mount is MS_STRICTATIME. (Matches runc's statfsToMountFlags.)
+    if (mntFlags and MNT_ATIME_ENUM_FLAGS == 0uL) {
+        mntFlags = mntFlags or MS_STRICTATIME.toULong()
+    }
     return mntFlags
 }
 
@@ -906,7 +931,11 @@ private fun mkdirP(path: String) {
  * but processes everything else (user bind mounts, /dev/pts, /dev/shm, /dev/mqueue,
  * /sys/fs/cgroup with their spec-defined options).
  *
- * Called after pivot_root, while the process is still root with CAP_SYS_ADMIN.
+ * Called before pivot_root. Returns a list of (destination, propagation_flags)
+ * pairs for mounts whose propagation must be applied AFTER pivot_root. This
+ * is needed because open_tree + move_mount for idmap mounts creates mounts
+ * whose propagation changes are lost during pivot_root's cleanup of the old
+ * root mount tree.
  */
 @OptIn(ExperimentalForeignApi::class)
 fun applySpecMounts(
@@ -914,8 +943,11 @@ fun applySpecMounts(
     mounts: List<spec.Mount>?,
     rootfsPath: String,
     specLinux: spec.Linux? = null,
-) {
-    if (mounts.isNullOrEmpty()) return
+    mainSender: MainSender? = null,
+    initReceiver: InitReceiver? = null,
+): List<Pair<String, ULong>> {
+    if (mounts.isNullOrEmpty()) return emptyList()
+    val deferredPropagation = mutableListOf<Pair<String, ULong>>()
     // prepareRootfs() already establishes these defaults; skip to avoid double-mount.
     val handledByPrepareRootfs = setOf("/proc", "/dev", "/sys", "/sys/fs/cgroup")
     for (m in mounts) {
@@ -929,8 +961,14 @@ fun applySpecMounts(
         // mounts the value is mainly a label (e.g. "shm").
         val source = m.source ?: fsType
         // The target is relative to the future container root; the actual filesystem
-        // path before pivot_root is rootfsPath + destination.
-        val target = rootfsPath + m.destination
+        // path before pivot_root is rootfsPath + destination. Destination may be
+        // relative (no leading '/') per OCI spec, so ensure a separator.
+        val target =
+            if (m.destination.startsWith("/")) {
+                rootfsPath + m.destination
+            } else {
+                "$rootfsPath/${m.destination}"
+            }
 
         // For tmpfs mounts: capture the existing directory's permissions before
         // mounting so we can restore them when no explicit mode= option was given.
@@ -1026,11 +1064,12 @@ fun applySpecMounts(
 
                             // MNT_LOCKED flags: flags the kernel locks in a user
                             // namespace so an unprivileged remount cannot clear them.
+                            // NOTE: MS_NOSYMFOLLOW is NOT locked (runc confirms this).
+                            // Includes all atime flags (MS_STRICTATIME is "fake" but still locked).
                             val mntLockedFlags =
                                 (
-                                    MS_RDONLY or MS_NODEV or MS_NOEXEC or MS_NOSUID or
-                                        MS_NOATIME or MS_NODIRATIME
-                                ).toULong() or MS_RELATIME.toULong() or MS_NOSYMFOLLOW.toULong()
+                                    MS_RDONLY or MS_NODEV or MS_NOEXEC or MS_NOSUID
+                                ).toULong() or MNT_ATIME_FLAGS
 
                             // Determine which locked flags the source imposes.
                             val lockedFromSource = sourceMountFlags and mntLockedFlags
@@ -1049,29 +1088,50 @@ fun applySpecMounts(
                                     "error mounting \"${m.source ?: ""}\" to \"${m.destination}\" " +
                                         "mount destination: operation not permitted",
                                 )
+                            }
+
+                            // If an atime flag was requested, it must match the source.
+                            // This catches two kernel bugs where the kernel silently
+                            // ignores conflicting atime flags:
+                            // - MS_RELATIME is ignored when MS_NOATIME is set
+                            // - MS_STRICTATIME causes MS_RELATIME/MS_NOATIME to be ignored
+                            // We must error out to avoid producing mounts that don't
+                            // match the user's request. (Matches runc's remount logic.)
+                            val requestedAtime = parsed.flags and MNT_ATIME_FLAGS
+                            val sourceAtime = sourceMountFlags and MNT_ATIME_FLAGS
+                            if (requestedAtime != 0uL && requestedAtime != sourceAtime) {
+                                Logger.error(
+                                    "bind-remount of ${m.destination} failed: cannot change " +
+                                        "locked atime flags (requested=0x${requestedAtime.toString(16)}, " +
+                                        "source=0x${sourceAtime.toString(16)})",
+                                )
+                                throw Exception(
+                                    "error mounting \"${m.source ?: ""}\" to \"${m.destination}\" " +
+                                        "mount destination: operation not permitted",
+                                )
+                            }
+
+                            // Merge the locked flags from the source into our
+                            // remount flags and retry.
+                            val adjustedFlags = remountFlags or lockedFromSource
+                            if (syscall.mount(
+                                    source = source,
+                                    target = target,
+                                    fstype = null,
+                                    flags = adjustedFlags,
+                                    data = parsed.data,
+                                ) != 0
+                            ) {
+                                val retryErrno = errno
+                                Logger.warn(
+                                    "bind-remount of ${m.destination} failed even with " +
+                                        "locked-flag fallback (errno=$retryErrno)",
+                                )
                             } else {
-                                // Merge the locked flags from the source into our
-                                // remount flags and retry.
-                                val adjustedFlags = remountFlags or lockedFromSource
-                                if (syscall.mount(
-                                        source = source,
-                                        target = target,
-                                        fstype = null,
-                                        flags = adjustedFlags,
-                                        data = parsed.data,
-                                    ) != 0
-                                ) {
-                                    val retryErrno = errno
-                                    Logger.warn(
-                                        "bind-remount of ${m.destination} failed even with " +
-                                            "locked-flag fallback (errno=$retryErrno)",
-                                    )
-                                } else {
-                                    Logger.debug(
-                                        "bind-remount of ${m.destination} succeeded with " +
-                                            "locked-flag fallback (adjustedFlags=0x${adjustedFlags.toString(16)})",
-                                    )
-                                }
+                                Logger.debug(
+                                    "bind-remount of ${m.destination} succeeded with " +
+                                        "locked-flag fallback (adjustedFlags=0x${adjustedFlags.toString(16)})",
+                                )
                             }
                         }
                     }
@@ -1081,61 +1141,111 @@ fun applySpecMounts(
             }
         }
 
-        // Apply propagation flag in a separate mount() call (kernel requirement).
-        if (parsed.propagation != 0uL) {
-            if (syscall.mount(
-                    source = null,
-                    target = target,
-                    fstype = null,
-                    flags = parsed.propagation,
-                ) != 0
-            ) {
-                Logger.warn("failed to set propagation on ${m.destination} (errno=$errno)")
-            }
-        }
-
         // Apply MOUNT_ATTR_IDMAP if the mount has explicit per-mount mappings
         // or the "idmap"/"ridmap" option was given.
+        // NOTE: idmap is processed BEFORE propagation because the idmap step
+        // does open_tree + move_mount which replaces the mount tree. Any
+        // propagation set before that would be lost on the replacement mount.
         val needsIdmap = !m.uidMappings.isNullOrEmpty() || !m.gidMappings.isNullOrEmpty() || parsed.idmap || parsed.ridmap
         if (needsIdmap) {
-            val recursive = parsed.ridmap
+            // open_tree needs AT_RECURSIVE when the mount has submounts
+            // (MS_REC / rbind) so the entire mount tree is cloned.
+            // mount_setattr needs AT_RECURSIVE only for "ridmap" — for
+            // "idmap" the id mapping is applied only to the top mount.
+            // runc separates these two decisions the same way (see
+            // libcontainer/mount_linux.go mountFd()).
+            val openTreeRecursive = (parsed.flags and MS_REC.toULong()) != 0uL
+            val setattrRecursive = parsed.ridmap
+
             // Determine which UID/GID mappings to use: per-mount if present,
             // otherwise fall back to the container-level mappings from spec.linux.
             val uidMappings = m.uidMappings?.takeIf { it.isNotEmpty() } ?: specLinux?.uidMappings
             val gidMappings = m.gidMappings?.takeIf { it.isNotEmpty() } ?: specLinux?.gidMappings
 
+            requireNotNull(mainSender) { "mainSender required for idmap mounts" }
+            requireNotNull(initReceiver) { "initReceiver required for idmap mounts" }
+
             if (uidMappings.isNullOrEmpty() && gidMappings.isNullOrEmpty()) {
                 // Implied mapping: when "idmap"/"ridmap" option is specified
                 // without explicit UID/GID mappings, use the current user
                 // namespace's mapping (like runc's "implied mapping" behavior).
-                applyIdmapMountImplied(target, recursive)
+                applyIdmapMountImplied(syscall, target, openTreeRecursive, setattrRecursive, mainSender, initReceiver)
             } else {
-                applyIdmapMount(target, uidMappings, gidMappings, recursive)
+                // OCI mappings use host-relative IDs. The main process runs
+                // in the host user namespace, so the mappings can be passed
+                // directly — no translation needed.
+                applyIdmapMount(syscall, target, uidMappings, gidMappings, openTreeRecursive, setattrRecursive, mainSender, initReceiver)
             }
+        }
+
+        // Apply propagation flag in a separate mount() call (kernel requirement).
+        // This must happen AFTER idmap processing because the idmap step does
+        // open_tree + move_mount which replaces the mount — propagation set
+        // before that would be lost on the replacement mount.
+        //
+        // For ALL mounts with propagation flags, defer the propagation to
+        // after pivot_root. Propagation set before pivot_root is lost during
+        // pivot_root's cleanup (MS_SLAVE|MS_REC on old root + umount). The
+        // deferred entries use the post-pivot path (m.destination, not target)
+        // since after pivot_root rootfsPath becomes "/".
+        if (parsed.propagation != 0uL) {
+            deferredPropagation.add(m.destination to parsed.propagation)
+        }
+    }
+    return deferredPropagation
+}
+
+/**
+ * Apply deferred mount propagation flags AFTER pivot_root.
+ *
+ * Some propagation changes (especially on idmap mounts created via
+ * open_tree + move_mount) are lost during pivot_root. This function
+ * applies them after pivot_root when the mount tree is stable.
+ *
+ * @param entries list of (destination, propagation_flags) pairs
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun applyDeferredPropagation(entries: List<Pair<String, ULong>>) {
+    for ((destination, flags) in entries) {
+        if (platform.linux._mount(null, destination, null, flags, null) != 0) {
+            Logger.warn("failed to set deferred propagation on $destination (errno=$errno)")
+        } else {
+            Logger.debug("set deferred propagation on $destination (flags=0x${flags.toString(16)})")
         }
     }
 }
 
 /**
- * Apply MOUNT_ATTR_IDMAP to an existing mount. This replaces the mount at
- * [target] with an ID-mapped clone that translates UID/GID ownership
- * according to the given mappings.
+ * Apply MOUNT_ATTR_IDMAP to an existing mount via fd-passing to the
+ * main process (which runs in the host user namespace).
  *
- * Algorithm:
- * 1. Create a user namespace with the desired UID/GID mappings (via
- *    fork + unshare(CLONE_NEWUSER) + write uid_map/gid_map).
- * 2. open_tree() the target mount to get a detached mount fd.
- * 3. mount_setattr() with MOUNT_ATTR_IDMAP pointing at the userns fd.
- * 4. move_mount() the modified tree back to the original target.
+ * mount_setattr(MOUNT_ATTR_IDMAP) requires the caller to be in the
+ * init (host) user namespace. The init process is in the container's
+ * user namespace, so it cannot call mount_setattr directly. Instead:
+ *
+ * 1. Init: open_tree(target) → detached mount tree fd
+ * 2. Init: send tree fd + mappings to main via MountFdRequest/SCM_RIGHTS
+ * 3. Main: create userns with OCI mappings, call mount_setattr on tree fd
+ * 4. Main: send MountFdDone
+ * 5. Init: move_mount(tree fd → target) to install the idmapped mount
+ *
+ * The tree fd references the same kernel mount object in both processes,
+ * so mount_setattr applied by main is visible when init calls move_mount.
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun applyIdmapMount(
+    syscall: Syscall,
     target: String,
     uidMappings: List<LinuxIdMapping>?,
     gidMappings: List<LinuxIdMapping>?,
-    recursive: Boolean,
+    openTreeRecursive: Boolean,
+    setattrRecursive: Boolean,
+    mainSender: MainSender,
+    initReceiver: InitReceiver,
 ) {
-    Logger.debug("applying MOUNT_ATTR_IDMAP to $target (recursive=$recursive)")
+    Logger.debug(
+        "applying MOUNT_ATTR_IDMAP to $target via main process (openTreeRecursive=$openTreeRecursive, setattrRecursive=$setattrRecursive)",
+    )
 
     // Build mapping strings in the kernel format: "containerID hostID size\n"
     val uidMapStr = buildMappingString(uidMappings)
@@ -1144,185 +1254,210 @@ private fun applyIdmapMount(
     Logger.debug("idmap uid_map: ${uidMapStr.trim()}")
     Logger.debug("idmap gid_map: ${gidMapStr.trim()}")
 
-    // Step 1: Create a user namespace with the desired mappings.
-    val userNsFd = platform.linux._create_userns_with_mappings(uidMapStr, gidMapStr)
-    if (userNsFd < 0) {
-        val errNum = errno
-        Logger.error("failed to create user namespace for idmap on $target (errno=$errNum)")
-        throw Exception("Failed to create user namespace for idmap on $target (errno=$errNum)")
+    // Step 1: open_tree() to get a detached copy of the mount.
+    // AT_RECURSIVE on open_tree clones the entire mount tree (submounts).
+    // This is needed for rbind mounts so submounts survive the move_mount.
+    // AT_RECURSIVE on mount_setattr (separate flag) controls whether idmap
+    // applies to all submounts or just the top mount.
+    var openTreeFlags = platform.linux._OPEN_TREE_CLONE() or platform.linux._OPEN_TREE_CLOEXEC()
+    if (openTreeRecursive) {
+        openTreeFlags = openTreeFlags or platform.linux._AT_RECURSIVE()
     }
-    Logger.debug("created userns fd=$userNsFd for idmap")
+    val treeFd = platform.linux._open_tree(-1, target, openTreeFlags)
+    if (treeFd < 0) {
+        val errNum = errno
+        Logger.error("open_tree($target) failed (errno=$errNum)")
+        throw Exception("open_tree failed for idmap on $target (errno=$errNum)")
+    }
+    Logger.debug("open_tree fd=$treeFd for idmap")
 
     try {
-        // Step 2: open_tree() to get a detached copy of the mount.
-        var openTreeFlags = platform.linux._OPEN_TREE_CLONE() or platform.linux._OPEN_TREE_CLOEXEC()
-        if (recursive) {
-            openTreeFlags = openTreeFlags or platform.linux._AT_RECURSIVE()
-        }
-        val treeFd = platform.linux._open_tree(-1, target, openTreeFlags)
-        if (treeFd < 0) {
+        // Step 2: Send tree fd to main process for mount_setattr.
+        // setattrRecursive controls AT_RECURSIVE on mount_setattr.
+        mainSender.mountFdRequest(treeFd, uidMapStr, gidMapStr, setattrRecursive, implied = false)
+
+        // Step 3: Wait for main to apply mount_setattr.
+        initReceiver.waitForMountFdDone()
+        Logger.debug("main process applied mount_setattr for $target")
+
+        // Step 4: Remove the original mount before move_mount so we don't
+        // stack mounts. The clone from open_tree is a separate detached copy
+        // that is unaffected by this unmount.
+        syscall.umount2(target, MNT_DETACH)
+
+        // Step 5: move_mount() to install the idmapped mount at the target.
+        val rc =
+            platform.linux._move_mount(
+                treeFd,
+                "",
+                -100,
+                target, // AT_FDCWD
+                platform.linux._MOVE_MOUNT_F_EMPTY_PATH(),
+            )
+        if (rc < 0) {
             val errNum = errno
-            Logger.error("open_tree($target) failed (errno=$errNum)")
-            throw Exception("open_tree failed for idmap on $target (errno=$errNum)")
+            Logger.error("move_mount failed for idmap on $target (errno=$errNum)")
+            throw Exception("move_mount failed for idmap on $target (errno=$errNum)")
         }
-        Logger.debug("open_tree fd=$treeFd for idmap")
-
-        try {
-            // Step 3: mount_setattr() with MOUNT_ATTR_IDMAP.
-            memScoped {
-                val attr = alloc<platform.linux._mount_attr>()
-                attr.attr_set = platform.linux._MOUNT_ATTR_IDMAP()
-                attr.attr_clr = 0uL
-                attr.propagation = 0uL
-                attr.userns_fd = userNsFd.toULong()
-
-                var setattrFlags = platform.linux._AT_EMPTY_PATH()
-                if (recursive) {
-                    setattrFlags = setattrFlags or platform.linux._AT_RECURSIVE()
-                }
-
-                val rc =
-                    platform.linux._mount_setattr(
-                        treeFd,
-                        "",
-                        setattrFlags,
-                        attr.ptr,
-                        platform.linux._sizeof_mount_attr(),
-                    )
-                if (rc < 0) {
-                    val errNum = errno
-                    Logger.error("mount_setattr(MOUNT_ATTR_IDMAP) failed for $target (errno=$errNum)")
-                    throw Exception("mount_setattr(MOUNT_ATTR_IDMAP) failed for $target (errno=$errNum)")
-                }
-                Logger.debug("mount_setattr MOUNT_ATTR_IDMAP applied to tree fd=$treeFd")
-            }
-
-            // Step 4: move_mount() to replace the original mount with the idmapped one.
-            val targetFd = open(target, platform.linux._O_PATH_FLAG() or O_DIRECTORY or O_CLOEXEC, 0u)
-            if (targetFd < 0) {
-                val errNum = errno
-                Logger.error("failed to open target $target for move_mount (errno=$errNum)")
-                throw Exception("Failed to open $target for move_mount (errno=$errNum)")
-            }
-
-            try {
-                val moveMountFlags =
-                    platform.linux._MOVE_MOUNT_F_EMPTY_PATH() or
-                        platform.linux._MOVE_MOUNT_T_EMPTY_PATH()
-                val rc = platform.linux._move_mount(treeFd, "", targetFd, "", moveMountFlags)
-                if (rc < 0) {
-                    val errNum = errno
-                    Logger.error("move_mount failed for idmap on $target (errno=$errNum)")
-                    throw Exception("move_mount failed for idmap on $target (errno=$errNum)")
-                }
-                Logger.debug("move_mount completed, idmap mount active at $target")
-            } finally {
-                close(targetFd)
-            }
-        } finally {
-            close(treeFd)
-        }
+        Logger.debug("move_mount completed, idmap mount active at $target")
     } finally {
-        close(userNsFd)
+        close(treeFd)
     }
 }
 
 /**
- * Apply MOUNT_ATTR_IDMAP using the current process's user namespace
- * (implied mapping). Used when the "idmap"/"ridmap" option is specified
- * without explicit UID/GID mappings on the mount spec.
+ * Apply MOUNT_ATTR_IDMAP using the container's own user namespace
+ * (implied mapping) via fd-passing to the main process.
  *
- * Instead of creating a new user namespace, opens /proc/self/ns/user
- * and passes it to mount_setattr. This uses the container's own user
- * namespace mappings for the idmap, matching runc's "implied mapping"
- * behavior.
+ * Same architecture as [applyIdmapMount] but sets implied=true so the
+ * main process uses the container's userns (via /proc/$initPid/ns/user)
+ * instead of creating a new one. Matches runc's "implied mapping" behavior.
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun applyIdmapMountImplied(
+    syscall: Syscall,
     target: String,
-    recursive: Boolean,
+    openTreeRecursive: Boolean,
+    setattrRecursive: Boolean,
+    mainSender: MainSender,
+    initReceiver: InitReceiver,
 ) {
-    Logger.debug("applying MOUNT_ATTR_IDMAP (implied mapping) to $target (recursive=$recursive)")
+    Logger.debug(
+        "applying MOUNT_ATTR_IDMAP (implied mapping) to $target via main process (openTreeRecursive=$openTreeRecursive, setattrRecursive=$setattrRecursive)",
+    )
 
-    // Open the current user namespace.
-    val userNsFd = open("/proc/self/ns/user", O_RDONLY or O_CLOEXEC)
-    if (userNsFd < 0) {
-        val errNum = errno
-        Logger.error("failed to open /proc/self/ns/user for implied idmap on $target (errno=$errNum)")
-        throw Exception("Failed to open userns for implied idmap on $target (errno=$errNum)")
+    // open_tree() to get a detached copy of the mount.
+    var openTreeFlags = platform.linux._OPEN_TREE_CLONE() or platform.linux._OPEN_TREE_CLOEXEC()
+    if (openTreeRecursive) {
+        openTreeFlags = openTreeFlags or platform.linux._AT_RECURSIVE()
     }
-    Logger.debug("using current userns fd=$userNsFd for implied idmap")
+    val treeFd = platform.linux._open_tree(-1, target, openTreeFlags)
+    if (treeFd < 0) {
+        val errNum = errno
+        Logger.error("open_tree($target) failed (errno=$errNum)")
+        throw Exception("open_tree failed for implied idmap on $target (errno=$errNum)")
+    }
 
     try {
-        // open_tree() to get a detached copy of the mount.
-        var openTreeFlags = platform.linux._OPEN_TREE_CLONE() or platform.linux._OPEN_TREE_CLOEXEC()
-        if (recursive) {
-            openTreeFlags = openTreeFlags or platform.linux._AT_RECURSIVE()
-        }
-        val treeFd = platform.linux._open_tree(-1, target, openTreeFlags)
-        if (treeFd < 0) {
+        // Send tree fd to main with implied=true (no UID/GID mappings needed).
+        mainSender.mountFdRequest(treeFd, null, null, setattrRecursive, implied = true)
+
+        // Wait for main to apply mount_setattr.
+        initReceiver.waitForMountFdDone()
+        Logger.debug("main process applied implied mount_setattr for $target")
+
+        // Remove the original mount before move_mount (see applyIdmapMount).
+        syscall.umount2(target, MNT_DETACH)
+
+        // move_mount() to install the idmapped mount.
+        val rc =
+            platform.linux._move_mount(
+                treeFd,
+                "",
+                -100,
+                target, // AT_FDCWD
+                platform.linux._MOVE_MOUNT_F_EMPTY_PATH(),
+            )
+        if (rc < 0) {
             val errNum = errno
-            Logger.error("open_tree($target) failed (errno=$errNum)")
-            throw Exception("open_tree failed for implied idmap on $target (errno=$errNum)")
+            Logger.error("move_mount failed for implied idmap on $target (errno=$errNum)")
+            throw Exception("move_mount failed for implied idmap on $target (errno=$errNum)")
         }
+        Logger.debug("move_mount completed, implied idmap mount active at $target")
+    } finally {
+        close(treeFd)
+    }
+}
 
-        try {
-            // mount_setattr() with MOUNT_ATTR_IDMAP.
-            memScoped {
-                val attr = alloc<platform.linux._mount_attr>()
-                attr.attr_set = platform.linux._MOUNT_ATTR_IDMAP()
-                attr.attr_clr = 0uL
-                attr.propagation = 0uL
-                attr.userns_fd = userNsFd.toULong()
+/**
+ * Handle a [Message.MountFdRequest] in the main process (host user namespace).
+ *
+ * Called by the main process message loop when the init process sends a
+ * mount tree fd for MOUNT_ATTR_IDMAP application. The main process can
+ * call mount_setattr because it runs in the init (host) user namespace.
+ *
+ * For explicit mappings: creates a new user namespace with the given
+ * UID/GID mappings and passes it to mount_setattr.
+ *
+ * For implied mappings: opens the container's user namespace from
+ * /proc/[stage2Pid]/ns/user and passes it to mount_setattr.
+ *
+ * @param treeFd   detached mount tree fd received via SCM_RIGHTS
+ * @param uidMap   kernel-format uid_map string (null for implied)
+ * @param gidMap   kernel-format gid_map string (null for implied)
+ * @param recursive whether to pass AT_RECURSIVE to mount_setattr
+ * @param implied  if true, use the container's own userns
+ * @param stage2Pid PID of the init process (for /proc access)
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun handleMountFdRequest(
+    treeFd: Int,
+    uidMap: String?,
+    gidMap: String?,
+    recursive: Boolean,
+    implied: Boolean,
+    stage2Pid: Int,
+) {
+    Logger.debug("handling mount fd request (implied=$implied, recursive=$recursive)")
 
-                var setattrFlags = platform.linux._AT_EMPTY_PATH()
-                if (recursive) {
-                    setattrFlags = setattrFlags or platform.linux._AT_RECURSIVE()
-                }
-
-                val rc =
-                    platform.linux._mount_setattr(
-                        treeFd,
-                        "",
-                        setattrFlags,
-                        attr.ptr,
-                        platform.linux._sizeof_mount_attr(),
-                    )
-                if (rc < 0) {
-                    val errNum = errno
-                    Logger.error("mount_setattr(MOUNT_ATTR_IDMAP) failed for implied idmap on $target (errno=$errNum)")
-                    throw Exception("mount_setattr(MOUNT_ATTR_IDMAP) failed for implied idmap on $target (errno=$errNum)")
-                }
-            }
-
-            // move_mount() to replace the original mount.
-            val targetFd = open(target, platform.linux._O_PATH_FLAG() or O_DIRECTORY or O_CLOEXEC, 0u)
-            if (targetFd < 0) {
-                val errNum = errno
-                Logger.error("failed to open target $target for move_mount (errno=$errNum)")
-                throw Exception("Failed to open $target for move_mount (errno=$errNum)")
-            }
-
-            try {
-                val moveMountFlags =
-                    platform.linux._MOVE_MOUNT_F_EMPTY_PATH() or
-                        platform.linux._MOVE_MOUNT_T_EMPTY_PATH()
-                val rc = platform.linux._move_mount(treeFd, "", targetFd, "", moveMountFlags)
-                if (rc < 0) {
-                    val errNum = errno
-                    Logger.error("move_mount failed for implied idmap on $target (errno=$errNum)")
-                    throw Exception("move_mount failed for implied idmap on $target (errno=$errNum)")
-                }
-                Logger.debug("move_mount completed, implied idmap mount active at $target")
-            } finally {
-                close(targetFd)
-            }
-        } finally {
+    val userNsFd: Int
+    if (implied) {
+        // Open the container's user namespace from the host.
+        userNsFd = open("/proc/$stage2Pid/ns/user", O_RDONLY or O_CLOEXEC)
+        if (userNsFd < 0) {
+            val errNum = errno
             close(treeFd)
+            throw Exception("failed to open /proc/$stage2Pid/ns/user for implied idmap (errno=$errNum)")
+        }
+        Logger.debug("opened container userns fd=$userNsFd for implied idmap")
+    } else {
+        // Create a new user namespace with the specified OCI mappings.
+        // The main process is in the host userns, so OCI host-relative
+        // IDs are used directly — no translation needed.
+        userNsFd = platform.linux._create_userns_with_mappings(uidMap!!, gidMap!!)
+        if (userNsFd < 0) {
+            val errNum = errno
+            close(treeFd)
+            throw Exception("failed to create userns for idmap (errno=$errNum)")
+        }
+        Logger.debug("created userns fd=$userNsFd for idmap")
+    }
+
+    try {
+        // Apply MOUNT_ATTR_IDMAP to the detached mount tree.
+        memScoped {
+            val attr = alloc<platform.linux._mount_attr>()
+            attr.attr_set = platform.linux._MOUNT_ATTR_IDMAP()
+            attr.attr_clr = 0uL
+            attr.propagation = 0uL
+            attr.userns_fd = userNsFd.toULong()
+
+            var setattrFlags = platform.linux._AT_EMPTY_PATH()
+            if (recursive) {
+                setattrFlags = setattrFlags or platform.linux._AT_RECURSIVE()
+            }
+
+            val rc =
+                platform.linux._mount_setattr(
+                    treeFd,
+                    "",
+                    setattrFlags,
+                    attr.ptr,
+                    platform.linux._sizeof_mount_attr(),
+                )
+            if (rc < 0) {
+                val errNum = errno
+                Logger.error("mount_setattr(MOUNT_ATTR_IDMAP) failed (errno=$errNum)")
+                throw Exception("mount_setattr(MOUNT_ATTR_IDMAP) failed (errno=$errNum)")
+            }
+            Logger.debug("mount_setattr MOUNT_ATTR_IDMAP applied to tree fd=$treeFd")
         }
     } finally {
         close(userNsFd)
     }
+    // Close our copy of the tree fd. Init's copy is still valid and now
+    // carries the idmap attributes — init will use it for move_mount.
+    close(treeFd)
 }
 
 /**

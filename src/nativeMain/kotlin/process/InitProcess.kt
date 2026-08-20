@@ -10,6 +10,7 @@ import console.wireStdio
 import kotlinx.cinterop.*
 import logger.Logger
 import platform.posix.*
+import rootfs.applyDeferredPropagation
 import rootfs.applyLinuxDevices
 import rootfs.applyMaskedPaths
 import rootfs.applyReadonlyPaths
@@ -123,7 +124,9 @@ private fun initProcessInternal(
             prepareRootfs(syscall, rootfsPath, spec.linux?.rootfsPropagation, spec.mounts)
             // Process spec.mounts BEFORE pivot_root so bind-mount source paths from
             // the host are still reachable. Targets are inside rootfsPath.
-            applySpecMounts(syscall, spec.mounts, rootfsPath, spec.linux)
+            // Returns deferred propagation entries that must be applied after
+            // pivot_root (propagation set before pivot is lost during cleanup).
+            val deferredPropagation = applySpecMounts(syscall, spec.mounts, rootfsPath, spec.linux, mainSender, initReceiver)
 
             // createContainer hooks run after the container's mount namespace
             // is established but BEFORE pivot_root — they can still see the
@@ -139,6 +142,8 @@ private fun initProcessInternal(
             // Apply rootfsPropagation only AFTER pivot_root; the kernel forbids
             // pivot_root into a MS_SHARED subtree.
             applyRootfsPropagation(syscall, spec.linux?.rootfsPropagation)
+            // Apply deferred mount propagation after pivot_root.
+            applyDeferredPropagation(deferredPropagation)
         } else {
             Logger.debug("no mount namespace, skipping rootfs preparation")
         }
@@ -460,7 +465,12 @@ fun syncSeccompNotifyFd(
     Logger.debug("sending seccomp notify FD for forwarding")
     mainSender.seccompNotifyRequest(notifyFd)
     initReceiver.waitForSeccompRequestDone()
-    Logger.debug("seccomp notify FD handled by forwarding process")
+    // Close our copy of the notify FD — the main process (and then the
+    // seccomp agent) now hold their own duplicates via SCM_RIGHTS.
+    // Keeping this open prevents the kernel from returning ENOSYS to
+    // notified syscalls when the seccomp agent dies.
+    close(notifyFd)
+    Logger.debug("seccomp notify FD handled by forwarding process (closed local copy)")
 }
 
 /**

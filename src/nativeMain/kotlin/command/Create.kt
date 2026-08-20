@@ -11,6 +11,7 @@ import namespace.calculateCloneFlags
 import platform.posix.*
 import process.runMainProcess
 import rootfs.validateSysctls
+import seccomp.validateSeccompFlags
 import spec.loadSpec
 import state.containerExists
 import state.getContainerDir
@@ -149,6 +150,10 @@ fun create(
         // the kernel resolves it to the running executable.
         val exePathBuf = "/proc/self/exe".cstr.ptr
         Logger.debug("executable path (for re-exec): /proc/self/exe")
+
+        // Validate seccomp flags before forking — after fork, errors from
+        // the child process are not visible in the parent's output.
+        spec.linux?.seccomp?.let { validateSeccompFlags(it) }
 
         // Fork and exec to trigger bootstrap constructor.
         // We use a plain fork() (not CLONE_PARENT) so that Stage-1 becomes a
