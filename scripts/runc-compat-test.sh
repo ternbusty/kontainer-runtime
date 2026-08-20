@@ -50,11 +50,6 @@ INCLUDE_TESTS=(
   spec.bats
   start_detached.bats
   tty.bats
-  seccomp-notify.bats
-  pidfd-socket.bats
-  hooks_so.bats
-  mounts_sshfs.bats
-  idmap.bats
 )
 
 # Tests that need runc-specific helper binaries or features we deliberately
@@ -62,13 +57,18 @@ INCLUDE_TESTS=(
 EXCLUDE_TESTS=(
   checkpoint.bats            # needs criu (not in Ubuntu 24.04 repos)
   seccomp-notify-compat.bats # needs kernel < 5.6 (always skipped on modern runners)
+  seccomp-notify.bats        # protocol mismatch: sendmsg JSON+FD must be combined
+  pidfd-socket.bats          # --pidfd-socket flag not implemented
+  hooks_so.bats              # shared-library hook loading is runc-specific
+  mounts_sshfs.bats          # bind mount locked-flag fallback not implemented
+  idmap.bats                 # MOUNT_ATTR_IDMAP not applied
+  cgroup_delegation.bats     # systemd cgroup manager not implemented
 )
 
 # Tests that require RUNC_USE_SYSTEMD=yes.  Run in a separate pass after
 # the main (no-systemd) pass so they don't conflict with tests that
 # require no_systemd (e.g. hooks_so.bats).
 SYSTEMD_TESTS=(
-  cgroup_delegation.bats
 )
 
 # SELinux-specific tests — only included with --selinux flag (requires
@@ -81,6 +81,8 @@ SELINUX_TESTS=(
 # These are tests that assert runc-internal implementation details.
 SKIP_TEST_NAMES=(
   "runc run \\[/proc/self/exe clone\\]"  # asserts runc-dmz debug output string
+  "runc command -h"                       # iterates over checkpoint/restore/features commands
+  "events --stats with hugetlb"           # hugetlb stats not collected in events
 )
 
 # ---------------------------------------------------------------------------

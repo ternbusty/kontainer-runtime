@@ -363,6 +363,11 @@ private fun initProcessInternal(
             _exit(0)
         }
 
+        // Resolve HOME from /etc/passwd if not already set in spec.
+        // Must happen AFTER pivotRoot (so /etc/passwd is the container's)
+        // and BEFORE applyProcessEnv (which calls clearenv + setenv).
+        ensureHomeEnv(processEnv, spec.process.user.uid)
+
         Logger.info("Executing: ${processArgs.joinToString(" ")}")
 
         // Clear host environment variables so container starts clean

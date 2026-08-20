@@ -181,6 +181,7 @@ class KontainerRuntime(
     val logFile by option("--log", "-l", help = "Log file path")
     val logFormat by option("--log-format", help = "Log format (text or json)")
     val debug by option("--debug", help = "Enable debug logging").flag()
+    val systemdCgroup by option("--systemd-cgroup", help = "Use systemd cgroup manager (accepted but not yet implemented)").flag()
 
     override fun run() {
         logFile?.let { Logger.setLogFile(it) }

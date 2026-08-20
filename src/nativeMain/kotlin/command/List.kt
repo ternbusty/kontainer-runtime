@@ -1,6 +1,9 @@
 package command
 
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.toKString
 import logger.Logger
+import platform.posix.*
 import spec.loadSpec
 import state.State
 import state.loadState
@@ -22,12 +25,18 @@ import utils.JsonCodec
  * Containers whose state.json is missing or corrupt are silently skipped
  * (a warning is logged).
  */
+@OptIn(ExperimentalForeignApi::class)
 fun list(
     fs: FileSystem,
     rootPath: String,
     format: String,
     quiet: Boolean,
 ) {
+    // runc exits non-zero when the root directory does not exist.
+    if (access(rootPath, F_OK) != 0) {
+        val err = strerror(platform.posix.errno)?.toKString() ?: "no such file or directory"
+        throw Exception("$rootPath: $err")
+    }
     print(formatContainerList(fs, rootPath, format, quiet))
 }
 

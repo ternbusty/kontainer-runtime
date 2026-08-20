@@ -20,6 +20,7 @@ import namespace.nsJoinList
 import platform.posix.*
 import process.applyProcessEnv
 import process.applyProcessSecurity
+import process.ensureHomeEnv
 import process.setupSessionKeyring
 import process.syncSeccompNotifyFd
 import seccomp.seccompUsesNotify
@@ -206,7 +207,7 @@ fun exec(
     if (cgroupOverride.isNotEmpty()) {
         val subPath = cgroupOverride.first()
         if (subPath.contains("..")) {
-            fprintf(stderr, "exec failed: invalid sub-cgroup path \"%s\": .. is not a sub cgroup path\n", subPath)
+            fprintf(stderr, "exec failed: bad sub cgroup path \"%s\": .. is not a sub cgroup path\n", subPath)
             exit(1)
             return
         }
@@ -701,7 +702,11 @@ private fun runExecGrandchild(
     notifyMainSender?.close()
     notifyInitReceiver?.close()
 
-    applyProcessEnv(spec.process.env ?: emptyList())
+    // Resolve HOME from /etc/passwd if not already set in spec.
+    // After setns(CLONE_NEWNS), /etc/passwd is the container's file.
+    val execEnv = (spec.process.env ?: emptyList()).toMutableList()
+    ensureHomeEnv(execEnv, spec.process.user.uid)
+    applyProcessEnv(execEnv)
 
     // Flag every inherited runtime fd CLOEXEC so nothing leaks into the user
     // process (CVE-2024-21626 hygiene).
