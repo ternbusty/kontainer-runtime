@@ -8,12 +8,17 @@ Creating a container involves three cooperating processes.
 flowchart TD
     CLI["kontainer-runtime create<br/>(user shell)"]
     CLI --> Main["main<br/>Kotlin, multi-threaded"]
+    Main -- "exeseal (clone binary<br/>via memfd/overlayfs)" --> Main
     Main -- "fork + exec self with<br/>_KONTAINER_IS_BOOTSTRAP=1" --> Stage1["stage-1<br/>bootstrap.c constructor<br/>single-threaded C"]
     Stage1 -- "setns paths<br/>unshare remaining ns<br/>clone(CLONE_PARENT)" --> Stage2["stage-2 (init, PID 1)<br/>Kotlin runInitProcess"]
     Stage2 -- "execve" --> Container["container process<br/>(spec.process.args)"]
     Stage1 -. "exits after clone" .-> X((·))
     Main -. "waits for init-ready,<br/>saves state.json, exits" .-> Y((·))
 ```
+
+### Exeseal (CVE-2019-5736 mitigation)
+
+Before any container work begins, the main process clones its own binary into a sealed, read-only file descriptor (via overlayfs on tmpfs, falling back to `memfd_create` + `MFD_EXEC`). It then re-executes from this cloned copy. This prevents a malicious container process from overwriting the host runtime binary through `/proc/self/exe`.
 
 ### Main process
 
@@ -29,7 +34,7 @@ PID 1 in the container. Runs `runInitProcess()` in Kotlin. Does `prepareRootfs`,
 
 ## Container lifecycle sequence
 
-The full `create` + `start` flow. UID/GID map handshake, seccomp notify FD forwarding, and hook points all live inside it as `alt` or `opt` blocks. Everything below the "start" divider only runs when the user invokes `kontainer-runtime start #lt;id#gt;` in a separate process.
+The full `create` + `start` flow. UID/GID map handshake, seccomp notify FD forwarding, and hook points all live inside it as `alt` or `opt` blocks. Everything below the "start" divider only runs when the user invokes `kontainer-runtime start <id>` in a separate process.
 
 ```mermaid
 sequenceDiagram
@@ -40,15 +45,15 @@ sequenceDiagram
     participant S2 as stage-2 / init<br/>(Kotlin, PID 1 in container)
     participant Listener as seccomp<br/>listenerPath
 
-    User->>Main: kontainer-runtime create #lt;id#gt;
-    Note over Main: loadSpec, resolveCgroupPath,<br/>SocketNotifyListener bind
+    User->>Main: kontainer-runtime create <id>
+    Note over Main: exeseal (clone binary),<br/>loadSpec, resolveCgroupPath,<br/>SocketNotifyListener bind
     Main->>S1: fork + execve self<br/>(env: _KONTAINER_IS_BOOTSTRAP=1,<br/>clone flags, ns paths, FDs)
 
     opt spec.linux.namespaces contains "user"
         S1->>S1: unshare(CLONE_NEWUSER)
         S1->>S1: prctl(PR_SET_DUMPABLE, 1)
         S1->>Main: SYNC_USERMAP_PLS (0x40) + stage-1 pid
-        Note over Main: write /proc/#lt;s1#gt;/setgroups (deny if unprivileged),<br/>/proc/#lt;s1#gt;/uid_map, /proc/#lt;s1#gt;/gid_map
+        Note over Main: write /proc/<s1>/setgroups (deny if unprivileged),<br/>/proc/<s1>/uid_map, /proc/<s1>/gid_map
         Main->>S1: SYNC_USERMAP_ACK (0x41)
         S1->>S1: prctl(PR_SET_DUMPABLE, 0)
         S1->>S1: setuid(0), setgid(0)
@@ -60,9 +65,9 @@ sequenceDiagram
     S1->>Main: stage-2 pid (int32) over sync socket
     S1--)Main: exit
 
-    Note over Main: cgroup.setup(stage2Pid, resolvedPath, resources),<br/>applyRlimits(stage2Pid)
+    Note over Main: cgroup.setup(stage2Pid, resolvedPath, resources),<br/>eBPF device cgroup,<br/>applyRlimits(stage2Pid)
 
-    Note over S2: setLoopbackUp,<br/>prepareRootfs (mount /proc, /dev, /sys, devices, symlinks),<br/>applySpecMounts
+    Note over S2: setLoopbackUp,<br/>prepareRootfs (mount /proc, /dev, /sys, devices, symlinks),<br/>applySpecMounts (incl. idmap mounts)
     opt spec.hooks.createContainer
         S2->>S2: exec each hook with state JSON on stdin
     end
@@ -85,13 +90,13 @@ sequenceDiagram
     end
     Main--)User: exit 0
     S2->>S2: closeRange (fallback via /proc/self/fd if seccomp blocks it)
-    S2->>S2: listen on /tmp/kontainer-#lt;id#gt;.sock
+    S2->>S2: listen on notify.sock
 
-    Note over User,S2: A separate process runs kontainer-runtime start #lt;id#gt; below.
+    Note over User,S2: A separate process runs kontainer-runtime start <id> below.
 
-    User->>Main: kontainer-runtime start #lt;id#gt;
+    User->>Main: kontainer-runtime start <id>
     Main->>Main: loadState, check status == created
-    Main->>S2: notifyContainerStart via /tmp/kontainer-#lt;id#gt;.sock
+    Main->>S2: notifyContainerStart via notify.sock
     Main->>Main: save state.json (status=running)
     opt spec.hooks.poststart
         Main->>Main: exec each hook with state JSON on stdin

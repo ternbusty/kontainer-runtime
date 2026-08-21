@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-The runtime needs a Linux x86_64 host. Only `linuxX64` builds are wired up right now.
+The runtime needs a Linux host (x86_64 or arm64).
 
 Most operations require `CAP_SYS_ADMIN` to unshare namespaces, install seccomp filters, and mount inside the container. Every command below assumes `sudo`.
 
@@ -11,16 +11,19 @@ Most operations require `CAP_SYS_ADMIN` to unshare namespaces, install seccomp f
 Grab the latest release binary from GitHub and drop it on `PATH`.
 
 ```bash
+# x86_64
 curl -sSL -o /usr/local/bin/kontainer-runtime \
   https://github.com/ternbusty/kontainer-runtime/releases/latest/download/kontainer-runtime_$(curl -sSL https://api.github.com/repos/ternbusty/kontainer-runtime/releases/latest | grep -oE '"tag_name":\s*"v[^"]+"' | sed -E 's/.*"v([^"]+)".*/\1/')_linux_amd64
 sudo chmod +x /usr/local/bin/kontainer-runtime
 kontainer-runtime --help
 ```
 
+For arm64 hosts, replace `_linux_amd64` with `_linux_arm64` in the URL above.
+
 Or fetch a specific version.
 
 ```bash
-VERSION=0.2.1
+VERSION=0.4.0
 curl -sSL -o /usr/local/bin/kontainer-runtime \
   "https://github.com/ternbusty/kontainer-runtime/releases/download/v${VERSION}/kontainer-runtime_${VERSION}_linux_amd64"
 sudo chmod +x /usr/local/bin/kontainer-runtime
@@ -60,11 +63,11 @@ For a more realistic setup, use `containerd` to drive the runtime against a real
 Paths that the runtime creates or reads at runtime.
 
 - `/run/kontainer/<id>/state.json` holds the container state (id, status, pid, bundle, annotations)
-- `/run/kontainer/<id>/config.json` holds internal runtime config such as the resolved cgroup path
+- `/run/kontainer/<id>/kontainer_config.json` holds internal runtime config such as the resolved cgroup path
 - `/run/kontainer/<id>/.lock` is an advisory lock guarding state.json for concurrent CLI calls
-- `/tmp/kontainer-<id>.sock` is the notify socket the create process listens on for `start`
+- `/run/kontainer/<id>/notify.sock` is the notify socket the create process listens on for `start`
 - `/sys/fs/cgroup/kontainer-runtime/<id>/` is the default cgroup location. A relative `cgroupsPath` in the spec gets nested here. An absolute path is used verbatim.
 
 ## Build from source
 
-Building the runtime yourself needs a JDK 17, `gcc`, and `libseccomp-dev`. See [Contributing → Build](contributing.md#build) for the Gradle commands.
+Building the runtime yourself needs a JDK 17+, `gcc`, and `libseccomp-dev`. For arm64 cross-compilation, also install `gcc-aarch64-linux-gnu` and `libseccomp-dev:arm64`. See [Contributing → Build](contributing.md#build) for the Gradle commands.

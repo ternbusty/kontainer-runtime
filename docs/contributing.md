@@ -3,8 +3,9 @@
 ## Build
 
 ```bash
-./gradlew linkDebugExecutableLinuxX64   # debug build
-./gradlew linkReleaseExecutableLinuxX64 # release build
+./gradlew linkDebugExecutableLinuxX64   # debug build (x86_64)
+./gradlew linkReleaseExecutableLinuxX64 # release build (x86_64)
+./gradlew linkReleaseExecutableLinuxArm64 # release build (arm64, cross-compile)
 ```
 
 ## Test
@@ -28,24 +29,29 @@ Integration tests need `sudo` and `containerd`.
 sudo test-scripts/verify-from-host.sh <container-id>
 ```
 
-OCI runtime-tools validation is the biggest test surface but is expensive to run locally (Linux x86_64 only, needs a GraalVM-scale toolchain). CI runs it on every push. The workflow lives at [`.github/workflows/oci-validation.yml`](https://github.com/ternbusty/kontainer-runtime/blob/main/.github/workflows/oci-validation.yml).
+OCI runtime-tools validation runs on every push in CI. The workflow lives at [`.github/workflows/oci-validation.yml`](https://github.com/ternbusty/kontainer-runtime/blob/main/.github/workflows/oci-validation.yml).
+
+Runc bats compatibility tests run the upstream runc integration test suite against kontainer-runtime. These cover lifecycle commands, exec, cgroups, seccomp (including `SCMP_ACT_NOTIFY`), mounts, idmap, pidfd, and SELinux. The test script is [`scripts/runc-compat-test.sh`](https://github.com/ternbusty/kontainer-runtime/blob/main/scripts/runc-compat-test.sh) and the CI workflow is [`.github/workflows/runc-compat.yml`](https://github.com/ternbusty/kontainer-runtime/blob/main/.github/workflows/runc-compat.yml). SELinux tests run on a Fedora VM via Lima.
 
 ## Repo layout
 
 ```
 src/nativeMain/kotlin/
-├── Main.kt                     # CLI entry point, subcommand wiring
-├── command/                    # create / start / state / kill / delete / exec / ps
-├── process/                    # MainProcess (parent), InitProcess (PID 1)
+├── Main.kt                     # CLI entry point (clikt), subcommand wiring
+├── command/                    # create / start / run / state / list / kill / delete
+│                               #   exec / ps / pause / resume / update / events / spec
+├── process/                    # MainProcess (parent), InitProcess (PID 1), PidfdSocket
 ├── spec/                       # OCI spec data classes + JSON loader
 ├── state/                      # state.json I/O with per-container flock
-├── rootfs/                     # mount, pivot_root, devices, masked/readonly paths
+├── rootfs/                     # mount, pivot_root, devices, masked/readonly paths, idmap
 ├── capability/                 # capset/capget orchestration
-├── cgroup/                     # cgroup v2 controllers, limit writes
+├── cgroup/                     # cgroup v2 controllers, limit writes, eBPF device cgroup
 ├── namespace/                  # clone flag calculation
-├── seccomp/                    # filter compile + notify FD handshake
+├── seccomp/                    # filter compile + notify FD handshake + listener protocol
 ├── hook/                       # external hook program exec
 ├── channel/                    # UNIX socket sender/receiver abstractions
+├── console/                    # PTY allocation, master/slave relay, console-socket handoff
+├── exeseal/                    # CVE-2019-5736 mitigation (binary self-cloning via overlayfs/memfd)
 ├── syscall/                    # thin wrappers, injectable via Syscall interface
 ├── config/                     # per-container internal config (cgroupPath cache)
 ├── logger/                     # stderr / file / JSON logging

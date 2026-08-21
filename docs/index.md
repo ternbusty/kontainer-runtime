@@ -10,15 +10,19 @@ Kotlin/Native compiles to a static native executable with no JVM at runtime. Thi
 
 ## Feature status
 
-The runtime passes the [opencontainers/runtime-tools](https://github.com/opencontainers/runtime-tools) validation suite in CI. Highlights of what works today.
+The runtime passes the [opencontainers/runtime-tools](https://github.com/opencontainers/runtime-tools) validation suite and the [runc integration tests](https://github.com/opencontainers/runc/tree/main/tests/integration) (bats) in CI. Highlights of what works today.
 
 - Namespaces (mount, pid, network, ipc, uts, user, cgroup) with create + join by path
-- Rootfs handling covering `pivot_root`, bind mounts, tmpfs, propagation, masked/readonly paths
+- Rootfs handling covering `pivot_root`, bind mounts, tmpfs, propagation, masked/readonly paths, idmap mounts
 - Default `/dev` set (`null`, `zero`, `full`, `random`, `urandom`, `tty`) plus spec.linux.devices
-- Cgroups v2 controllers (memory, cpu, pids, hugetlb)
-- Security features (seccomp, capability sets, no_new_privileges, AppArmor / SELinux exec labels)
+- Cgroups v2 controllers (memory, cpu, pids, hugetlb) and eBPF device cgroup
+- Security features (seccomp with `SCMP_ACT_NOTIFY`, capability sets, no_new_privileges, AppArmor / SELinux exec labels)
+- CVE-2019-5736 mitigation via exeseal (binary self-cloning)
+- PTY / console support with `--console-socket`
 - Hooks in both legacy (prestart, poststart, poststop) and modern (createRuntime, createContainer, startContainer) forms
-- Lifecycle commands (create, start, state, kill, delete, exec, ps)
+- Sysctl support
+- Lifecycle commands (create, start, run, state, list, kill, delete, exec, ps, pause, resume, update, events, spec)
+- Platforms: Linux x86_64 and arm64
 
 ## Getting started
 
