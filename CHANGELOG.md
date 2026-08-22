@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.1](https://github.com/ternbusty/kontainer-runtime/compare/v0.5.0...v0.5.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* **ci:** add libc6-dev:arm64 to release workflow crossPkgs ([#101](https://github.com/ternbusty/kontainer-runtime/issues/101)) ([2551df5](https://github.com/ternbusty/kontainer-runtime/commit/2551df58d04427ff7ee5bf0cdfcc223b7858d09f))
+
+
+### Performance Improvements
+
+* unify exeseal + bootstrap into single re-exec for create/run ([#100](https://github.com/ternbusty/kontainer-runtime/issues/100)) ([d52228c](https://github.com/ternbusty/kontainer-runtime/commit/d52228c5641dcbe5925c3ce52b7177e8eb89002c))
+
 ## [0.5.0](https://github.com/ternbusty/kontainer-runtime/compare/v0.4.0...v0.5.0) (2026-08-20)
 
 
