@@ -8,7 +8,7 @@ Creating a container involves three cooperating processes.
 flowchart TD
     CLI["kontainer-runtime create<br/>(user shell)"]
     CLI --> Main["main<br/>Kotlin, multi-threaded"]
-    Main -- "fork + exec self with<br/>_KONTAINER_IS_BOOTSTRAP=1" --> Stage1["stage-1<br/>bootstrap.c constructor<br/>single-threaded C"]
+    Main -- "fork + exec from sealed fd with<br/>_KONTAINER_IS_BOOTSTRAP=1" --> Stage1["stage-1<br/>bootstrap.c constructor<br/>single-threaded C"]
     Stage1 -- "setns paths<br/>unshare remaining ns<br/>clone(CLONE_PARENT)" --> Stage2["stage-2 (init, PID 1)<br/>Kotlin runInitProcess"]
     Stage2 -- "execve" --> Container["container process<br/>(spec.process.args)"]
     Stage1 -. "exits after clone" .-> X((·))
@@ -112,6 +112,15 @@ The `opt` blocks fire when the corresponding OCI feature is present in the spec.
 Kotlin/Native spawns GC and runtime worker threads at `main`. Several kernel operations reject multi-threaded callers. `setns(fd, CLONE_NEWNS)` returns `EINVAL`, and PID-ns joining requires the caller to fork afterwards. The bootstrap runs before any Kotlin code, so it can join a mount namespace by path, join a PID namespace before forking stage-2, and unshare the rest of the namespaces.
 
 Stage-2 starts as a fresh single-thread process in the new namespaces. The Kotlin runtime takes over from there.
+
+## CVE-2019-5736 mitigation (exeseal)
+
+A malicious container process can overwrite the host runtime binary if it can open `/proc/<runtime-pid>/exe` for writing while the runtime is inside the container's namespaces. The exeseal module seals the binary (via overlayfs, memfd, or a temp file) before any namespace entry.
+
+The strategy differs by command:
+
+- **create / run**: The main process seals the binary and stores the fd. The fork'd child execs from `/proc/self/fd/<sealed>` instead of `/proc/self/exe`. This combines the seal and the bootstrap exec into a single `execv` — no main-process re-exec needed. Stage-1 and stage-2 inherit `/proc/self/exe` → sealed copy.
+- **exec**: The main process re-execs itself from the sealed copy (one `execv`). All subsequent forks (the setns child and grandchild) inherit the safe `/proc/self/exe`. This is necessary because the exec child enters namespaces via `setns` in a plain `fork()` without an intermediate exec.
 
 ## Modules
 

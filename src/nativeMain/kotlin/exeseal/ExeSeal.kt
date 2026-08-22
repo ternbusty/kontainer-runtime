@@ -41,7 +41,46 @@ import platform.posix.*
 private const val CLONED_ENV = "_KONTAINER_CLONED_BINARY"
 
 /**
- * Entry point — call at the very beginning of main().
+ * Sealed fd obtained by [sealBinary].  -1 if sealing was not attempted or
+ * failed.  Used by Create.kt to exec the bootstrap child directly from the
+ * sealed copy — eliminating the main-process re-exec that [ensureSelfCloned]
+ * would otherwise perform.
+ */
+var sealedBinaryFd: Int = -1
+    private set
+
+/**
+ * Seal the runtime binary and return the fd (>= 0) without re-execing.
+ *
+ * Call this for commands that fork+exec a child into container namespaces
+ * (create, run).  The sealed fd is stored in [sealedBinaryFd] and the child
+ * can exec from `/proc/self/fd/<fd>` so its `/proc/self/exe` points to the
+ * sealed copy — protecting against CVE-2019-5736 in a single exec.
+ *
+ * Returns the sealed fd on success, -1 on failure (logs a warning).
+ */
+fun sealBinary(): Int {
+    // Already sealed (e.g. outer layer or prior call).
+    if (getenv(CLONED_ENV) != null || isMemfd()) {
+        Logger.debug("exeseal: binary already sealed, sealBinary() no-op")
+        return -1
+    }
+
+    val fd = cloneBinary()
+    if (fd < 0) {
+        Logger.warn("exeseal: failed to seal binary — CVE-2019-5736 mitigation inactive")
+        return -1
+    }
+
+    sealedBinaryFd = fd
+    Logger.debug("exeseal: sealed binary fd=$fd (no re-exec)")
+    return fd
+}
+
+/**
+ * Entry point for commands that need the main process itself to run from a
+ * sealed copy (e.g. `exec`, where the forked child enters namespaces without
+ * an intermediate exec).
  *
  * If the process is already running from a cloned binary (env marker set),
  * this is a no-op.  Otherwise it seals the binary and re-execs.

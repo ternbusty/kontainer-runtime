@@ -5,6 +5,7 @@ import channel.SocketNotifyListener
 import channel.initChannel
 import channel.mainChannel
 import console.connectConsoleSocket
+import exeseal.sealedBinaryFd
 import kotlinx.cinterop.*
 import logger.Logger
 import namespace.calculateCloneFlags
@@ -143,13 +144,25 @@ fun create(
         val cloneFlags = calculateCloneFlags(spec.linux?.namespaces)
         Logger.debug("calculated clone_flags: 0x${cloneFlags.toString(16)}")
 
-        // Use /proc/self/exe as the exec target.  After the CVE-2019-5736
-        // mitigation re-execs from a sealed memfd, readlink("/proc/self/exe")
-        // returns a memfd path that cannot be exec'd by name.  Using the
-        // /proc/self/exe symlink directly works regardless of the backing —
-        // the kernel resolves it to the running executable.
-        val exePathBuf = "/proc/self/exe".cstr.ptr
-        Logger.debug("executable path (for re-exec): /proc/self/exe")
+        // Determine the exec target for the bootstrap child.
+        //
+        // Optimized path (sealedBinaryFd >= 0): exec directly from the sealed
+        // fd via /proc/self/fd/<N>.  This combines the CVE-2019-5736 seal and
+        // the bootstrap exec into a single execv — the child is born with
+        // /proc/self/exe → sealed copy, and bootstrap.c's constructor runs
+        // in that same exec.  No main-process re-exec needed.
+        //
+        // Fallback path (sealedBinaryFd < 0): the main process was already
+        // re-exec'd from a sealed copy by ensureSelfCloned(), so
+        // /proc/self/exe is safe to use directly.
+        val exePath =
+            if (sealedBinaryFd >= 0) {
+                "/proc/self/fd/$sealedBinaryFd"
+            } else {
+                "/proc/self/exe"
+            }
+        val exePathBuf = exePath.cstr.ptr
+        Logger.debug("executable path (for bootstrap exec): $exePath")
 
         // Validate seccomp flags before forking — after fork, errors from
         // the child process are not visible in the parent's output.
@@ -267,8 +280,10 @@ fun create(
                 argv[1] = "__init__".cstr.ptr
                 argv[2] = null
 
-                // Exec ourselves via /proc/self/exe (CVE-2019-5736 safe)
-                execv("/proc/self/exe", argv)
+                // Exec from sealed binary (CVE-2019-5736 safe).
+                // When sealedBinaryFd >= 0, this execs from the sealed copy
+                // directly — combining seal + bootstrap in one exec.
+                execv(exePath, argv)
 
                 // If exec fails, we reach here
                 perror("execv")

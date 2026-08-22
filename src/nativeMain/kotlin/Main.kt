@@ -23,6 +23,7 @@ import com.github.ajalt.clikt.parameters.types.int
 import command.*
 import config.BuildConfig
 import exeseal.ensureSelfCloned
+import exeseal.sealBinary
 import kotlinx.cinterop.*
 import logger.Logger
 import platform.posix.*
@@ -673,6 +674,37 @@ private fun printUsage() {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Peek at the CLI args to identify the subcommand without full parsing.
+ *
+ * Skips known global flags (--root, --log, --log-format and their values,
+ * plus boolean flags like --debug and --systemd-cgroup) and returns the first
+ * positional token, which is the subcommand name.  Returns null if no
+ * positional argument is found (e.g. bare `--help` invocation).
+ */
+private fun peekSubcommand(args: Array<String>): String? {
+    val globalFlagsWithValue = setOf("--root", "--log", "-l", "--log-format")
+    var i = 0
+    while (i < args.size) {
+        val arg = args[i]
+        if (arg.startsWith("-")) {
+            val flagName = arg.split("=", limit = 2)[0]
+            if (flagName in globalFlagsWithValue && !arg.contains("=")) {
+                i += 2 // skip --flag <value>
+            } else {
+                i++ // boolean flag or --flag=value
+            }
+        } else {
+            return arg
+        }
+    }
+    return null
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -688,11 +720,19 @@ fun main(args: Array<String>) {
 
     Logger.setContext("main")
 
-    // CVE-2019-5736 mitigation: clone the runtime binary into a sealed memfd
-    // and re-exec from it so /proc/self/exe can never be used to overwrite the
-    // on-disk binary.  Must run before any container namespace is entered.
-    // Skip for the init process (Stage-2) — it was already exec'd from the
-    // cloned binary by the parent.
+    // CVE-2019-5736 mitigation: ensure processes that enter container
+    // namespaces run from a sealed binary so /proc/self/exe cannot be used
+    // to overwrite the host binary.
+    //
+    // Strategy depends on the subcommand:
+    // - create/run: seal binary and store the fd; the fork+exec in Create.kt
+    //   uses /proc/self/fd/<fd> so the bootstrap child is born from the sealed
+    //   copy — one exec instead of two (no main-process re-exec needed).
+    // - exec (and other commands that enter namespaces directly via setns in
+    //   a fork'd child): re-exec the main process from the sealed copy so all
+    //   fork'd children automatically have /proc/self/exe → sealed binary.
+    // - init process (Stage-2): skip — it was already exec'd from the sealed
+    //   binary by the parent.
     if (isInit == 0) {
         // Save the binary name before exeseal re-execs from a memfd — after
         // re-exec /proc/self/exe points to the memfd, not the original binary.
@@ -709,7 +749,13 @@ fun main(args: Array<String>) {
                 }
             }
         }
-        ensureSelfCloned(args)
+
+        val subcmd = peekSubcommand(args)
+        if (subcmd == "create" || subcmd == "run") {
+            sealBinary()
+        } else {
+            ensureSelfCloned(args)
+        }
     }
 
     // If this is Stage-2 (init process) forked by bootstrap.c
