@@ -13,3 +13,30 @@ static inline uint32_t _SCMP_ACT_ERRNO(uint32_t x) {
 static inline uint32_t _SCMP_ACT_TRACE(uint32_t x) {
     return SCMP_ACT_TRACE(x);
 }
+
+/*
+ * SCMP_FLTATR_CTL_WAITKILL was added in libseccomp 2.6.0.
+ * Define the numeric value so we can use it at runtime after
+ * a version check, even when compiling against older headers.
+ */
+#ifndef SCMP_FLTATR_CTL_WAITKILL
+#define SCMP_FLTATR_CTL_WAITKILL 10
+#endif
+
+static inline uint32_t _SCMP_FLTATR_CTL_WAITKILL(void) {
+    return SCMP_FLTATR_CTL_WAITKILL;
+}
+
+/* Expose seccomp_version() fields as simple integers for K/N. */
+static inline int _seccomp_version_major(void) {
+    const struct scmp_version *v = seccomp_version();
+    return v ? (int)v->major : -1;
+}
+static inline int _seccomp_version_minor(void) {
+    const struct scmp_version *v = seccomp_version();
+    return v ? (int)v->minor : -1;
+}
+static inline int _seccomp_version_micro(void) {
+    const struct scmp_version *v = seccomp_version();
+    return v ? (int)v->micro : -1;
+}

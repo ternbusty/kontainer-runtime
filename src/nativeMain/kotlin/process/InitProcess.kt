@@ -10,6 +10,7 @@ import console.wireStdio
 import kotlinx.cinterop.*
 import logger.Logger
 import platform.posix.*
+import rootfs.applyDeferredPropagation
 import rootfs.applyLinuxDevices
 import rootfs.applyMaskedPaths
 import rootfs.applyReadonlyPaths
@@ -123,7 +124,9 @@ private fun initProcessInternal(
             prepareRootfs(syscall, rootfsPath, spec.linux?.rootfsPropagation, spec.mounts)
             // Process spec.mounts BEFORE pivot_root so bind-mount source paths from
             // the host are still reachable. Targets are inside rootfsPath.
-            applySpecMounts(syscall, spec.mounts, rootfsPath)
+            // Returns deferred propagation entries that must be applied after
+            // pivot_root (propagation set before pivot is lost during cleanup).
+            val deferredPropagation = applySpecMounts(syscall, spec.mounts, rootfsPath, spec.linux, mainSender, initReceiver)
 
             // createContainer hooks run after the container's mount namespace
             // is established but BEFORE pivot_root — they can still see the
@@ -139,6 +142,8 @@ private fun initProcessInternal(
             // Apply rootfsPropagation only AFTER pivot_root; the kernel forbids
             // pivot_root into a MS_SHARED subtree.
             applyRootfsPropagation(syscall, spec.linux?.rootfsPropagation)
+            // Apply deferred mount propagation after pivot_root.
+            applyDeferredPropagation(deferredPropagation)
         } else {
             Logger.debug("no mount namespace, skipping rootfs preparation")
         }
@@ -222,6 +227,15 @@ private fun initProcessInternal(
             hasUserNamespace = spec.hasNamespace("user"),
             isExec = false,
         )
+
+        // Send a pidfd for ourselves over the pre-connected pidfd socket.
+        // Done after namespace setup (so the pidfd refers to a process
+        // inside the container namespaces) and before execve.
+        val pidfdSocketFd = getenv("_KONTAINER_PIDFD_SOCKET_FD")?.toKString()?.toIntOrNull()
+        if (pidfdSocketFd != null && pidfdSocketFd >= 0) {
+            Logger.debug("sending pidfd over pre-connected socket fd=$pidfdSocketFd")
+            sendPidfd(pidfdSocketFd, "standard")
+        }
 
         // Apply the shared spec.process security profile (umask, NNP, seccomp,
         // capabilities, setgid/setuid, AppArmor/SELinux). The seccomp notify FD,
@@ -313,6 +327,16 @@ private fun initProcessInternal(
         // We re-open it after start if terminal mode is active.
         Logger.debug("waiting for start signal...")
         Logger.closeRedirect()
+
+        // Install signal handlers so that PID 1 (init) can receive signals
+        // from ancestor PID namespaces. In a PID namespace, PID 1 only
+        // receives signals for which it has installed a handler; the kernel
+        // silently drops others (even from ancestor namespaces, except
+        // SIGKILL/SIGSTOP). Without these handlers, pidfd_send_signal()
+        // with SIGTERM from the container manager would be silently ignored.
+        signal(SIGTERM, staticCFunction<Int, Unit> { _ -> _exit(128 + SIGTERM) })
+        signal(SIGINT, staticCFunction<Int, Unit> { _ -> _exit(128 + SIGINT) })
+        signal(SIGHUP, staticCFunction<Int, Unit> { _ -> _exit(128 + SIGHUP) })
 
         // Explicitly close all leaked FDs before blocking in "created"
         // state.  closeRange (above) only sets CLOEXEC which fires at
@@ -441,7 +465,12 @@ fun syncSeccompNotifyFd(
     Logger.debug("sending seccomp notify FD for forwarding")
     mainSender.seccompNotifyRequest(notifyFd)
     initReceiver.waitForSeccompRequestDone()
-    Logger.debug("seccomp notify FD handled by forwarding process")
+    // Close our copy of the notify FD — the main process (and then the
+    // seccomp agent) now hold their own duplicates via SCM_RIGHTS.
+    // Keeping this open prevents the kernel from returning ENOSYS to
+    // notified syscalls when the seccomp agent dies.
+    close(notifyFd)
+    Logger.debug("seccomp notify FD handled by forwarding process (closed local copy)")
 }
 
 /**

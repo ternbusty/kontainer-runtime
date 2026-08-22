@@ -30,6 +30,16 @@ class FakeMainSender : MainSender {
         calls += "seccompNotifyRequest(fd=$fd)"
     }
 
+    override fun mountFdRequest(
+        treeFd: Int,
+        uidMap: String?,
+        gidMap: String?,
+        recursive: Boolean,
+        implied: Boolean,
+    ) {
+        calls += "mountFdRequest(treeFd=$treeFd, recursive=$recursive, implied=$implied)"
+    }
+
     override fun execFailed(error: String) {
         calls += "execFailed(error=$error)"
     }
@@ -72,6 +82,11 @@ class FakeMainReceiver : MainReceiver {
             ?: error("no seccomp request fd preseeded")
     }
 
+    override fun receiveNextMessage(): Pair<Message, Int> {
+        calls += "receiveNextMessage()"
+        error("receiveNextMessage() not preseeded in FakeMainReceiver")
+    }
+
     override fun close() {
         calls += "close()"
     }
@@ -93,6 +108,10 @@ class FakeInitSender : InitSender {
         calls += "seccompNotifyDone()"
     }
 
+    override fun mountFdDone() {
+        calls += "mountFdDone()"
+    }
+
     override fun close() {
         calls += "close()"
     }
@@ -102,6 +121,7 @@ class FakeInitReceiver : InitReceiver {
     val calls: MutableList<String> = mutableListOf()
     val mappingAcks: ArrayDeque<Unit> = ArrayDeque()
     val seccompDoneSignals: ArrayDeque<Unit> = ArrayDeque()
+    val mountFdDoneSignals: ArrayDeque<Unit> = ArrayDeque()
 
     override fun fd(): Int {
         calls += "fd()"
@@ -118,6 +138,12 @@ class FakeInitReceiver : InitReceiver {
         calls += "waitForSeccompRequestDone()"
         seccompDoneSignals.removeFirstOrNull()
             ?: error("no seccomp done signal preseeded")
+    }
+
+    override fun waitForMountFdDone() {
+        calls += "waitForMountFdDone()"
+        mountFdDoneSignals.removeFirstOrNull()
+            ?: error("no mount fd done signal preseeded")
     }
 
     override fun close() {

@@ -70,6 +70,8 @@ data class Mount(
     val type: String? = null,
     val source: String? = null,
     val options: List<String>? = null,
+    val uidMappings: List<LinuxIdMapping>? = null,
+    val gidMappings: List<LinuxIdMapping>? = null,
 )
 
 @Serializable
