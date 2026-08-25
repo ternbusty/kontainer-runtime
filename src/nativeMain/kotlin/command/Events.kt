@@ -64,14 +64,16 @@ fun events(
     val memEventsPath = "$cgDir/memory.events"
     val ifd = inotify_init1(IN_CLOEXEC)
     var stateWd = -1
-    var memEventsWd = -1
     if (ifd >= 0) {
         stateWd = inotify_add_watch(ifd, statePath, IN_DELETE_SELF.toUInt())
-        memEventsWd = inotify_add_watch(ifd, memEventsPath, IN_MODIFY.toUInt())
+        // The memory.events watch needs no wd bookkeeping: any modification
+        // wakes the loop through the inotify fd, and OOM detection re-reads
+        // the oom_kill counter on every iteration.
+        inotify_add_watch(ifd, memEventsPath, IN_MODIFY.toUInt())
     }
 
     try {
-        eventsLoop(fs, rootPath, containerId, cgDir, stats, intervalMs, ifd, stateWd, memEventsWd)
+        eventsLoop(fs, rootPath, containerId, cgDir, stats, intervalMs, ifd, stateWd)
     } finally {
         if (ifd >= 0) close(ifd)
     }
@@ -87,7 +89,6 @@ private fun eventsLoop(
     intervalMs: Long,
     ifd: Int,
     stateWd: Int,
-    @Suppress("UNUSED_PARAMETER") memEventsWd: Int,
 ) {
     if (ifd >= 0) setNonBlocking(ifd)
     try {
