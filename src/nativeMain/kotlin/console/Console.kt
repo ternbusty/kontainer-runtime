@@ -1,6 +1,10 @@
 package console
 
+import ioloop.IoLoop
+import ioloop.restoreBlocking
+import ioloop.setNonBlocking
 import kotlinx.cinterop.*
+import kotlinx.coroutines.*
 import logger.Logger
 import platform.linux.*
 import platform.posix.*
@@ -251,7 +255,7 @@ fun wireStdio(
     width: UInt? = null,
 ) {
     // Set controlling terminal
-    if (platform.posix.ioctl(slaveFd, _TIOCSCTTY().toULong(), 0) != 0) {
+    if (platform.posix.ioctl(slaveFd, _TIOCSCTTY(), 0) != 0) {
         Logger.warn("TIOCSCTTY failed (errno=$errno)")
     }
 
@@ -362,7 +366,7 @@ private fun receiveFdFromSocket(sock: Int): Int =
         msg.msg_iov = iov.ptr
         msg.msg_iovlen = 1u
         msg.msg_control = cmsgBuf
-        msg.msg_controllen = cmsgLen.toULong()
+        msg.msg_controllen = cmsgLen
 
         val n = recvmsg(sock, msg.ptr, 0)
         if (n < 0) {
@@ -387,46 +391,53 @@ private fun receiveFdFromSocket(sock: Int): Int =
 
 /**
  * Relay I/O between a PTY master fd and the current process's stdin/stdout.
- * Runs until the master or stdin closes. Uses poll(2) for multiplexing.
+ * Runs until the master closes (or the calling coroutine is cancelled).
+ * Each direction (master→stdout, stdin→master) is a coroutine that suspends
+ * on [io] until its fd is readable, so callers can run other coroutines
+ * (signal forwarding, process supervision) concurrently on the same loop.
  */
 @OptIn(ExperimentalForeignApi::class)
-fun relayPtyIO(masterFd: Int) {
-    memScoped {
-        val buf = allocArray<ByteVar>(4096)
-        val fds = allocArray<pollfd>(2)
-
-        // fds[0] = stdin, fds[1] = master
-        fds[0].fd = STDIN_FILENO
-        fds[0].events = POLLIN.toShort()
-        fds[1].fd = masterFd
-        fds[1].events = POLLIN.toShort()
-
-        while (true) {
-            val rc = poll(fds, 2u, -1)
-            if (rc < 0) {
-                if (errno == EINTR) continue
-                break
-            }
-
-            // Master → stdout
-            if (fds[1].revents.toInt() and POLLIN != 0) {
-                val n = read(masterFd, buf, 4096u)
-                if (n <= 0) break
-                write(STDOUT_FILENO, buf, n.toULong())
-            }
-            if (fds[1].revents.toInt() and (POLLHUP or POLLERR) != 0) break
-
-            // stdin → master
-            if (fds[0].revents.toInt() and POLLIN != 0) {
-                val n = read(STDIN_FILENO, buf, 4096u)
-                if (n <= 0) {
-                    // stdin closed; master may still produce output
-                    fds[0].fd = -1
-                    continue
+suspend fun relayPtyIO(
+    io: IoLoop,
+    masterFd: Int,
+) {
+    setNonBlocking(masterFd)
+    setNonBlocking(STDIN_FILENO)
+    try {
+        coroutineScope {
+            val stdinJob =
+                launch {
+                    memScoped {
+                        val buf = allocArray<ByteVar>(4096)
+                        while (isActive) {
+                            io.awaitReadable(STDIN_FILENO)
+                            val n = read(STDIN_FILENO, buf, 4096u)
+                            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue
+                            if (n <= 0) break
+                            write(masterFd, buf, n.toULong())
+                        }
+                    }
                 }
-                write(masterFd, buf, n.toULong())
+            launch {
+                memScoped {
+                    val buf = allocArray<ByteVar>(4096)
+                    try {
+                        while (isActive) {
+                            io.awaitReadable(masterFd)
+                            val n = read(masterFd, buf, 4096u)
+                            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue
+                            if (n <= 0) break
+                            write(STDOUT_FILENO, buf, n.toULong())
+                        }
+                    } finally {
+                        stdinJob.cancel()
+                    }
+                }
             }
         }
+    } finally {
+        restoreBlocking(masterFd)
+        restoreBlocking(STDIN_FILENO)
     }
 }
 
@@ -455,7 +466,7 @@ private fun sendFdOverSocket(
         msg.msg_iov = iov.ptr
         msg.msg_iovlen = 1u
         msg.msg_control = cmsgBuf
-        msg.msg_controllen = cmsgLen.toULong()
+        msg.msg_controllen = cmsgLen
 
         val cmsg = _CMSG_FIRSTHDR(msg.ptr) ?: return false
         cmsg.pointed.cmsg_level = SOL_SOCKET

@@ -201,7 +201,7 @@ fun create(
                 val notifyListenerFd = notifyListener.fd().toString()
 
                 // Set clone flags as hex string (e.g., "10000000" for CLONE_NEWUSER)
-                val cloneFlagsHex = cloneFlags.toUInt().toString(16)
+                val cloneFlagsHex = cloneFlags.toString(16)
                 setenv("_KONTAINER_CLONE_FLAGS", cloneFlagsHex, 1)
 
                 // Forward debug logging to bootstrap.c — it checks for the

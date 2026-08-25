@@ -41,7 +41,7 @@ class EventsTest :
 
             snap.data.cpu.stat shouldNotBe null
             snap.data.cpu.stat!!["usage_usec"] shouldBe 123456L
-            snap.data.cpu.stat!!["user_usec"] shouldBe 100000L
+            snap.data.cpu.stat["user_usec"] shouldBe 100000L
         }
 
         test("buildSnapshot reads pids stats") {

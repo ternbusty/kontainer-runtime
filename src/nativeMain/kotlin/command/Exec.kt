@@ -10,7 +10,6 @@ import channel.mainChannel
 import config.loadKontainerConfig
 import console.connectConsoleSocket
 import console.openPtyFromDevpts
-import console.relayPtyIO
 import console.sendMasterViaFd
 import console.wireStdio
 import kotlinx.cinterop.*
@@ -652,19 +651,12 @@ private fun runExecChild(
     notifyMainSender?.close()
     notifyInitReceiver?.close()
 
-    // For non-detached exec with terminal, relay I/O between the PTY master
-    // and this process's stdin/stdout.  The relay runs until the master side
-    // closes (grandchild exits) or stdin closes.
-    if (masterFd >= 0) {
-        relayPtyIO(masterFd)
-        close(masterFd)
-    }
-
-    memScoped {
-        val status = alloc<IntVar>()
-        waitpid(grandchild, status.ptr, 0)
-        _exit(exitCodeFromWaitStatus(status.value))
-    }
+    // Supervise the grandchild until it exits: relay PTY I/O (when a
+    // terminal is attached) and forward signals concurrently, then exit
+    // with the grandchild's exit code.
+    val exitCode = superviseForeground(masterFd, grandchild)
+    if (masterFd >= 0) close(masterFd)
+    _exit(exitCode)
 }
 
 /**
@@ -828,7 +820,7 @@ private fun forwardSeccompNotify(
                     bundle = state.bundle,
                     annotations = spec.annotations,
                 )
-            sendToSeccompListener(listenerPath, containerState, notifyFd, spec.linux?.seccomp?.listenerMetadata)
+            sendToSeccompListener(listenerPath, containerState, notifyFd, spec.linux.seccomp.listenerMetadata)
             Logger.debug("exec: forwarded seccomp notify FD to listener")
         } else {
             Logger.warn("exec: seccomp notify FD received but no listenerPath specified")
