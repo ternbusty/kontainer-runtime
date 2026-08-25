@@ -59,10 +59,7 @@ fun create(
                 buf.toKString()
             }
 
-        @Suppress("NAME_SHADOWING")
-        val bundlePath = absBundle
-
-        val configPath = "$bundlePath/config.json"
+        val configPath = "$absBundle/config.json"
 
         Logger.info("creating container: $containerId")
         Logger.debug("loading spec from $configPath")
@@ -94,7 +91,7 @@ fun create(
             if (spec.root.path.startsWith("/")) {
                 spec.root.path
             } else {
-                "$bundlePath/${spec.root.path}"
+                "$absBundle/${spec.root.path}"
             }
 
         Logger.debug("rootfs path: $rootfsPath")
@@ -216,7 +213,7 @@ fun create(
                 setenv("_KONTAINER_MAIN_SENDER_FD", mainSenderFd, 1)
                 setenv("_KONTAINER_INIT_RECEIVER_FD", initReceiverFd, 1)
                 setenv("_KONTAINER_NOTIFY_LISTENER_FD", notifyListenerFd, 1)
-                setenv("_KONTAINER_BUNDLE_PATH", bundlePath, 1)
+                setenv("_KONTAINER_BUNDLE_PATH", absBundle, 1)
                 setenv("_KONTAINER_ROOTFS_PATH", rootfsPath, 1)
                 setenv("_KONTAINER_NOTIFY_SOCKET", notifySocketPath, 1)
                 setenv("_KONTAINER_CONTAINER_ID", containerId, 1)
@@ -307,7 +304,7 @@ fun create(
                     syncFd = syncFds[0],
                     spec = spec,
                     containerId = containerId,
-                    bundlePath = bundlePath,
+                    bundlePath = absBundle,
                     rootPath = rootPath,
                     pidFile = pidFile,
                     notifyListener = notifyListener,

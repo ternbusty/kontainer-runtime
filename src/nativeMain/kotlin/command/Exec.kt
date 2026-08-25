@@ -120,7 +120,6 @@ fun exec(
         } catch (e: Exception) {
             Logger.error("exec: failed to load state for $containerId: ${e.message}")
             _exit(255)
-            @Suppress("UNREACHABLE_CODE")
             return
         }
     state = state.refreshStatus()
@@ -581,7 +580,6 @@ private fun runExecChild(
                 ?: run {
                     fprintf(stderr, "exec: failed to allocate PTY from container devpts\n")
                     _exit(1)
-                    @Suppress("UNREACHABLE_CODE")
                     return
                 }
         masterFd = pty.master
