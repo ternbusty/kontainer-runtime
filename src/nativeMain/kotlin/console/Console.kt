@@ -403,6 +403,7 @@ suspend fun relayPtyIO(
 ) {
     setNonBlocking(masterFd)
     setNonBlocking(STDIN_FILENO)
+    setNonBlocking(STDOUT_FILENO)
     try {
         coroutineScope {
             val stdinJob =
@@ -414,7 +415,7 @@ suspend fun relayPtyIO(
                             val n = read(STDIN_FILENO, buf, 4096u)
                             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue
                             if (n <= 0) break
-                            write(masterFd, buf, n.toULong())
+                            if (!writeAll(io, masterFd, buf, n)) break
                         }
                     }
                 }
@@ -427,7 +428,7 @@ suspend fun relayPtyIO(
                             val n = read(masterFd, buf, 4096u)
                             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue
                             if (n <= 0) break
-                            write(STDOUT_FILENO, buf, n.toULong())
+                            if (!writeAll(io, STDOUT_FILENO, buf, n)) break
                         }
                     } finally {
                         stdinJob.cancel()
@@ -438,7 +439,39 @@ suspend fun relayPtyIO(
     } finally {
         restoreBlocking(masterFd)
         restoreBlocking(STDIN_FILENO)
+        restoreBlocking(STDOUT_FILENO)
     }
+}
+
+/**
+ * Write [len] bytes from [buf] to a non-blocking [fd], suspending on
+ * [io] until the fd is writable whenever the kernel buffer is full —
+ * the same discipline Go's netpoller applies to blocked writes, so a
+ * slow reader stalls only this coroutine, never the whole event loop.
+ *
+ * @return true when everything was written, false on a write error
+ *   (e.g. EPIPE when the peer closed)
+ */
+@OptIn(ExperimentalForeignApi::class)
+private suspend fun writeAll(
+    io: ioloop.IoLoop,
+    fd: Int,
+    buf: CPointer<ByteVar>,
+    len: Long,
+): Boolean {
+    var off = 0L
+    while (off < len) {
+        val n = write(fd, buf + off, (len - off).toULong())
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                io.awaitWritable(fd)
+                continue
+            }
+            return false
+        }
+        off += n
+    }
+    return true
 }
 
 /**

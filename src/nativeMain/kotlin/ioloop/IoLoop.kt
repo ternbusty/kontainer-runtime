@@ -11,11 +11,23 @@ import platform.posix.errno as posixErrno
 private const val MAX_EVENTS = 8
 private const val DRIVER_TIMEOUT_MS = 100
 
+/**
+ * Per-fd waiters. A pty relay has one coroutine reading an fd while another
+ * writes to it, so read and write interest must be tracked separately and
+ * combined into a single epoll registration.
+ */
+private class FdWaiters {
+    var read: CancellableContinuation<Unit>? = null
+    var write: CancellableContinuation<Unit>? = null
+
+    val isEmpty get() = read == null && write == null
+}
+
 @OptIn(ExperimentalForeignApi::class)
 class IoLoop private constructor(
     private val epfd: Int,
 ) : AutoCloseable {
-    private val waiters = mutableMapOf<Int, CancellableContinuation<Unit>>()
+    private val waiters = mutableMapOf<Int, FdWaiters>()
 
     companion object {
         fun create(): IoLoop {
@@ -25,34 +37,70 @@ class IoLoop private constructor(
         }
     }
 
-    suspend fun awaitReadable(fd: Int) =
-        suspendCancellableCoroutine { cont: CancellableContinuation<Unit> ->
-            memScoped {
-                val ev = alloc<epoll_event>()
-                ev.events = (EPOLLIN or EPOLLONESHOT)
-                ev.data.fd = fd
-                val rc = epoll_ctl(epfd, EPOLL_CTL_ADD, fd, ev.ptr)
-                if (rc != 0 && posixErrno == EPERM) {
-                    // The fd doesn't support epoll (e.g. a regular file, as
-                    // when stdin is redirected from a file). poll(2) reports
-                    // such fds as always ready, and their reads never return
-                    // EAGAIN — resume immediately to match that semantic.
-                    cont.resume(Unit)
-                    return@suspendCancellableCoroutine
-                }
-                if (rc != 0 && posixErrno != EEXIST) {
-                    cont.cancel(IllegalStateException("epoll_ctl ADD failed (errno=$posixErrno)"))
-                    return@suspendCancellableCoroutine
-                }
-                if (rc != 0) {
-                    epoll_ctl(epfd, EPOLL_CTL_MOD, fd, ev.ptr)
-                }
+    /** Suspend until [fd] is readable. */
+    suspend fun awaitReadable(fd: Int) = awaitEvent(fd, wantWrite = false)
+
+    /** Suspend until [fd] is writable (for resuming after EAGAIN on write). */
+    suspend fun awaitWritable(fd: Int) = awaitEvent(fd, wantWrite = true)
+
+    private suspend fun awaitEvent(
+        fd: Int,
+        wantWrite: Boolean,
+    ) = suspendCancellableCoroutine { cont: CancellableContinuation<Unit> ->
+        val w = waiters.getOrPut(fd) { FdWaiters() }
+        if (wantWrite) w.write = cont else w.read = cont
+
+        val rc = arm(fd, w)
+        if (rc != 0) {
+            if (wantWrite) w.write = null else w.read = null
+            if (w.isEmpty) waiters.remove(fd)
+            if (rc == EPERM) {
+                // The fd doesn't support epoll (e.g. a regular file, as when
+                // stdio is redirected from/to a file). poll(2) reports such
+                // fds as always ready, and their reads/writes never return
+                // EAGAIN — resume immediately to match that semantic.
+                cont.resume(Unit)
+            } else {
+                cont.cancel(IllegalStateException("epoll_ctl failed for fd=$fd (errno=$rc)"))
             }
-            waiters[fd] = cont
-            cont.invokeOnCancellation {
+            return@suspendCancellableCoroutine
+        }
+
+        cont.invokeOnCancellation {
+            val cur = waiters[fd] ?: return@invokeOnCancellation
+            if (wantWrite) cur.write = null else cur.read = null
+            if (cur.isEmpty) {
                 waiters.remove(fd)
                 epoll_ctl(epfd, EPOLL_CTL_DEL, fd, null)
+            } else {
+                arm(fd, cur)
             }
+        }
+    }
+
+    /**
+     * (Re-)register [fd] with the interest set derived from its current
+     * waiters. EPOLLONESHOT disarms the fd after each event, so this is
+     * called on every await and after every partial wakeup.
+     *
+     * @return 0 on success, errno on failure
+     */
+    private fun arm(
+        fd: Int,
+        w: FdWaiters,
+    ): Int =
+        memScoped {
+            val ev = alloc<epoll_event>()
+            var interest = EPOLLONESHOT
+            if (w.read != null) interest = interest or EPOLLIN
+            if (w.write != null) interest = interest or EPOLLOUT
+            ev.events = interest
+            ev.data.fd = fd
+            if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, ev.ptr) == 0) return@memScoped 0
+            if (posixErrno == EEXIST) {
+                if (epoll_ctl(epfd, EPOLL_CTL_MOD, fd, ev.ptr) == 0) return@memScoped 0
+            }
+            posixErrno
         }
 
     fun pollAndResume(timeoutMs: Int): Int =
@@ -65,8 +113,30 @@ class IoLoop private constructor(
             }
             for (i in 0 until n) {
                 val fd = events[i].data.fd
-                val cont = waiters.remove(fd) ?: continue
-                cont.resume(Unit)
+                val bits = events[i].events
+                val w = waiters[fd] ?: continue
+                // HUP/ERR wake both directions: reads observe EOF/EIO and
+                // writes observe EPIPE at the syscall, not here.
+                val hupOrErr = (bits and (EPOLLHUP or EPOLLERR)) != 0u
+                var readCont: CancellableContinuation<Unit>? = null
+                var writeCont: CancellableContinuation<Unit>? = null
+                if ((bits and EPOLLIN) != 0u || hupOrErr) {
+                    readCont = w.read
+                    w.read = null
+                }
+                if ((bits and EPOLLOUT) != 0u || hupOrErr) {
+                    writeCont = w.write
+                    w.write = null
+                }
+                if (w.isEmpty) {
+                    // ONESHOT already disarmed the fd; leave it registered so
+                    // the next await re-arms it via EEXIST → MOD.
+                    waiters.remove(fd)
+                } else {
+                    arm(fd, w)
+                }
+                readCont?.resume(Unit)
+                writeCont?.resume(Unit)
             }
             n
         }
