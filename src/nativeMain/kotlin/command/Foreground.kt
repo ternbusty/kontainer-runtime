@@ -1,111 +1,135 @@
+@file:OptIn(ExperimentalForeignApi::class)
+
 package command
 
-import console.relayPtyIO
-import ioloop.IoLoop
-import ioloop.withIoLoop
 import kotlinx.cinterop.*
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import logger.Logger
 import platform.linux._NR_pidfd_open
 import platform.posix.*
-import signals.awaitAndForwardSignals
+import platform.pty.pty_get_winsize
+import platform.pty.pty_set_winsize
 import signals.installSignalRelay
 import signals.uninstallSignalRelay
 
 /**
- * Foreground supervision for run/exec, mirroring runc's concurrent
- * architecture: while waiting for the container process to exit, the PTY
- * I/O relay and the signal forwarder (terminal resize + signal delivery to
- * the container) run as concurrent coroutines on one epoll-backed loop —
- * the coroutine equivalent of runc's goroutines in tty.go / signals.go.
- *
- * @param masterFd PTY master to relay to our stdio, or -1 when the
- *   container inherits stdio directly (terminal=false)
- * @param targetPid the container process to supervise and forward signals to
- * @return the container process's exit code (0 if it couldn't be determined)
+ * Foreground supervision using a single poll(2) call that multiplexes
+ * all fds: PTY master, stdin, signal self-pipe, and pidfd. No threads,
+ * no coroutines, no epoll — the simplest possible event loop.
  */
-@OptIn(ExperimentalForeignApi::class)
 internal fun superviseForeground(
     masterFd: Int,
     targetPid: Int,
 ): Int {
     val sigReadFd = installSignalRelay()
+
+    if (masterFd >= 0) resizePty(masterFd)
+
+    val pidfd = syscall(_NR_pidfd_open(), targetPid, 0).toInt()
+
     return try {
-        withIoLoop { io ->
-            val relayJob =
-                if (masterFd >= 0) {
-                    launch { relayPtyIO(io, masterFd) }
-                } else {
-                    null
-                }
-            val sigJob =
-                if (sigReadFd >= 0) {
-                    launch { awaitAndForwardSignals(io, sigReadFd, targetPid, masterFd) }
-                } else {
-                    null
-                }
-
-            val exitCode = awaitProcessExit(io, targetPid)
-
-            sigJob?.cancel()
-            if (relayJob != null) {
-                // Let the relay drain buffered output: once the container's
-                // pty slave closes, the master read hits EOF and the relay
-                // ends on its own. If something inside the container still
-                // holds the slave open, don't hang — cancel after a grace
-                // period (runc equivalently force-closes the master).
-                withTimeoutOrNull(200) { relayJob.join() }
-                relayJob.cancel()
-            }
-            exitCode
-        }
+        doPollLoop(masterFd, sigReadFd, pidfd, targetPid)
     } finally {
+        if (pidfd >= 0) close(pidfd)
         uninstallSignalRelay(sigReadFd)
     }
 }
 
-/**
- * Suspend until [pid] exits and return its exit code.
- *
- * Uses pidfd_open(2) so the wait is a plain readable-fd event on the
- * [IoLoop] — unlike SIGCHLD-based reaping (runc's approach) this also works
- * when the process is not our child (e.g. reparented init).  Falls back to
- * a WNOHANG/kill(0) poll loop on kernels without pidfd (< 5.3).
- */
-@OptIn(ExperimentalForeignApi::class)
-internal suspend fun awaitProcessExit(
-    io: IoLoop,
-    pid: Int,
-): Int {
-    val pidfd = syscall(_NR_pidfd_open(), pid, 0).toInt()
-    if (pidfd >= 0) {
-        try {
-            io.awaitReadable(pidfd)
-        } finally {
-            close(pidfd)
-        }
-        // The process is dead (zombie at worst), so this does not block:
-        // reap it if it is our child, otherwise settle for exit code 0.
-        return memScoped {
-            val status = alloc<IntVar>()
-            if (waitpid(pid, status.ptr, 0) == pid) {
-                exitCodeFromWaitStatus(status.value)
-            } else {
-                0
+private fun doPollLoop(
+    masterFd: Int,
+    sigReadFd: Int,
+    pidfd: Int,
+    targetPid: Int,
+): Int =
+    memScoped {
+        val buf = allocArray<ByteVar>(65536)
+
+        val nfds = 4
+        val pfds = allocArray<pollfd>(nfds)
+
+        pfds[0].fd = masterFd
+        pfds[0].events = if (masterFd >= 0) POLLIN.toShort() else 0
+        pfds[1].fd = STDIN_FILENO
+        pfds[1].events = if (masterFd >= 0) POLLIN.toShort() else 0
+        pfds[2].fd = sigReadFd
+        pfds[2].events = if (sigReadFd >= 0) POLLIN.toShort() else 0
+        pfds[3].fd = pidfd
+        pfds[3].events = if (pidfd >= 0) POLLIN.toShort() else 0
+
+        var masterOpen = masterFd >= 0
+        var exitCode = 0
+        var exited = false
+
+        while (true) {
+            val rc = poll(pfds, nfds.toULong(), if (exited) 0 else -1)
+            if (rc < 0) {
+                if (errno == EINTR) continue
+                break
             }
+
+            if (masterOpen && pfds[0].revents.toInt() and POLLIN != 0) {
+                val n = read(masterFd, buf, 65536u)
+                if (n > 0) {
+                    write(STDOUT_FILENO, buf, n.toULong())
+                } else {
+                    masterOpen = false
+                    pfds[0].events = 0
+                }
+            }
+            if (pfds[0].revents.toInt() and (POLLHUP or POLLERR) != 0) {
+                val n = read(masterFd, buf, 65536u)
+                if (n > 0) {
+                    write(STDOUT_FILENO, buf, n.toULong())
+                }
+                masterOpen = false
+                pfds[0].events = 0
+            }
+
+            if (pfds[1].revents.toInt() and POLLIN != 0 && masterOpen) {
+                val n = read(STDIN_FILENO, buf, 65536u)
+                if (n > 0) {
+                    write(masterFd, buf, n.toULong())
+                } else {
+                    pfds[1].events = 0
+                }
+            }
+
+            if (pfds[2].revents.toInt() and POLLIN != 0) {
+                val sigBuf = allocArray<ByteVar>(64)
+                val n = read(sigReadFd, sigBuf, 64u)
+                if (n > 0) {
+                    for (i in 0 until n.toInt()) {
+                        when (val sig = sigBuf[i].toInt()) {
+                            SIGWINCH -> if (masterFd >= 0) resizePty(masterFd)
+                            else -> {
+                                Logger.debug("forwarding signal $sig to $targetPid")
+                                kill(targetPid, sig)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (pfds[3].revents.toInt() and POLLIN != 0) {
+                val status = alloc<IntVar>()
+                if (waitpid(targetPid, status.ptr, WNOHANG) > 0) {
+                    exitCode = exitCodeFromWaitStatus(status.value)
+                }
+                exited = true
+                pfds[3].events = 0
+            }
+
+            if (exited && !masterOpen) break
+            if (exited && rc == 0) break
         }
+
+        exitCode
     }
 
-    Logger.debug("pidfd_open failed (errno=$errno), falling back to WNOHANG polling")
-    while (true) {
-        memScoped {
-            val status = alloc<IntVar>()
-            val rc = waitpid(pid, status.ptr, WNOHANG)
-            if (rc == pid) return exitCodeFromWaitStatus(status.value)
-            if (rc < 0 && kill(pid, 0) != 0 && errno == ESRCH) return 0
-        }
-        delay(100)
+private fun resizePty(masterFd: Int) {
+    memScoped {
+        val rows = alloc<UShortVar>()
+        val cols = alloc<UShortVar>()
+        if (pty_get_winsize(STDIN_FILENO, rows.ptr, cols.ptr) != 0) return
+        pty_set_winsize(masterFd, rows.value, cols.value)
     }
 }
