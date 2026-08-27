@@ -1,7 +1,11 @@
 package command
 
 import config.loadKontainerConfig
+import ioloop.restoreBlocking
+import ioloop.setNonBlocking
+import ioloop.withIoLoop
 import kotlinx.cinterop.*
+import kotlinx.coroutines.*
 import kotlinx.serialization.Serializable
 import logger.Logger
 import platform.linux.IN_CLOEXEC
@@ -60,14 +64,16 @@ fun events(
     val memEventsPath = "$cgDir/memory.events"
     val ifd = inotify_init1(IN_CLOEXEC)
     var stateWd = -1
-    var memEventsWd = -1
     if (ifd >= 0) {
         stateWd = inotify_add_watch(ifd, statePath, IN_DELETE_SELF.toUInt())
-        memEventsWd = inotify_add_watch(ifd, memEventsPath, IN_MODIFY.toUInt())
+        // The memory.events watch needs no wd bookkeeping: any modification
+        // wakes the loop through the inotify fd, and OOM detection re-reads
+        // the oom_kill counter on every iteration.
+        inotify_add_watch(ifd, memEventsPath, IN_MODIFY.toUInt())
     }
 
     try {
-        eventsLoop(fs, rootPath, containerId, cgDir, stats, intervalMs, ifd, stateWd, memEventsWd)
+        eventsLoop(fs, rootPath, containerId, cgDir, stats, intervalMs, ifd, stateWd)
     } finally {
         if (ifd >= 0) close(ifd)
     }
@@ -83,20 +89,33 @@ private fun eventsLoop(
     intervalMs: Long,
     ifd: Int,
     stateWd: Int,
-    memEventsWd: Int,
 ) {
-    // Track oom counter so we can emit {"type":"oom"} events when it
-    // increments. cgroup v2 exposes this in memory.events as "oom_kill <N>".
+    if (ifd >= 0) setNonBlocking(ifd)
+    try {
+        eventsLoopCoroutine(fs, rootPath, containerId, cgDir, stats, intervalMs, ifd, stateWd)
+    } finally {
+        if (ifd >= 0) restoreBlocking(ifd)
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+private fun eventsLoopCoroutine(
+    fs: FileSystem,
+    rootPath: String,
+    containerId: String,
+    cgDir: String,
+    stats: Boolean,
+    intervalMs: Long,
+    ifd: Int,
+    stateWd: Int,
+) = withIoLoop { io ->
     var lastOomCount = readOomCount(fs, cgDir)
 
     while (true) {
-        // Check if the container still exists. Once deleted, exit cleanly.
         if (!containerExists(fs, rootPath, containerId)) {
             break
         }
 
-        // Detect OOM: if the oom_kill counter increased since our last check,
-        // emit a dedicated OOM event before the stats snapshot.
         val currentOomCount = readOomCount(fs, cgDir)
         if (currentOomCount != null && lastOomCount != null && currentOomCount > lastOomCount) {
             println("""{"type":"oom","id":"$containerId"}""")
@@ -110,18 +129,13 @@ private fun eventsLoop(
 
         if (stats) break
 
-        // Wait for either:
-        //   (a) the interval to elapse (poll timeout), or
-        //   (b) the container state file to be deleted (IN_DELETE_SELF), or
-        //   (c) memory.events to be modified (IN_MODIFY → possible OOM).
         if (ifd >= 0) {
-            memScoped {
-                val pfd = alloc<pollfd>()
-                pfd.fd = ifd
-                pfd.events = POLLIN.toShort()
-                val ret = poll(pfd.ptr, 1u, intervalMs.toInt())
-                if (ret > 0) {
-                    // Read inotify events to determine what fired.
+            val ready =
+                withTimeoutOrNull(intervalMs) {
+                    io.awaitReadable(ifd)
+                }
+            if (ready != null) {
+                memScoped {
                     val buf = allocArray<ByteVar>(4096)
                     val n = read(ifd, buf, 4096u)
                     if (n > 0) {
@@ -129,16 +143,13 @@ private fun eventsLoop(
                         while (offset < n.toInt()) {
                             val event = (buf + offset)!!.reinterpret<inotify_event>().pointed
                             if (event.wd == stateWd) {
-                                // State file deleted — do a final OOM check then exit.
                                 val finalOomCount = readOomCount(fs, cgDir)
                                 if (finalOomCount != null && lastOomCount != null && finalOomCount > lastOomCount) {
                                     println("""{"type":"oom","id":"$containerId"}""")
                                     fflush(stdout)
                                 }
-                                return
+                                return@withIoLoop
                             }
-                            // For memory.events IN_MODIFY, the loop continues
-                            // and the OOM counter check at the top will handle it.
                             val nameLen = event.len.toInt()
                             offset += sizeOf<inotify_event>().toInt() + nameLen
                         }
@@ -146,8 +157,7 @@ private fun eventsLoop(
                 }
             }
         } else {
-            // Fallback when inotify is unavailable (shouldn't happen on Linux).
-            usleep((intervalMs * 1000).toUInt())
+            delay(intervalMs)
         }
     }
 }

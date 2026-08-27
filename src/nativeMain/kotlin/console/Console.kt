@@ -1,6 +1,13 @@
 package console
 
+import ioloop.IoLoop
+import ioloop.restoreBlocking
+import ioloop.setNonBlocking
 import kotlinx.cinterop.*
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import logger.Logger
 import platform.linux.*
 import platform.posix.*
@@ -251,7 +258,7 @@ fun wireStdio(
     width: UInt? = null,
 ) {
     // Set controlling terminal
-    if (platform.posix.ioctl(slaveFd, _TIOCSCTTY().toULong(), 0) != 0) {
+    if (platform.posix.ioctl(slaveFd, _TIOCSCTTY(), 0) != 0) {
         Logger.warn("TIOCSCTTY failed (errno=$errno)")
     }
 
@@ -362,7 +369,7 @@ private fun receiveFdFromSocket(sock: Int): Int =
         msg.msg_iov = iov.ptr
         msg.msg_iovlen = 1u
         msg.msg_control = cmsgBuf
-        msg.msg_controllen = cmsgLen.toULong()
+        msg.msg_controllen = cmsgLen
 
         val n = recvmsg(sock, msg.ptr, 0)
         if (n < 0) {
@@ -387,47 +394,87 @@ private fun receiveFdFromSocket(sock: Int): Int =
 
 /**
  * Relay I/O between a PTY master fd and the current process's stdin/stdout.
- * Runs until the master or stdin closes. Uses poll(2) for multiplexing.
+ * Runs until the master closes (or the calling coroutine is cancelled).
+ * Each direction (master→stdout, stdin→master) is a coroutine that suspends
+ * on [io] until its fd is readable, so callers can run other coroutines
+ * (signal forwarding, process supervision) concurrently on the same loop.
  */
 @OptIn(ExperimentalForeignApi::class)
-fun relayPtyIO(masterFd: Int) {
-    memScoped {
-        val buf = allocArray<ByteVar>(4096)
-        val fds = allocArray<pollfd>(2)
-
-        // fds[0] = stdin, fds[1] = master
-        fds[0].fd = STDIN_FILENO
-        fds[0].events = POLLIN.toShort()
-        fds[1].fd = masterFd
-        fds[1].events = POLLIN.toShort()
-
-        while (true) {
-            val rc = poll(fds, 2u, -1)
-            if (rc < 0) {
-                if (errno == EINTR) continue
-                break
-            }
-
-            // Master → stdout
-            if (fds[1].revents.toInt() and POLLIN != 0) {
-                val n = read(masterFd, buf, 4096u)
-                if (n <= 0) break
-                write(STDOUT_FILENO, buf, n.toULong())
-            }
-            if (fds[1].revents.toInt() and (POLLHUP or POLLERR) != 0) break
-
-            // stdin → master
-            if (fds[0].revents.toInt() and POLLIN != 0) {
-                val n = read(STDIN_FILENO, buf, 4096u)
-                if (n <= 0) {
-                    // stdin closed; master may still produce output
-                    fds[0].fd = -1
-                    continue
+suspend fun relayPtyIO(
+    io: IoLoop,
+    masterFd: Int,
+) {
+    setNonBlocking(masterFd)
+    setNonBlocking(STDIN_FILENO)
+    setNonBlocking(STDOUT_FILENO)
+    try {
+        coroutineScope {
+            val stdinJob =
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    memScoped {
+                        val buf = allocArray<ByteVar>(65536)
+                        while (isActive) {
+                            io.awaitReadable(STDIN_FILENO)
+                            val n = read(STDIN_FILENO, buf, 65536u)
+                            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue
+                            if (n <= 0) break
+                            if (!writeAll(io, masterFd, buf, n)) break
+                        }
+                    }
                 }
-                write(masterFd, buf, n.toULong())
+            launch(start = CoroutineStart.UNDISPATCHED) {
+                memScoped {
+                    val buf = allocArray<ByteVar>(65536)
+                    try {
+                        while (isActive) {
+                            io.awaitReadable(masterFd)
+                            val n = read(masterFd, buf, 65536u)
+                            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue
+                            if (n <= 0) break
+                            if (!writeAll(io, STDOUT_FILENO, buf, n)) break
+                        }
+                    } finally {
+                        stdinJob.cancel()
+                    }
+                }
             }
         }
+    } finally {
+        restoreBlocking(masterFd)
+        restoreBlocking(STDIN_FILENO)
+        restoreBlocking(STDOUT_FILENO)
     }
+}
+
+/**
+ * Write [len] bytes from [buf] to a non-blocking [fd], suspending on
+ * [io] until the fd is writable whenever the kernel buffer is full —
+ * the same discipline Go's netpoller applies to blocked writes, so a
+ * slow reader stalls only this coroutine, never the whole event loop.
+ *
+ * @return true when everything was written, false on a write error
+ *   (e.g. EPIPE when the peer closed)
+ */
+@OptIn(ExperimentalForeignApi::class)
+private suspend fun writeAll(
+    io: ioloop.IoLoop,
+    fd: Int,
+    buf: CPointer<ByteVar>,
+    len: Long,
+): Boolean {
+    var off = 0L
+    while (off < len) {
+        val n = write(fd, buf + off, (len - off).toULong())
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                io.awaitWritable(fd)
+                continue
+            }
+            return false
+        }
+        off += n
+    }
+    return true
 }
 
 /**
@@ -455,7 +502,7 @@ private fun sendFdOverSocket(
         msg.msg_iov = iov.ptr
         msg.msg_iovlen = 1u
         msg.msg_control = cmsgBuf
-        msg.msg_controllen = cmsgLen.toULong()
+        msg.msg_controllen = cmsgLen
 
         val cmsg = _CMSG_FIRSTHDR(msg.ptr) ?: return false
         cmsg.pointed.cmsg_level = SOL_SOCKET

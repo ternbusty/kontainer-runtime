@@ -3,10 +3,8 @@ package command
 import cgroup.Cgroup
 import console.acceptConsoleMaster
 import console.createConsoleSocketListener
-import console.relayPtyIO
 import kotlinx.cinterop.*
 import logger.Logger
-import platform.linux._NR_pidfd_open
 import platform.posix.*
 import spec.loadSpec
 import state.ContainerStatus
@@ -119,17 +117,11 @@ fun run(
         return
     }
 
-    // Foreground mode: relay PTY I/O or wait for process exit.
+    // Foreground mode: supervise the container until it exits, relaying
+    // PTY I/O and forwarding signals (terminal resize, SIGTERM, ...)
+    // concurrently, as runc does with goroutines.
     Logger.debug("foreground mode: waiting for container $containerId to exit")
 
-    if (masterFd >= 0) {
-        // Relay I/O between the PTY master and our stdio until the
-        // master side closes (container process exits / closes its pty).
-        relayPtyIO(masterFd)
-        close(masterFd)
-    }
-
-    // Snapshot the init PID before the state file is removed.
     val initPid =
         try {
             val st = loadState(fs, rootPath, containerId)
@@ -138,16 +130,14 @@ fun run(
             0
         }
 
-    // Wait for the container's init process to exit and capture its exit code.
-    // Stage-2 (init) is a child of the main process: Create.kt fork()s
-    // Stage-1 (child of main), then bootstrap.c clone_parent()s Stage-2
-    // (parent = Stage-1's parent = main).  waitpid works here.
     val containerExitCode =
         if (initPid > 0) {
-            waitForProcessExit(initPid)
+            superviseForeground(masterFd, initPid)
         } else {
+            Logger.warn("could not determine init pid for $containerId")
             0
         }
+    if (masterFd >= 0) close(masterFd)
 
     if (keep) {
         // --keep: update state to stopped but leave the container around
@@ -173,52 +163,3 @@ fun run(
     Logger.info("container $containerId finished")
     exit(containerExitCode)
 }
-
-/**
- * Wait for the container init process to exit and return its exit code.
- *
- * Stage-2 (the container init) is a child of the main process: Create.kt
- * uses fork() for Stage-1, and bootstrap.c uses CLONE_PARENT for Stage-2,
- * so Stage-2's parent = Stage-1's parent = main process.  waitpid(2) works
- * here.  If it fails (ECHILD — process already reaped), we fall back to
- * polling with kill(pid, 0).
- *
- * @return the process's exit code, or 0 if it couldn't be determined
- */
-@OptIn(ExperimentalForeignApi::class)
-private fun waitForProcessExit(pid: Int): Int =
-    memScoped {
-        val status = alloc<IntVar>()
-
-        // Try waitpid first — works if the init is our child (CLONE_PARENT).
-        val rc = waitpid(pid, status.ptr, 0)
-        if (rc > 0) {
-            return@memScoped exitCodeFromWaitStatus(status.value)
-        }
-
-        // Fallback: waitpid failed (e.g., ECHILD if the kernel reparented
-        // the process). Use pidfd_open + poll to wait for the process to
-        // exit without polling.
-        Logger.debug("waitpid failed (errno=$errno), falling back to pidfd")
-        val pidfd = syscall(_NR_pidfd_open(), pid, 0).toInt()
-        if (pidfd >= 0) {
-            val pfd = alloc<pollfd>()
-            pfd.fd = pidfd
-            pfd.events = POLLIN.toShort()
-            poll(pfd.ptr, 1u, -1) // block until process exits
-            close(pidfd)
-            return@memScoped 0
-        }
-
-        // Last resort: pidfd_open unavailable (kernel < 5.3), poll with
-        // kill(pid, 0).
-        Logger.debug("pidfd_open failed (errno=$errno), falling back to kill-poll")
-        while (true) {
-            if (kill(pid, 0) != 0 && errno == ESRCH) {
-                return@memScoped 0
-            }
-            usleep(100_000u) // 100ms — fixed interval, no backoff needed
-        }
-        @Suppress("UNREACHABLE_CODE")
-        0
-    }

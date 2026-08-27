@@ -108,7 +108,6 @@ private fun initProcessInternal(
                                 "spec.process.terminal=true but --console-socket was not provided",
                             )
                             _exit(1)
-                            @Suppress("UNREACHABLE_CODE")
                             return@memScoped
                         }
                 consoleSocketFd = connectConsoleSocket(consoleSocketPath)
@@ -275,7 +274,6 @@ private fun initProcessInternal(
                         Logger.error("failed to allocate pseudo-terminal from container devpts")
                         if (consoleSocketFd >= 0) close(consoleSocketFd)
                         _exit(1)
-                        @Suppress("UNREACHABLE_CODE")
                         return@memScoped
                     }
 

@@ -206,6 +206,7 @@ kotlin {
     sourceSets {
         nativeMain {
             dependencies {
+                implementation(libs.kotlinxCoroutinesCore)
                 implementation(libs.kotlinxSerializationJson)
                 implementation(libs.clikt)
             }
