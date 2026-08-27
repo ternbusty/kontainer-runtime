@@ -220,6 +220,17 @@ class CgroupV2(
         resources.hugepageLimits?.forEach { hp ->
             applyHugepageLimit(cgroupPath, hp.pageSize, hp.limit)
         }
+        resources.cpu?.let { cpu ->
+            cpu.cpus?.let { cpus ->
+                writeCgroupFile("$cgroupPath/cpuset.cpus", cpus, "cpuset.cpus")
+            }
+            cpu.mems?.let { mems ->
+                writeCgroupFile("$cgroupPath/cpuset.mems", mems, "cpuset.mems")
+            }
+        }
+        resources.unified?.forEach { (key, value) ->
+            writeCgroupFile("$cgroupPath/$key", value, key)
+        }
     }
 
     private fun applyPidsLimit(

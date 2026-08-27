@@ -86,7 +86,7 @@ runc run [bind mount]
 runc run [bind mount through a dangling symlink component]
 runc run [bind mount through a trailing dangling symlink]
 runc run [bind mount {no,rel,strict}atime semantics]
-[skip]runc run [tmpcopyup] # tmpcopyup
+runc run [tmpcopyup]
 runc run with tmpfs
 runc run with tmpfs perms
 runc run [tmpfs mount mode=1777 default]
@@ -110,7 +110,7 @@ runc run [mount order, container idmap source] (userns)
 runc run [/proc is a symlink]
 runc run [rootfsPropagation shared]
 runc run [rootfsPropagation slave]
-[skip]runc run --no-pivot must not expose bare /proc # no_pivot
+runc run --no-pivot must not expose bare /proc
 runc run [ro /sys/fs/cgroup mounts]
 runc run [ro /sys/fs/cgroup mounts + cgroupns]
 runc run [setgid / + mkdirall]
@@ -203,8 +203,8 @@ runc run with RLIMIT_NOFILE(Smaller than system's hard value)
 runc run with RLIMIT_NOFILE(The same as system's hard value)
 
 # --- run (cpu affinity) ---
-[skip]runc run [CPU affinity should reset to cgroup cpuset] # cpu_affinity
-[skip]runc run [CPU affinity should reset] # cpu_affinity
+runc run [CPU affinity should reset to cgroup cpuset]
+runc run [CPU affinity should reset]
 
 # --- run (personality) ---
 [skip]runc run personality for i686 # arch
@@ -213,16 +213,16 @@ runc run with RLIMIT_NOFILE(The same as system's hard value)
 [skip]runc run personality with exec for x86_64 # arch
 
 # --- run (memory policy) ---
-[skip]runc run empty memory policy # mempolicy
-[skip]runc run memory policy bind static # mempolicy
-[skip]runc run memory policy bind way too large a node number # mempolicy
-[skip]runc run memory policy calls syscall with invalid arguments # mempolicy
-[skip]runc run memory policy default with missing nodes # mempolicy
-[skip]runc run memory policy interleave without flags # mempolicy
-[skip]runc run memory policy with invalid flag # mempolicy
-[skip]runc run memory policy with missing mode # mempolicy
-[skip]runc run memory policy with non-existing mode # mempolicy
-[skip]runc run and exec memory policy prefer relative # mempolicy
+runc run empty memory policy
+runc run memory policy bind static
+runc run memory policy bind way too large a node number
+runc run memory policy calls syscall with invalid arguments
+runc run memory policy default with missing nodes
+runc run memory policy interleave without flags
+runc run memory policy with invalid flag
+runc run memory policy with missing mode
+runc run memory policy with non-existing mode
+runc run and exec memory policy prefer relative
 
 # --- run (env) ---
 empty HOME env var is overridden
@@ -298,11 +298,11 @@ runc exec [tty owner]
 runc exec [tty owner] ({u,g}id != 0)
 runc exec [tty ptsname]
 runc exec [init changes cgroup]
-[skip]runc exec [CPU affinity, initial and final set from config.json] # cpu_affinity
-[skip]runc exec [CPU affinity, initial and final set from process.json] # cpu_affinity
-[skip]runc exec [CPU affinity, only initial set from process.json] # cpu_affinity
-[skip]runc exec [default CPU affinity should reset to cgroup cpuset] # cpu_affinity
-[skip]runc exec [default CPU affinity should reset] # cpu_affinity
+runc exec [CPU affinity, initial and final set from config.json]
+runc exec [CPU affinity, initial and final set from process.json]
+runc exec [CPU affinity, only initial set from process.json]
+runc exec [default CPU affinity should reset to cgroup cpuset]
+runc exec [default CPU affinity should reset]
 [skip]runc exec --cgroup sub-cgroups [v1] # cgroups_v1
 runc exec --cgroup subcgroup [v2]
 [skip]runc exec [ --pidfd-socket ] [cgroups_v1]  # cgroups_v1
@@ -383,15 +383,15 @@ mask paths [prohibit symlink /sys]
 umask
 
 # --- network ---
-[skip]move network device to container network namespace # netdev
-[skip]move network device to container network namespace and restore it back # netdev
-[skip]move network device to precreated container network namespace # netdev
-[skip]move network device to precreated container network namespace and rename # netdev
-[skip]move network device to precreated container network namespace and rename and set mtu and mac and ip address # netdev
-[skip]move network device to precreated container network namespace and set ip address with global scope # netdev
-[skip]move network device to precreated container network namespace and set ip address without global scope # netdev
-[skip]move network device to precreated container network namespace and set mac address # netdev
-[skip]move network device to precreated container network namespace and set mtu # netdev
+move network device to container network namespace
+move network device to container network namespace and restore it back
+move network device to precreated container network namespace
+move network device to precreated container network namespace and rename
+move network device to precreated container network namespace and rename and set mtu and mac and ip address
+move network device to precreated container network namespace and set ip address with global scope
+move network device to precreated container network namespace and set ip address without global scope
+move network device to precreated container network namespace and set mac address
+move network device to precreated container network namespace and set mtu
 
 # --- idmap mounts ---
 simple idmap mount [no userns]
@@ -437,9 +437,9 @@ userns with simple mount
 runc run [hostname domainname]
 
 # --- ioprio / scheduler ---
-[skip]ioprio_set is applied to process group # ioprio
-[skip]scheduler is applied # ioprio
-[skip]scheduler vs cpus # ioprio
+ioprio_set is applied to process group
+scheduler is applied
+scheduler vs cpus
 
 # --- spec validator ---
 spec validator

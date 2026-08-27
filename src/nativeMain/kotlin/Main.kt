@@ -216,6 +216,10 @@ class CreateCommand : CoreCliktCommand(name = "create") {
         "--pidfd-socket",
         help = "Path to AF_UNIX socket for pidfd handoff",
     )
+    val noPivot by option(
+        "--no-pivot",
+        help = "Use MS_MOVE and chroot instead of pivot_root",
+    ).flag()
     val containerId by argument(help = "Container ID")
     val config by requireObject<GlobalConfig>()
 
@@ -230,6 +234,7 @@ class CreateCommand : CoreCliktCommand(name = "create") {
             pidFile,
             consoleSocket,
             pidfdSocket,
+            noPivot,
         )
         // create() returns normally so run() can chain start().
         // Standalone create must use _exit to bypass the Kotlin/Native
@@ -260,6 +265,10 @@ class RunCommand : CoreCliktCommand(name = "run") {
         "--keep",
         help = "Keep container state after it exits (don't delete automatically)",
     ).flag()
+    val noPivot by option(
+        "--no-pivot",
+        help = "Use MS_MOVE and chroot instead of pivot_root",
+    ).flag()
     val containerId by argument(help = "Container ID")
     val config by requireObject<GlobalConfig>()
 
@@ -276,6 +285,7 @@ class RunCommand : CoreCliktCommand(name = "run") {
             detach,
             keep,
             pidfdSocket,
+            noPivot,
         )
         _exit(0)
     }

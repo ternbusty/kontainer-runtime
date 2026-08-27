@@ -18,14 +18,21 @@ import logger.Logger
 import namespace.NsJoin
 import namespace.nsJoinList
 import platform.posix.*
+import process.applyIOPriority
+import process.applyMemoryPolicy
 import process.applyProcessEnv
 import process.applyProcessSecurity
+import process.applyScheduler
 import process.ensureHomeEnv
+import process.parseCpuList
+import process.resetCpuAffinity
 import process.sendPidfd
+import process.setCpuAffinity
 import process.setupSessionKeyring
 import process.syncSeccompNotifyFd
 import seccomp.seccompUsesNotify
 import seccomp.sendToSeccompListener
+import spec.ExecCPUAffinity
 import spec.Process
 import spec.Spec
 import spec.User
@@ -413,6 +420,7 @@ fun exec(
         if (grandchildPid > 0) {
             try {
                 cgroup.addProcess(grandchildPid, cgroupPath)
+                applyExecCpuAffinity(grandchildPid, execSpec.process.execCPUAffinity)
                 syscall.raiseRlimits(grandchildPid, execSpec.process.rlimits)
                 true
             } catch (e: Exception) {
@@ -433,6 +441,7 @@ fun exec(
                                     "falling back to init cgroup $fallbackPath",
                             )
                             cgroup.addProcess(grandchildPid, fallbackPath)
+                            applyExecCpuAffinity(grandchildPid, execSpec.process.execCPUAffinity)
                             syscall.raiseRlimits(grandchildPid, execSpec.process.rlimits)
                             true
                         } catch (e2: Exception) {
@@ -545,6 +554,17 @@ private fun runExecChild(
     // (not this child) after reading the grandchild PID from pidPipe.
     // setupPipe[0] stays open so the grandchild inherits it and can wait
     // for the parent's go byte before proceeding to execvp.
+
+    // Apply initial CPU affinity BEFORE joining namespaces, so it's active
+    // during the namespace transition.  Log in runc-compatible format.
+    spec.process.execCPUAffinity?.initial?.let { initial ->
+        if (initial.isNotEmpty()) {
+            val mask = parseCpuList(initial)
+            val hex = mask.firstOrNull { it != 0L } ?: 0L
+            Logger.debug("nsexec: affinity: 0x${hex.toString(16)}")
+            setCpuAffinity(0, initial)
+        }
+    }
 
     // Join order matters: user first (grants the capabilities inside the
     // container's userns that authorize the remaining joins), pid last.
@@ -751,6 +771,12 @@ private fun runExecGrandchild(
         sendPidfd(pidfdSocketFd, "setns")
     }
 
+    // I/O priority, scheduler, and memory policy must be applied before
+    // privilege drop — they may require CAP_SYS_ADMIN / CAP_SYS_NICE.
+    applyIOPriority(spec.process.ioPriority)
+    applyScheduler(spec.process.scheduler)
+    applyMemoryPolicy(spec.linux?.memoryPolicy)
+
     applyProcessSecurity(syscall, spec.process, spec.linux?.seccomp) { notifyFd ->
         if (notifyMainSender != null && notifyInitReceiver != null) {
             // Same synchronization as init: blocks until the parent has
@@ -875,4 +901,23 @@ private fun readInitCgroup(pid: Int): String? {
         fclose(fp)
     }
     return null
+}
+
+/**
+ * Apply CPU affinity for the exec path after cgroup assignment.
+ * Three branches (matching runc/takoyaki):
+ * 1. If affinity.final is set: apply that specific mask
+ * 2. If no affinity configured at all: reset to all CPUs (kernel clamps to cpuset)
+ * 3. If only initial was set: do nothing (initial persists through exec)
+ */
+private fun applyExecCpuAffinity(
+    pid: Int,
+    affinity: ExecCPUAffinity?,
+) {
+    if (affinity != null && !affinity.fin.isNullOrEmpty()) {
+        setCpuAffinity(pid, affinity.fin)
+    } else if (affinity == null || affinity.initial.isNullOrEmpty()) {
+        resetCpuAffinity(pid)
+    }
+    // else: only initial was set, do nothing
 }

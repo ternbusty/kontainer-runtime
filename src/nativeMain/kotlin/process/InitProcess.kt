@@ -9,6 +9,7 @@ import console.sendMasterViaFd
 import console.wireStdio
 import kotlinx.cinterop.*
 import logger.Logger
+import network.renameDevices
 import platform.posix.*
 import rootfs.applyDeferredPropagation
 import rootfs.applyLinuxDevices
@@ -17,6 +18,7 @@ import rootfs.applyReadonlyPaths
 import rootfs.applyRootfsPropagation
 import rootfs.applySpecMounts
 import rootfs.applySysctls
+import rootfs.msMoveRoot
 import rootfs.pivotRoot
 import rootfs.prepareRootfs
 import rootfs.setRootfsReadonly
@@ -57,11 +59,20 @@ private fun initProcessInternal(
         Logger.debug("user namespace mapping already done by Stage-1, we are root in user NS")
         Logger.debug("session already created by bootstrap.c (sid=${getsid(0)})")
 
-        // Bring up the loopback interface inside the container's network
-        // namespace (when one is configured). Without this, the container has
-        // no working network at all — `ping 127.0.0.1` fails, `bind(...)` to
-        // 127.0.0.1 fails with EADDRNOTAVAIL, etc.
+        // Rename network devices that were moved into our namespace by the
+        // main process. Must happen before loopback bringup so that any
+        // device renamed to "lo" doesn't conflict with the real loopback.
         if (spec.hasNamespace("network")) {
+            spec.linux?.netDevices?.let { netDevices ->
+                if (netDevices.isNotEmpty()) {
+                    renameDevices(netDevices)
+                }
+            }
+
+            // Bring up the loopback interface inside the container's network
+            // namespace (when one is configured). Without this, the container has
+            // no working network at all — `ping 127.0.0.1` fails, `bind(...)` to
+            // 127.0.0.1 fails with EADDRNOTAVAIL, etc.
             if (platform.linux.set_loopback_up() != 0) {
                 Logger.warn("failed to bring up loopback interface (errno=$errno)")
             } else {
@@ -138,9 +149,14 @@ private fun initProcessInternal(
                     _exit(1)
                 }
             }
-            pivotRoot(syscall, rootfsPath)
-            // Apply rootfsPropagation only AFTER pivot_root; the kernel forbids
-            // pivot_root into a MS_SHARED subtree.
+            val noPivot = getenv("_KONTAINER_NO_PIVOT")?.toKString() == "1"
+            if (noPivot) {
+                msMoveRoot(syscall, rootfsPath)
+            } else {
+                pivotRoot(syscall, rootfsPath)
+            }
+            // Apply rootfsPropagation only AFTER pivot_root / msMoveRoot;
+            // the kernel forbids pivot_root into a MS_SHARED subtree.
             applyRootfsPropagation(syscall, spec.linux?.rootfsPropagation)
             // Apply deferred mount propagation after pivot_root.
             applyDeferredPropagation(deferredPropagation)
@@ -236,6 +252,12 @@ private fun initProcessInternal(
             Logger.debug("sending pidfd over pre-connected socket fd=$pidfdSocketFd")
             sendPidfd(pidfdSocketFd, "standard")
         }
+
+        // I/O priority, scheduler, and memory policy must be applied before
+        // privilege drop — they may require CAP_SYS_ADMIN / CAP_SYS_NICE.
+        applyIOPriority(spec.process.ioPriority)
+        applyScheduler(spec.process.scheduler)
+        applyMemoryPolicy(spec.linux?.memoryPolicy)
 
         // Apply the shared spec.process security profile (umask, NNP, seccomp,
         // capabilities, setgid/setuid, AppArmor/SELinux). The seccomp notify FD,

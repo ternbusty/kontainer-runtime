@@ -28,6 +28,8 @@ const val MS_SYNCHRONOUS = 16
 const val MS_MANDLOCK = 64
 const val MS_NOSYMFOLLOW = 256 // 1 << 8
 
+const val MS_MOVE = 8192 // 1 << 13
+
 // Umount flags
 const val MNT_DETACH = 2
 
@@ -483,6 +485,139 @@ fun pivotRoot(
     }
 
     Logger.debug("successfully pivoted root")
+}
+
+/**
+ * Alternative to pivot_root for --no-pivot mode.
+ *
+ * Masks host procfs/sysfs mounts that are not under rootfs, then uses
+ * MS_MOVE + chroot to switch the root. This prevents the container from
+ * re-mounting procfs in writable mode (which would expose bare /proc).
+ *
+ * See runc/libcontainer/rootfs_linux.go:msMoveRoot().
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun msMoveRoot(
+    syscall: Syscall,
+    newRoot: String,
+) {
+    Logger.debug("msMoveRoot: switching root to $newRoot (no-pivot mode)")
+
+    // Canonicalize newRoot so prefix matching works correctly.
+    val canonRoot =
+        memScoped {
+            val buf = allocArray<ByteVar>(4096)
+            if (realpath(newRoot, buf) != null) buf.toKString() else newRoot
+        }
+
+    // Parse /proc/self/mountinfo and collect all "full" mounts (root="/")
+    // of procfs and sysfs that are NOT inside the container rootfs.
+    // These must be masked before MS_MOVE to prevent the container from
+    // accessing the host's /proc or /sys.
+    val mountsToMask = mutableListOf<String>()
+    val mountinfo =
+        memScoped {
+            val fd = open("/proc/self/mountinfo", O_RDONLY, 0u)
+            if (fd < 0) {
+                Logger.warn("msMoveRoot: cannot read /proc/self/mountinfo")
+                return@memScoped ""
+            }
+            val buf = StringBuilder()
+            val chunk = allocArray<ByteVar>(4096)
+            while (true) {
+                val n = read(fd, chunk, 4096u).toInt()
+                if (n <= 0) break
+                buf.append(chunk.toKString().take(n))
+            }
+            close(fd)
+            buf.toString()
+        }
+    for (line in mountinfo.lines()) {
+        if (line.isBlank()) continue
+        // mountinfo format: id parent major:minor root mount-point options ... - fstype source super-options
+        val parts = line.split(' ')
+        if (parts.size < 7) continue
+        val root = parts[3]
+        val mountPoint = parts[4]
+        // Find the separator " - "
+        val sepIdx = parts.indexOf("-")
+        if (sepIdx < 0 || sepIdx + 1 >= parts.size) continue
+        val fstype = parts[sepIdx + 1]
+
+        // Only mask full mounts (root="/") of proc or sysfs
+        if (root != "/") continue
+        if (fstype != "proc" && fstype != "sysfs") continue
+        // Don't mask if it's under the container rootfs
+        if (mountPoint.startsWith("$canonRoot/") || mountPoint == canonRoot) continue
+
+        mountsToMask.add(mountPoint)
+    }
+
+    // Mask each host procfs/sysfs mount: make slave, then lazy unmount.
+    // If unmount fails, cover with a tmpfs so it can't be read.
+    for (mp in mountsToMask) {
+        Logger.debug("msMoveRoot: masking host mount $mp")
+        syscall.mount(
+            source = null,
+            target = mp,
+            fstype = null,
+            flags = (MS_SLAVE or MS_REC).toULong(),
+        )
+        if (syscall.umount2(mp, MNT_DETACH) != 0) {
+            Logger.debug("msMoveRoot: umount failed for $mp, covering with tmpfs")
+            syscall.mount(
+                source = "tmpfs",
+                target = mp,
+                fstype = "tmpfs",
+                flags = 0u,
+            )
+        }
+    }
+
+    // Open an fd to newRoot for fchdir after the MS_MOVE.
+    val newrootFd = open(canonRoot, O_DIRECTORY or O_RDONLY, 0u)
+    if (newrootFd < 0) {
+        val errNum = errno
+        Logger.error("msMoveRoot: failed to open $canonRoot (errno=$errNum)")
+        throw Exception("msMoveRoot: failed to open $canonRoot (errno=$errNum)")
+    }
+
+    // MS_MOVE the rootfs mount onto "/"
+    if (syscall.mount(
+            source = canonRoot,
+            target = "/",
+            fstype = null,
+            flags = MS_MOVE.toULong(),
+        ) != 0
+    ) {
+        val errNum = errno
+        close(newrootFd)
+        Logger.error("msMoveRoot: MS_MOVE failed (errno=$errNum)")
+        throw Exception("msMoveRoot: MS_MOVE failed (errno=$errNum)")
+    }
+
+    // fchdir into the new root, then chroot + chdir
+    if (fchdir(newrootFd) != 0) {
+        val errNum = errno
+        close(newrootFd)
+        Logger.error("msMoveRoot: fchdir failed (errno=$errNum)")
+        throw Exception("msMoveRoot: fchdir failed (errno=$errNum)")
+    }
+    close(newrootFd)
+
+    if (syscall.chroot(".") != 0) {
+        val errNum = errno
+        Logger.error("msMoveRoot: chroot failed (errno=$errNum)")
+        throw Exception("msMoveRoot: chroot failed (errno=$errNum)")
+    }
+
+    if (syscall.chdir("/") != 0) {
+        val errNum = errno
+        Logger.error("msMoveRoot: chdir / failed (errno=$errNum)")
+        throw Exception("msMoveRoot: chdir / failed (errno=$errNum)")
+    }
+
+    Logger.debug("msMoveRoot: successfully switched root (no-pivot mode)")
 }
 
 /**

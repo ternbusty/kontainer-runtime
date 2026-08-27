@@ -235,6 +235,21 @@ private fun runMainProcessInternal(
             cgroup.addProcess(stage2Pid, resolvedCgroupPath)
         }
 
+        // Reset CPU affinity after cgroup assignment so the kernel clamps it
+        // to cpuset.cpus.  Matches runc's tryResetCPUAffinity.
+        resetCpuAffinity(stage2Pid)
+
+        // Move host network devices into the container's network namespace.
+        // Done from the host (main process) via RTM_SETLINK + IFLA_NET_NS_PID.
+        // The init process renames them later from inside the namespace.
+        if (spec.hasNamespace("network")) {
+            spec.linux?.netDevices?.let { netDevices ->
+                if (netDevices.isNotEmpty()) {
+                    network.moveDevices(netDevices, stage2Pid)
+                }
+            }
+        }
+
         // Signal Stage-1 that cgroup setup is complete. Stage-1 will then
         // send SYNC_GRANDCHILD to Stage-2, which will unshare(CLONE_NEWCGROUP)
         // AFTER being in the container's cgroup — so /proc/self/cgroup shows
