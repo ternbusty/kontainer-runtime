@@ -4,7 +4,10 @@ import ioloop.IoLoop
 import ioloop.restoreBlocking
 import ioloop.setNonBlocking
 import kotlinx.cinterop.*
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import logger.Logger
 import platform.linux.*
 import platform.posix.*
@@ -407,25 +410,25 @@ suspend fun relayPtyIO(
     try {
         coroutineScope {
             val stdinJob =
-                launch {
+                launch(start = CoroutineStart.UNDISPATCHED) {
                     memScoped {
-                        val buf = allocArray<ByteVar>(4096)
+                        val buf = allocArray<ByteVar>(65536)
                         while (isActive) {
                             io.awaitReadable(STDIN_FILENO)
-                            val n = read(STDIN_FILENO, buf, 4096u)
+                            val n = read(STDIN_FILENO, buf, 65536u)
                             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue
                             if (n <= 0) break
                             if (!writeAll(io, masterFd, buf, n)) break
                         }
                     }
                 }
-            launch {
+            launch(start = CoroutineStart.UNDISPATCHED) {
                 memScoped {
-                    val buf = allocArray<ByteVar>(4096)
+                    val buf = allocArray<ByteVar>(65536)
                     try {
                         while (isActive) {
                             io.awaitReadable(masterFd)
-                            val n = read(masterFd, buf, 4096u)
+                            val n = read(masterFd, buf, 65536u)
                             if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) continue
                             if (n <= 0) break
                             if (!writeAll(io, STDOUT_FILENO, buf, n)) break

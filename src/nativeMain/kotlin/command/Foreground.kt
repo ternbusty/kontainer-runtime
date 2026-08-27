@@ -4,6 +4,7 @@ import console.relayPtyIO
 import ioloop.IoLoop
 import ioloop.withIoLoop
 import kotlinx.cinterop.*
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -36,13 +37,15 @@ internal fun superviseForeground(
         withIoLoop { io ->
             val relayJob =
                 if (masterFd >= 0) {
-                    launch { relayPtyIO(io, masterFd) }
+                    launch(start = CoroutineStart.UNDISPATCHED) { relayPtyIO(io, masterFd) }
                 } else {
                     null
                 }
             val sigJob =
                 if (sigReadFd >= 0) {
-                    launch { awaitAndForwardSignals(io, sigReadFd, targetPid, masterFd) }
+                    launch(start = CoroutineStart.UNDISPATCHED) {
+                        awaitAndForwardSignals(io, sigReadFd, targetPid, masterFd)
+                    }
                 } else {
                     null
                 }
