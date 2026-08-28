@@ -180,7 +180,7 @@ fun delete(
             null
         }
     if (poststopSpec?.hooks?.poststop != null) {
-        runHooks(poststopSpec.hooks.poststop, state.withStatus(ContainerStatus.STOPPED))
+        runHooks(poststopSpec.hooks.poststop, state.withStatus(ContainerStatus.STOPPED), phase = "poststop")
     }
 
     // Delete notify socket

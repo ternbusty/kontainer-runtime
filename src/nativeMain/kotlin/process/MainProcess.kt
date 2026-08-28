@@ -18,12 +18,13 @@ import rootfs.handleMountFdRequest
 import seccomp.seccompUsesNotify
 import seccomp.sendToSeccompListener
 import seccomp.validateSeccompFlags
-import spec.LinuxDeviceCgroup
 import spec.LinuxIdMapping
 import spec.Spec
 import state.ContainerStatus
 import state.State
 import state.createState
+import state.deleteContainerDir
+import state.deleteNotifySocket
 import state.save
 import syscall.Syscall
 import utils.FileSystem
@@ -76,54 +77,15 @@ private fun runMainProcessInternal(
         // process that races against us: by the time we write its PID to
         // cgroup.procs it may have already exited (ESRCH).  Stage-2's PID is
         // added after we receive it via the sync pipe (see addProcess below).
-        cgroup.setup(pid = null, cgroupPath = resolvedCgroupPath, resources = spec.linux?.resources)
+        cgroup.setup(pid = null, cgroupPath = resolvedCgroupPath, resources = spec.linux?.resources, deferPids = true)
 
         // Attach eBPF device-cgroup program ONCE, right after the cgroup
         // directory exists. The program applies to all processes in the
         // cgroup (including Stage-2 which will be added below), so we must
         // NOT call it again when Stage-2 PID arrives — a second
         // BPF_PROG_ATTACH would stack a duplicate filter.
-        //
-        // Ensure that spec.linux.devices[] entries have matching allow rules
-        // so the init process can mknod them. The spec SHOULD include these,
-        // but without them the eBPF filter would block mknod, causing the
-        // device creation to fall back to a /dev/null bind mount (wrong
-        // major/minor/permissions). This matches runc's behavior of allowing
-        // devices that the runtime itself needs to create.
-        val deviceRules =
-            spec.linux
-                ?.resources
-                ?.devices
-                ?.toMutableList() ?: mutableListOf()
-        val specDevices = spec.linux?.devices
-        if (!specDevices.isNullOrEmpty() && deviceRules.isNotEmpty()) {
-            for (d in specDevices) {
-                val alreadyAllowed =
-                    deviceRules.any { rule ->
-                        rule.allow && (rule.type == null || rule.type == d.type) &&
-                            (rule.major == null || rule.major == d.major) &&
-                            (rule.minor == null || rule.minor == d.minor)
-                    }
-                if (!alreadyAllowed) {
-                    // Insert at position 0 so the allow rule comes BEFORE
-                    // any deny-all rule in the spec.  The eBPF program
-                    // evaluates rules in order (first match wins), so an
-                    // allow rule after a deny-all would be unreachable.
-                    deviceRules.add(
-                        0,
-                        LinuxDeviceCgroup(
-                            allow = true,
-                            type = d.type,
-                            major = d.major,
-                            minor = d.minor,
-                            access = "rwm",
-                        ),
-                    )
-                    Logger.debug("auto-allowed device ${d.path} (${d.type} ${d.major}:${d.minor}) for mknod")
-                }
-            }
-        }
-        if (deviceRules.isNotEmpty()) {
+        val deviceRules = spec.linux?.resources?.devices
+        if (!deviceRules.isNullOrEmpty()) {
             val cgroupDirPath = "/sys/fs/cgroup/${resolvedCgroupPath.removePrefix("/")}"
             DeviceCgroup.apply(cgroupDirPath, deviceRules)
         }
@@ -300,6 +262,26 @@ private fun runMainProcessInternal(
                     initSender.mountFdDone()
                     Logger.debug("sent mount fd done")
                 }
+                is Message.BindSourceRequest -> {
+                    Logger.debug("received bind source request for ${msg.source} (isRbind=${msg.isRbind})")
+                    // Clone the mount at the source path using open_tree(OPEN_TREE_CLONE).
+                    // This creates a detached mount tree fd that the init process
+                    // can install via move_mount(). The O_PATH + /proc/self/fd/N
+                    // approach fails with EINVAL on kernel 6.17+ in user namespaces.
+                    var openTreeFlags = platform.linux._OPEN_TREE_CLONE() or platform.linux._OPEN_TREE_CLOEXEC()
+                    if (msg.isRbind) {
+                        openTreeFlags = openTreeFlags or platform.linux._AT_RECURSIVE()
+                    }
+                    val treeFd = platform.linux._open_tree(-1, msg.source, openTreeFlags)
+                    if (treeFd < 0) {
+                        val errNum = errno
+                        Logger.error("open_tree(${msg.source}) failed (errno=$errNum)")
+                        throw Exception("open_tree failed for bind source ${msg.source} (errno=$errNum)")
+                    }
+                    initSender.bindSourceDone(treeFd)
+                    close(treeFd)
+                    Logger.debug("sent open_tree fd for ${msg.source}")
+                }
                 is Message.SeccompNotify -> {
                     Logger.debug("received seccomp notify FD: $fd")
                     if (fd < 0) {
@@ -348,6 +330,11 @@ private fun runMainProcessInternal(
                 }
                 is Message.InitReady -> {
                     Logger.debug("init process is ready")
+                    // Apply pids.max NOW — init has finished setup and is
+                    // waiting for the start signal.  This avoids hitting
+                    // pids.max=1 (from pids.limit=0) during init setup where
+                    // Kotlin/Native runtime threads are still being created.
+                    (cgroup as? CgroupV2)?.applyDeferredPids(resolvedCgroupPath, spec.linux?.resources)
                     initDone = true
                 }
                 else -> {
@@ -400,8 +387,9 @@ private fun runMainProcessInternal(
         // with status="created". Older runtime-tools tests still use this hook
         // point; createRuntime/createContainer are the modern equivalents.
         if (spec.hooks?.prestart != null) {
-            if (!runHooks(spec.hooks.prestart, state)) {
+            if (!runHooks(spec.hooks.prestart, state, phase = "prestart")) {
                 Logger.error("prestart hook failed; aborting container creation")
+                cleanupContainer(syscall, fs, cgroup, rootPath, containerId, stage2Pid, resolvedCgroupPath)
                 exit(1)
             }
         }
@@ -410,8 +398,9 @@ private fun runMainProcessInternal(
         // runtime's namespace. Many specs include both pointing at different
         // programs, so we run both lists in order.
         if (spec.hooks?.createRuntime != null) {
-            if (!runHooks(spec.hooks.createRuntime, state)) {
+            if (!runHooks(spec.hooks.createRuntime, state, phase = "createRuntime")) {
                 Logger.error("createRuntime hook failed; aborting container creation")
+                cleanupContainer(syscall, fs, cgroup, rootPath, containerId, stage2Pid, resolvedCgroupPath)
                 exit(1)
             }
         }
@@ -421,6 +410,45 @@ private fun runMainProcessInternal(
         // normally.  When invoked from run(), the caller continues
         // with start + optional wait.
     }
+
+/**
+ * Clean up container resources on create failure: kill init, remove cgroup,
+ * remove state directory. Best-effort — individual failures are logged but
+ * do not prevent the rest of the cleanup from running.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun cleanupContainer(
+    syscall: Syscall,
+    fs: FileSystem,
+    cgroup: Cgroup,
+    rootPath: String,
+    containerId: String,
+    initPid: Int,
+    cgroupPath: String,
+) {
+    // Kill init process
+    try {
+        syscall.killProcess(initPid, SIGKILL)
+        waitpid(initPid, null, 0)
+    } catch (_: Exception) {
+    }
+
+    // Remove cgroup
+    try {
+        cgroup.cleanup(cgroupPath)
+    } catch (_: Exception) {
+    }
+
+    // Remove notify socket and state directory
+    try {
+        deleteNotifySocket(rootPath, containerId)
+    } catch (_: Exception) {
+    }
+    try {
+        deleteContainerDir(rootPath, containerId)
+    } catch (_: Exception) {
+    }
+}
 
 /**
  * Entry point for main process
@@ -481,6 +509,16 @@ fun runMainProcess(
 
         close(syncFd)
         notifyListener.close()
+        // Best-effort cleanup of container state directory so a retry
+        // with the same container ID does not get "already exists".
+        try {
+            deleteNotifySocket(rootPath, containerId)
+        } catch (_: Exception) {
+        }
+        try {
+            deleteContainerDir(rootPath, containerId)
+        } catch (_: Exception) {
+        }
         _exit(1)
     }
 }

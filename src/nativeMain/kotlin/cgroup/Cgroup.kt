@@ -25,6 +25,7 @@ interface Cgroup {
         pid: Int? = null,
         cgroupPath: String?,
         resources: LinuxResources?,
+        deferPids: Boolean = false,
     )
 
     /**

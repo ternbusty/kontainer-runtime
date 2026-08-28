@@ -380,7 +380,7 @@ for file in $(printf '%s\n' "${!FILE_FILTER[@]}" | sort); do
   # Pass the filter via an environment variable to avoid quoting
   # issues with apostrophes, $, and | in test names and regex.
   run_bats() {
-    sudo -E PATH="$PATH" RUNC="$KONTAINER_BIN" _BATS_FILTER="$filter" \
+    sudo -E PATH="$PATH" RUNC="$PWD/runc" _BATS_FILTER="$filter" \
         timeout "$timeout_secs" script -q -e -c \
         'exec bats -f "$_BATS_FILTER" -t '"$file" /dev/null > "$TMPOUT" 2>&1
   }

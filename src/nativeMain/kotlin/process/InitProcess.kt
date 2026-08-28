@@ -50,7 +50,8 @@ private fun initProcessInternal(
 ): Unit =
     memScoped {
         Logger.setContext("init")
-        Logger.debug("started, pid=${getpid()} ppid=${getppid()}")
+        Logger.debug("nsexec container setup")
+        Logger.debug("child process in init()")
 
         // All namespaces (user, mount, network, uts, ipc, pid) are unshared by bootstrap.c Stage-1
         // before the Kotlin runtime starts. UID/GID mapping was also completed by Stage-1.
@@ -139,14 +140,19 @@ private fun initProcessInternal(
             // pivot_root (propagation set before pivot is lost during cleanup).
             val deferredPropagation = applySpecMounts(syscall, spec.mounts, rootfsPath, spec.linux, mainSender, initReceiver)
 
+            // Create spec.linux.devices[] device nodes inside the container's
+            // /dev.  Done BEFORE pivot_root so the bind-mount fallback (when
+            // the device cgroup denies mknod) can still reach the host device.
+            applyLinuxDevices(syscall, spec.linux?.devices, rootfsPath)
+
             // createContainer hooks run after the container's mount namespace
             // is established but BEFORE pivot_root — they can still see the
             // host paths via the new rootfs's parent. This is the standard
             // spec timing (post-1.0.2).
             if (spec.hooks?.createContainer != null) {
-                if (!hook.runHooks(spec.hooks.createContainer, createdState)) {
-                    Logger.error("createContainer hook failed; aborting")
-                    _exit(1)
+                val hookErr = hook.runHooksGetError(spec.hooks.createContainer, createdState, phase = "createContainer")
+                if (hookErr != null) {
+                    throw RuntimeException(hookErr)
                 }
             }
             val noPivot = getenv("_KONTAINER_NO_PIVOT")?.toKString() == "1"
@@ -195,9 +201,6 @@ private fun initProcessInternal(
             }
         }
 
-        // Create spec.linux.devices[] device nodes inside the container's /dev.
-        applyLinuxDevices(syscall, spec.linux?.devices)
-
         // Apply spec.linux.sysctl entries via /proc/sys/*. /proc is mounted by
         // prepareRootfs; we must do this while still root (writing /proc/sys
         // generally needs CAP_SYS_ADMIN or similar).
@@ -206,14 +209,17 @@ private fun initProcessInternal(
         // Mask and remount-readonly paths inside the container. Done after
         // prepareRootfs+pivotRoot (so the target paths exist inside the new
         // root) and before dropping caps (mount/remount need CAP_SYS_ADMIN).
-        applyMaskedPaths(syscall, spec.linux?.maskedPaths)
-        applyReadonlyPaths(syscall, spec.linux?.readonlyPaths)
+        // When there is no mount namespace these would modify the host.
+        if (spec.hasNamespace("mount")) {
+            applyMaskedPaths(syscall, spec.linux?.maskedPaths)
+            applyReadonlyPaths(syscall, spec.linux?.readonlyPaths)
 
-        // Finalize rootfs (set readonly, umask).
-        // Must be done BEFORE dropping privileges (setuid/setgid) because remounting
-        // requires CAP_SYS_ADMIN.
-        // See: runc/libcontainer/standard_init_linux.go:114-118
-        finalizeRootfs(syscall, spec)
+            // Finalize rootfs (set readonly, umask).
+            // Must be done BEFORE dropping privileges (setuid/setgid) because remounting
+            // requires CAP_SYS_ADMIN.
+            // See: runc/libcontainer/standard_init_linux.go:114-118
+            finalizeRootfs(syscall, spec)
+        }
 
         // Prepare environment and FD handling
         val processArgs = spec.process.args
@@ -259,37 +265,18 @@ private fun initProcessInternal(
         applyScheduler(spec.process.scheduler)
         applyMemoryPolicy(spec.linux?.memoryPolicy)
 
-        // Apply the shared spec.process security profile (umask, NNP, seccomp,
-        // capabilities, setgid/setuid, AppArmor/SELinux). The seccomp notify FD,
-        // if any, is forwarded to the main process over the channel.
-        // rlimits are applied dead-last, right before execvp (see below).
-        applyProcessSecurity(syscall, spec.process, spec.linux?.seccomp) { notifyFd ->
-            syncSeccompNotifyFd(notifyFd, mainSender, initReceiver)
-        }
-
-        // Cleanup extra file descriptors to prevent FD leaks (CVE-2024-21626).
-        // This sets FD_CLOEXEC on all FDs >= 3 + preserveFds so they're auto-closed at
-        // execve.  Channel fds remain usable (CLOEXEC only fires at execve, not
-        // during read/write), so initReady() below still works.
-        syscall.closeRange(preserveFds)
-
         // PTY allocation: when spec.process.terminal is true, allocate a
         // pseudo-terminal pair from the container's devpts (/dev/pts),
         // ship the master fd to the caller via the pre-connected console
         // socket, and wire the slave to stdio.
         //
-        // Placed AFTER closeRange: the PTY fds are created fresh (no stale
-        // FD_CLOEXEC), the master is sent and closed manually, and the slave
-        // is dup2'd onto 0/1/2 before execvp.
-        //
-        // Placed AFTER applyProcessSecurity: grantpt sets the slave's UID to
-        // the calling process's real UID, which is the container process's
-        // UID after setuid has been applied — so the PTY slave's ownership
-        // automatically matches the spec's process.user.uid.
-        //
-        // The PTY is allocated from the container's devpts (via /dev/pts/ptmx)
-        // rather than the host's /dev/ptmx so that /dev/pts/N paths resolve
-        // correctly inside the container.
+        // Placed BEFORE applyProcessSecurity: opening /dev/pts/ptmx
+        // requires DAC_OVERRIDE capability because the host's ptmx
+        // device has mode 0000.  When the container shares the host's
+        // mount namespace, /dev/pts/ptmx is the host device, so
+        // allocating the PTY must happen while capabilities are still
+        // held.  This matches runc's order (setupConsole before
+        // finalizeNamespace / seccomp).
         if (spec.process.terminal) {
             val pty =
                 openPtyFromDevpts("/dev/pts")
@@ -300,6 +287,19 @@ private fun initProcessInternal(
                         @Suppress("UNREACHABLE_CODE")
                         return@memScoped
                     }
+
+            // Fix the PTY slave's UID owner to match the container
+            // process's uid.  grantpt sets the slave owner to the real
+            // UID of the caller (root here), but the spec may request a
+            // non-root user.  Only the UID is changed — the GID is left
+            // as the tty group set by grantpt (typically gid 5), which
+            // matches runc's fixStdioPermissions: file.Chown(uid, -1).
+            val specUid = spec.process.user.uid
+            if (specUid != 0u) {
+                if (fchown(pty.slave, specUid, (-1).toUInt()) != 0) {
+                    Logger.warn("fchown pty slave uid to $specUid failed (errno=$errno)")
+                }
+            }
 
             if (!sendMasterViaFd(consoleSocketFd, pty.master)) {
                 Logger.error("failed to send PTY master via console socket")
@@ -318,10 +318,7 @@ private fun initProcessInternal(
             // output stream.
             //
             // Mark the dup CLOEXEC so it does NOT leak across execvp into
-            // the container process. Without CLOEXEC the fd survives exec
-            // (it was created after closeRange) and keeps the caller's
-            // pipe/fd open, causing $() subshell captures (e.g. bats'
-            // `run`) to hang indefinitely.
+            // the container process.
             val savedStderr = dup(STDERR_FILENO)
             if (savedStderr >= 0) {
                 fcntl(savedStderr, F_SETFD, FD_CLOEXEC)
@@ -335,8 +332,22 @@ private fun initProcessInternal(
             )
         }
 
+        // Apply the shared spec.process security profile (umask, NNP, seccomp,
+        // capabilities, setgid/setuid, AppArmor/SELinux). The seccomp notify FD,
+        // if any, is forwarded to the main process over the channel.
+        // rlimits are applied dead-last, right before execvp (see below).
+        applyProcessSecurity(syscall, spec.process, spec.linux?.seccomp) { notifyFd ->
+            syncSeccompNotifyFd(notifyFd, mainSender, initReceiver)
+        }
+
+        // Cleanup extra file descriptors to prevent FD leaks (CVE-2024-21626).
+        // This sets FD_CLOEXEC on all FDs >= 3 + preserveFds so they're auto-closed at
+        // execve.  Channel fds remain usable (CLOEXEC only fires at execve, not
+        // during read/write), so initReady() below still works.
+        syscall.closeRange(preserveFds)
+
         mainSender.initReady()
-        Logger.debug("sent init ready signal")
+        Logger.debug("init: closing the pipe to signal completion")
 
         mainSender.close()
         initReceiver.close()
@@ -391,13 +402,21 @@ private fun initProcessInternal(
 
         notifyListener.close()
 
+        // Resolve HOME from /etc/passwd if not already set in spec.
+        // Must happen AFTER pivotRoot (so /etc/passwd is the container's)
+        // and BEFORE startContainer hooks and applyProcessEnv.
+        // Hooks inherit processEnv and expect HOME to be set.
+        ensureHomeEnv(processEnv, spec.process.user.uid)
+
         // startContainer hooks run in the container's namespaces just before
-        // execve. Status is "running" at this point.
+        // execve. Status is "running" at this point. Per the OCI spec,
+        // startContainer hooks that do not declare their own env inherit the
+        // container process's environment.
         if (spec.hooks?.startContainer != null) {
             val runningState = createdState.copy(status = state.ContainerStatus.RUNNING)
-            if (!hook.runHooks(spec.hooks.startContainer, runningState)) {
-                Logger.error("startContainer hook failed; aborting exec")
-                _exit(1)
+            val hookErr = hook.runHooksGetError(spec.hooks.startContainer, runningState, phase = "startContainer", processEnv = processEnv)
+            if (hookErr != null) {
+                throw RuntimeException(hookErr)
             }
         }
 
@@ -408,11 +427,6 @@ private fun initProcessInternal(
             Logger.info("spec.process omitted; init exiting with status 0")
             _exit(0)
         }
-
-        // Resolve HOME from /etc/passwd if not already set in spec.
-        // Must happen AFTER pivotRoot (so /etc/passwd is the container's)
-        // and BEFORE applyProcessEnv (which calls clearenv + setenv).
-        ensureHomeEnv(processEnv, spec.process.user.uid)
 
         Logger.info("Executing: ${processArgs.joinToString(" ")}")
 

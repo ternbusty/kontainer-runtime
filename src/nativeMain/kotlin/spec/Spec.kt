@@ -90,7 +90,6 @@ data class Process(
     val user: User = User(),
     val capabilities: LinuxCapabilities? = null,
     val rlimits: List<POSIXRlimit>? = null,
-    val umask: UInt? = null,
     val oomScoreAdj: Int? = null,
     val apparmorProfile: String? = null,
     val selinuxLabel: String? = null,
@@ -112,6 +111,7 @@ data class ConsoleSize(
 data class User(
     val uid: UInt = 0u,
     val gid: UInt = 0u,
+    val umask: UInt? = null,
     val additionalGids: List<UInt>? = null,
 )
 
@@ -157,6 +157,7 @@ data class LinuxMemory(
     val limit: Long? = null,
     val reservation: Long? = null,
     val swap: Long? = null,
+    val checkBeforeUpdate: Boolean? = null,
 )
 
 @Serializable
@@ -166,6 +167,8 @@ data class LinuxCpu(
     val period: Long? = null,
     val cpus: String? = null,
     val mems: String? = null,
+    val burst: Long? = null,
+    val idle: Long? = null,
 )
 
 @Serializable
@@ -194,6 +197,30 @@ data class LinuxDeviceCgroup(
 )
 
 /**
+ * A per-device throttle entry for block I/O.
+ */
+@Serializable
+data class LinuxThrottleDevice(
+    val major: Long,
+    val minor: Long,
+    val rate: Long,
+)
+
+/**
+ * Block I/O resource limits (OCI v1-era structure; the runtime
+ * translates these to cgroup v2 io.max / io.weight).
+ */
+@Serializable
+data class LinuxBlockIO(
+    val weight: Long? = null,
+    val leafWeight: Long? = null,
+    val throttleReadBpsDevice: List<LinuxThrottleDevice>? = null,
+    val throttleWriteBpsDevice: List<LinuxThrottleDevice>? = null,
+    val throttleReadIOPSDevice: List<LinuxThrottleDevice>? = null,
+    val throttleWriteIOPSDevice: List<LinuxThrottleDevice>? = null,
+)
+
+/**
  * Linux resource limits
  */
 @Serializable
@@ -204,6 +231,7 @@ data class LinuxResources(
     val memory: LinuxMemory? = null,
     val cpu: LinuxCpu? = null,
     val unified: Map<String, String>? = null,
+    val blockIO: LinuxBlockIO? = null,
 )
 
 /**

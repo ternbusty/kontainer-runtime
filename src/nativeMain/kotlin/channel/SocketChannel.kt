@@ -34,8 +34,7 @@ private fun sendMessage(
     memScoped {
         val sent = send(socket, bytes.refTo(0), bytes.size.toULong(), 0)
         if (sent == -1L) {
-            perror("send")
-            throw Exception("Failed to send message")
+            throw Exception("Failed to send message (errno=$errno)")
         }
     }
 }
@@ -47,8 +46,7 @@ private fun receiveMessage(socket: Int): Message {
         val received = recv(socket, buffer, 4095.toULong(), 0)
 
         if (received == -1L) {
-            perror("recv")
-            throw Exception("Failed to receive message")
+            throw Exception("Failed to receive message (errno=$errno)")
         }
         if (received == 0L) {
             throw Exception("Connection closed")
@@ -259,6 +257,13 @@ class SocketMainSender(
         )
     }
 
+    override fun bindSourceRequest(
+        source: String,
+        isRbind: Boolean,
+    ) {
+        sendMessage(socket, Message.BindSourceRequest(source = source, isRbind = isRbind))
+    }
+
     override fun execFailed(error: String) {
         sendMessage(socket, Message.ExecFailed(error))
     }
@@ -330,6 +335,10 @@ class SocketInitSender(
         sendMessage(socket, Message.MountFdDone)
     }
 
+    override fun bindSourceDone(fd: Int) {
+        sendMessageWithFd(socket, Message.BindSourceFd, fd)
+    }
+
     override fun close() {
         close(socket)
     }
@@ -360,6 +369,15 @@ class SocketInitReceiver(
             is Message.MountFdDone -> return
             is Message.OtherError -> throw Exception("Error: ${msg.error}")
             else -> throw Exception("Unexpected message: $msg, expected MountFdDone")
+        }
+    }
+
+    override fun waitForBindSourceFd(): Int {
+        val (msg, fd) = receiveMessageWithFd(socket)
+        return when (msg) {
+            is Message.BindSourceFd -> fd
+            is Message.OtherError -> throw Exception("Error: ${msg.error}")
+            else -> throw Exception("Unexpected message: $msg, expected BindSourceFd")
         }
     }
 

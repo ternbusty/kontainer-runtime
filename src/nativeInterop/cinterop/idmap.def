@@ -36,6 +36,16 @@ static inline long _NR_move_mount(void)     { return __NR_move_mount; }
 static inline long _NR_mount_setattr(void)  { return __NR_mount_setattr; }
 
 /* Constants exposed as functions. */
+static inline unsigned long _MOUNT_ATTR_RDONLY(void)      { return 0x00000001UL; }
+static inline unsigned long _MOUNT_ATTR_NOSUID(void)      { return 0x00000002UL; }
+static inline unsigned long _MOUNT_ATTR_NODEV(void)       { return 0x00000004UL; }
+static inline unsigned long _MOUNT_ATTR_NOEXEC(void)      { return 0x00000008UL; }
+static inline unsigned long _MOUNT_ATTR__ATIME(void)      { return 0x00000070UL; }
+static inline unsigned long _MOUNT_ATTR_RELATIME(void)    { return 0x00000000UL; }
+static inline unsigned long _MOUNT_ATTR_NOATIME(void)     { return 0x00000010UL; }
+static inline unsigned long _MOUNT_ATTR_STRICTATIME(void) { return 0x00000020UL; }
+static inline unsigned long _MOUNT_ATTR_NODIRATIME(void)  { return 0x00000080UL; }
+static inline unsigned long _MOUNT_ATTR_NOSYMFOLLOW(void) { return 0x00200000UL; }
 static inline unsigned long _MOUNT_ATTR_IDMAP(void)       { return 0x00100000UL; }
 static inline unsigned int  _AT_RECURSIVE(void)           { return 0x8000; }
 static inline unsigned int  _OPEN_TREE_CLONE(void)        { return 1; }

@@ -44,17 +44,25 @@ fun resolveHomeDir(uid: UInt): String {
 }
 
 /**
- * Ensure the environment list contains a HOME variable.
+ * Ensure the environment list contains a non-empty HOME variable.
  *
- * If HOME is already present (from the OCI spec's `process.env`), this is a
- * no-op. Otherwise, resolves the home directory from `/etc/passwd` for the
- * given [uid] and appends `HOME=<dir>` to [env].
+ * runc behaviour (env.go prepareEnv): if HOME is empty or absent after dedup,
+ * look up the user's home in /etc/passwd and set it. Non-empty HOME is kept
+ * as-is.
  */
 fun ensureHomeEnv(
     env: MutableList<String>,
     uid: UInt,
 ) {
-    if (env.any { it.startsWith("HOME=") }) return
-    val home = resolveHomeDir(uid)
-    env.add("HOME=$home")
+    val idx = env.indexOfLast { it.startsWith("HOME=") }
+    if (idx >= 0) {
+        val value = env[idx].substringAfter("HOME=")
+        if (value.isNotEmpty()) return
+        // HOME="" — override with resolved home
+        val home = resolveHomeDir(uid)
+        env[idx] = "HOME=$home"
+    } else {
+        val home = resolveHomeDir(uid)
+        env.add("HOME=$home")
+    }
 }

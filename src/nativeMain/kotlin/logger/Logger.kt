@@ -257,12 +257,14 @@ object Logger {
                     val formattedMessage =
                         "time=\"$timestamp\" level=${level.label.lowercase()} msg=\"$escapedMsg\"\n"
 
-                    // Write to stderr (or its override fd).
-                    // Error/fatal messages are ALWAYS emitted — they must be
-                    // visible even without --debug, matching runc's behavior.
-                    // Lower-severity messages require explicit opt-in via
-                    // --debug or KONTAINER_LOG_LEVEL.
-                    val shouldWriteStderr = (stderrEnabled || level >= Level.ERROR) && logFile == null
+                    // Write to stderr (or its override fd) when appropriate:
+                    // - ERROR: always (genuine errors must be visible)
+                    // - WARN: only in main process (init WARN would pollute
+                    //   $output in bats tests)
+                    // - DEBUG/INFO: only with --debug (stderrEnabled)
+                    val shouldWriteStderr =
+                        logFile == null &&
+                            (stderrEnabled || level >= Level.ERROR || (processContext == "main" && level >= Level.WARN))
                     if (shouldWriteStderr) {
                         val target = stderrOverride ?: stderr
                         fprintf(target, "%s", formattedMessage)
@@ -280,10 +282,12 @@ object Logger {
                     // Escape quotes in message for JSON
                     val escapedMessage = message.replace("\"", "\\\"").replace("\n", "\\n")
                     val jsonMessage =
-                        "{\"timestamp\":\"$timestamp\",\"level\":\"${level.label}\"," +
+                        "{\"timestamp\":\"$timestamp\",\"level\":\"${level.label.lowercase()}\"," +
                             "\"context\":\"$processContext\",\"message\":\"$escapedMessage\"}\n"
 
-                    val shouldWriteStderrJson = (stderrEnabled || level >= Level.ERROR) && logFile == null
+                    val shouldWriteStderrJson =
+                        logFile == null &&
+                            (stderrEnabled || level >= Level.ERROR || (processContext == "main" && level >= Level.WARN))
                     if (shouldWriteStderrJson) {
                         val target = stderrOverride ?: stderr
                         fprintf(target, "%s", jsonMessage)

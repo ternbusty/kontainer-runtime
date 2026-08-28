@@ -5,7 +5,10 @@ import kotlinx.cinterop.toKString
 import logger.Logger
 import platform.linux.*
 import platform.posix.errno
+import platform.posix.fflush
+import platform.posix.fprintf
 import platform.posix.perror
+import platform.posix.stderr
 import platform.posix.strerror
 import spec.LinuxCapabilities
 import syscall.CapabilitySets
@@ -159,7 +162,14 @@ private fun setAmbientCapabilities(
 
     for (cap in caps) {
         if (syscall.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE.toULong(), cap.value.toULong(), 0UL, 0UL) != 0) {
-            Logger.warn("Failed to raise ambient capability ${cap.capName}: ${strerror(errno)?.toKString()}")
+            // runc-compatible warning: "can't raise ambient capability <name>: <error>"
+            val errMsg = strerror(errno)?.toKString() ?: "unknown error"
+            Logger.warn("can't raise ambient capability ${cap.capName}: $errMsg")
+            // Also write directly to stderr for runc compatibility — the
+            // warning must appear in non-debug output so bats tests that
+            // check $output (stdout+stderr combined) can see it.
+            fprintf(stderr, "can't raise ambient capability %s: %s\n", cap.capName, errMsg)
+            fflush(stderr)
         }
     }
 }
@@ -202,12 +212,12 @@ fun applyBoundingSet(
 ) {
     Logger.debug("applying bounding set capabilities")
 
+    // When a capabilities object is present, always apply the bounding set.
+    // A null bounding list is treated as empty (drop everything), matching runc's
+    // behavior of Clear+Set which clears all then sets only listed caps.
     val boundingCaps = parseCapabilities(capabilities.bounding)
-
-    if (capabilities.bounding != null) {
-        Logger.debug("setting bounding capabilities: ${boundingCaps.map { it.capName }}")
-        dropBoundingCapabilities(syscall, boundingCaps)
-    }
+    Logger.debug("setting bounding capabilities: ${boundingCaps.map { it.capName }}")
+    dropBoundingCapabilities(syscall, boundingCaps)
 
     Logger.debug("bounding set applied successfully")
 }

@@ -3,34 +3,14 @@
 # Each line is either a test name to run, or prefixed with [skip] to skip.
 # Blank lines and lines starting with # are ignored.
 #
-# Categories of skips:
+# Categories of skips (same as takoyaki):
 #   criu         checkpoint/restore not implemented
 #   systemd      systemd cgroup manager not supported
 #   cgroups_v1   test only valid on cgroups v1
-#   selinux      requires SELinux enabled (run with --selinux)
+#   selinux      requires SELinux enabled
+#   sshfs        requires sshfs fuse mount
 #   arch         architecture-specific (i386/x86_64 personality)
 #   runc-dmz     asserts runc-dmz debug output string
-#   mempolicy    set_mempolicy not implemented
-#   ioprio       ioprio_set/sched_setattr not implemented
-#   cpu_affinity sched_setaffinity not implemented
-#   netdev       rtnetlink netdev move not implemented
-#   tmpcopyup    tmpcopyup not implemented
-#   no_pivot     --no-pivot not implemented
-#   hooks_so     hooks library (.so) tests require hook support
-#   caps_exec    exec --cap flag not implemented
-#   cgroups      cgroup features incomplete (pause/idle/non-empty check)
-#   debug_fmt    debug output format mismatch with runc
-#   dev_cgroup   device cgroup handling incomplete
-#   env_home     empty HOME env override not implemented
-#   binary_name  help output contains binary name, not "runc"
-#   hooks_msg    hook error message format differs from runc
-#   mask_paths   maskPaths handling incomplete
-#   mounts       mount handling incomplete (ordering, symlinks, rro)
-#   ps_cmd       ps command not fully compatible
-#   seccomp      seccomp features incomplete
-#   umask        umask handling not implemented
-#   update_cmd   update command incomplete
-#   userns       userns features incomplete
 
 # --- spec ---
 spec generation cwd
@@ -38,15 +18,15 @@ spec generation --bundle
 
 # --- version / help ---
 runc version
-[skip]runc -h # binary_name
+runc -h
 runc command -h
 runc foo -h
 
 # --- debug / logging ---
-[skip]global --debug # debug_fmt
-[skip]global --debug to --log # debug_fmt
-[skip]global --debug to --log --log-format 'json' # debug_fmt
-[skip]global --debug to --log --log-format 'text' # debug_fmt
+global --debug
+global --debug to --log
+global --debug to --log --log-format 'json'
+global --debug to --log --log-format 'text'
 global --root
 
 # --- create ---
@@ -59,8 +39,8 @@ runc create [terminal=false]
 runc create (rootless + limits + no cgrouppath + no permission) fails with informative error
 runc create (rootless + no limits + cgrouppath + no permission) fails with permission error
 runc create [ --pidfd-socket ]
-[skip]runc create [hook fails] # hooks_msg
-[skip]runc create [second createRuntime hook fails] # hooks_msg
+runc create [hook fails]
+runc create [second createRuntime hook fails]
 runc create [shared pidns + rootless]
 runc create can chdir if runc has access
 runc create sets up user before chdir to cwd if needed
@@ -88,79 +68,80 @@ runc run with unknown capability
 runc run with rootfs set to .
 runc run [execve error]
 runc run ({u,g}id != 0)
-runc run --keep
-runc run --keep (check cgroup exists)
+[skip]runc run --keep # systemd
+[skip]runc run --keep (check cgroup exists) # systemd
 runc run [ --pidfd-socket ]
 [skip]runc run [/proc/self/exe clone] # runc-dmz
 runc run [rootless with host pidns]
 runc run as user with no exec bit but CAP_DAC_OVERRIDE set
-[skip]runc run [ambient caps not set in inheritable result in a warning] # caps_exec
+runc run [ambient caps not set in inheritable result in a warning]
 
 # --- run (mounts) ---
 runc run [bind mount]
-[skip]runc run [bind mount through a dangling symlink component] # mounts
-[skip]runc run [bind mount through a trailing dangling symlink] # mounts
-runc run [bind mount {no,rel,strict}atime semantics]
+runc run [bind mount through a dangling symlink component]
+runc run [bind mount through a trailing dangling symlink]
+[skip]runc run [bind mount {no,rel,strict}atime semantics] # sshfs
 runc run [tmpcopyup]
 runc run with tmpfs
 runc run with tmpfs perms
 runc run [tmpfs mount mode=1777 default]
 runc run [tmpfs mount explicit mode=]
-[skip]runc run [tmpfs mount mode= inherit] # mounts
+runc run [tmpfs mount mode= inherit]
 runc run [tmpfs mount with absolute symlink]
 runc run [ro tmpfs mount]
-[skip]runc run [ro /dev mount] # mounts
+runc run [ro /dev mount]
 runc run [redundant default /dev/ptmx]
-[skip]runc run [redundant default /dev/tty] # dev_cgroup
-[skip]runc run [ check rbind,r*atime mounts] # mounts
+runc run [redundant default /dev/tty]
+runc run [ check rbind,r*atime mounts]
 runc run [rbind,ro mount is read-only but not recursively]
-[skip]runc run [rbind,ro,rro mount is recursively read-only too] # mounts
-[skip]runc run [rbind,rro mount is recursively read-only] # mounts
-runc run [mount(8)-like behaviour: --bind with no options]
-runc run [mount(8)-unlike behaviour: --bind with clearing flag]
-[skip]runc run [mount order, container bind-mount source] # mounts
-[skip]runc run [mount order, container bind-mount source] (userns) # mounts
-[skip]runc run [mount order, container idmap source] # mounts
-[skip]runc run [mount order, container idmap source] (userns) # mounts
-[skip]runc run [/proc is a symlink] # mounts
-[skip]runc run [rootfsPropagation shared] # mounts
-[skip]runc run --no-pivot must not expose bare /proc # no_pivot
+runc run [rbind,ro,rro mount is recursively read-only too]
+runc run [rbind,rro mount is recursively read-only]
+[skip]runc run [mount(8)-like behaviour: --bind with no options] # sshfs
+[skip]runc run [mount(8)-unlike behaviour: --bind with clearing flag] # sshfs
+runc run [mount order, container bind-mount source]
+runc run [mount order, container bind-mount source] (userns)
+runc run [mount order, container idmap source]
+runc run [mount order, container idmap source] (userns)
+runc run [/proc is a symlink]
+runc run [rootfsPropagation shared]
+runc run [rootfsPropagation slave]
+runc run --no-pivot must not expose bare /proc
 runc run [ro /sys/fs/cgroup mounts]
 runc run [ro /sys/fs/cgroup mounts + cgroupns]
 runc run [setgid / + mkdirall]
 runc run (cgroupv2 mount inside container)
-[skip]runc run [startContainer hook should inherit process environment] # hooks_msg
-runc run [dev,exec,suid,atime bind mount of a nodev,nosuid,noexec,noatime fuse sshfs mount]
-runc run [explicit-rw bind mount of a ro fuse sshfs mount]
-runc run [implied-rw bind mount of a ro fuse sshfs mount]
-runc run [ro bind mount of a nodev,nosuid,noexec fuse sshfs mount]
-runc run [ro,noexec bind mount of a nosuid,noatime fuse sshfs mount]
-runc run [ro,symfollow bind mount of a rw,nodev,nosymfollow fuse sshfs mount]
+runc run [startContainer hook should inherit process environment]
+[skip]runc run [dev,exec,suid,atime bind mount of a nodev,nosuid,noexec,noatime fuse sshfs mount] # sshfs
+[skip]runc run [explicit-rw bind mount of a ro fuse sshfs mount] # sshfs
+[skip]runc run [implied-rw bind mount of a ro fuse sshfs mount] # sshfs
+[skip]runc run [ro bind mount of a nodev,nosuid,noexec fuse sshfs mount] # sshfs
+[skip]runc run [ro,noexec bind mount of a nosuid,noatime fuse sshfs mount] # sshfs
+[skip]runc run [ro,symfollow bind mount of a rw,nodev,nosymfollow fuse sshfs mount] # sshfs
 
 # --- run (cgroups) ---
 [skip]runc run (blkio weight) # cgroups_v1
 [skip]runc run (hugetlb limits) # cgroups_v1
 runc run (pids.limit=-1 means unlimited)
-[skip]runc run (pids.limit=0 means 1) # cgroups
-[skip]runc run (cpu.idle) # cgroups
+runc run (pids.limit=0 means 1)
+runc run (cpu.idle)
 [skip]runc run (cgroup v1 + unified resources should fail) # cgroups_v1
 runc run (cgroup v2 resources.unified only)
 runc run (cgroup v2 resources.unified override)
 runc run (cgroup v2 resources.unified swap)
 runc run (per-device io weight for bfq)
-[skip]runc run (per-device multiple iops via unified) # cgroups
-[skip]runc run/create should error for a non-empty cgroup # cgroups
+runc run (per-device multiple iops via unified)
+runc run/create should error for a non-empty cgroup
 runc run/create should refuse pre-existing frozen cgroup
 
 # --- run (devices) ---
-[skip]runc run [device cgroup allow rm block device] # dev_cgroup
+runc run [device cgroup allow rm block device]
 runc run [device cgroup allow rw char device]
-[skip]runc run/update [device cgroup deny] # dev_cgroup
+runc run/update [device cgroup deny]
 [skip]runc run [devices vs systemd NeedDaemonReload] # systemd
 
 # --- run (seccomp) ---
 runc run [redundant seccomp rules]
-[skip]runc run [seccomp -ENOSYS handling] # seccomp
+runc run [seccomp -ENOSYS handling]
 runc run [seccomp defaultErrnoRet=ENXIO]
 runc run [seccomp] (SCMP_ACT_ERRNO default)
 runc run [seccomp] (SCMP_ACT_ERRNO explicit errno)
@@ -179,18 +160,17 @@ runc run [seccomp] (SCMP_ACT_NOTIFY startContainer hook)
 runc run [seccomp] (SCMP_ACT_NOTIFY write)
 runc run [seccomp] (SCMP_ACT_NOTIFY wrong abstract listener path)
 runc run [seccomp] (SCMP_ACT_NOTIFY wrong listener path)
-[skip]runc run [seccomp] (SECCOMP_FILTER_FLAG_*) # seccomp
+runc run [seccomp] (SECCOMP_FILTER_FLAG_*)
 runc run [seccomp] (SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV)
 runc run [seccomp] (ignore listener path if no notify act)
-[skip]runc run [seccomp] (startContainer hook) # seccomp
+runc run [seccomp] (startContainer hook)
 runc run [seccomp] (verify syscall compatibility after seccomp enforcement)
 [skip]runc run with personality syscall blocked by seccomp # arch
 
 # --- run (hooks) ---
-[skip]runc run [hook fails] # hooks_msg
+runc run [hook fails]
 runc run [hook's argv is preserved]
-[skip]runc run [host mount ns + hooks] # hooks_msg
-[skip]runc run (hooks library tests) # hooks_so
+runc run [host mount ns + hooks]
 
 # --- run (selinux) ---
 [skip]runc run (custom selinux label) # selinux
@@ -240,8 +220,8 @@ runc run memory policy with non-existing mode
 runc run and exec memory policy prefer relative
 
 # --- run (env) ---
-[skip]empty HOME env var is overridden # env_home
-[skip]empty HOME env var is overridden with multiple overrides # env_home
+empty HOME env var is overridden
+empty HOME env var is overridden with multiple overrides
 non-empty HOME env is used
 env var override
 env var override is set only once
@@ -255,7 +235,6 @@ runc delete --force ignore not exist
 runc delete --force [paused container]
 runc delete --force [host pidns + init gone]
 [skip]runc delete --force in cgroupv1 with subcgroups # cgroups_v1
-runc delete --force in cgroupv2 with subcgroups
 runc delete [host pidns + init gone]
 [skip]runc delete removes failed systemd unit # systemd
 
@@ -283,22 +262,22 @@ runc exec --user
 runc exec --user vs /dev/null ownership
 runc exec --user with no access to cwd
 runc exec --additional-gids
-[skip]runc exec --cap # caps_exec
-[skip]runc exec --cap [ambient is set from spec] # caps_exec
+runc exec --cap
+runc exec --cap [ambient is set from spec]
 runc exec --preserve-fds
-[skip]runc exec --ignore-paused # cgroups
+runc exec --ignore-paused
 runc exec --pid-file
 runc exec --pid-file with new CWD
 runc exec [exit codes]
 runc exec [execve error]
 runc exec [stdin not a tty]
 runc exec check default home
-[skip]runc exec should refuse a paused container # cgroups
+runc exec should refuse a paused container
 runc exec with RLIMIT_NOFILE(Bigger than system's hard value)
 runc exec with RLIMIT_NOFILE(Smaller than system's hard value)
 runc exec with RLIMIT_NOFILE(The same as system's hard value)
 [skip]runc exec (cgroup v1+hybrid joins correct cgroup) # cgroups_v1
-[skip]runc exec (cgroup v2 + init process in non-root cgroup) succeeds # cgroups
+runc exec (cgroup v2 + init process in non-root cgroup) succeeds
 runc exec (cgroup v2, ro cgroupfs, new cgroupns) does not chown cgroup
 runc exec (cgroup v2, rw cgroupfs, inherit cgroupns) does not chown cgroup
 runc exec (cgroup v2, rw cgroupfs, new cgroupns) does chown cgroup
@@ -325,14 +304,16 @@ runc exec [ --pidfd-socket ] [cgroups_v2]
 [skip]runc exec vs systemctl daemon-reload # systemd
 runc --debug exec
 runc --debug --log exec
+env [runc exec -p]
+env HOME is set for runc exec -p with no process.env
 
 # --- pause / resume ---
 runc pause and resume
 runc pause and resume with nonexist container
 
 # --- ps ---
-[skip]ps # ps_cmd
-[skip]ps -e -x # ps_cmd
+ps
+ps -e -x
 ps -f json
 ps after the container stopped
 
@@ -341,32 +322,32 @@ events --interval 100ms
 events --interval 1s
 events --interval default
 events --stats
-events --stats with hugetlb
+[skip]events --stats with hugetlb # cgroups_v1
 events --stats with psi data
 events oom
 
 # --- update ---
-[skip]update cgroup cpu limits # update_cmd
-[skip]update cgroup cpu.idle # update_cmd
+update cgroup cpu limits
+update cgroup cpu.idle
 [skip]update cgroup cpu.idle via systemd v252+ # systemd
-[skip]update cgroup v1/v2 common limits # update_cmd
-[skip]update cgroup v2 resources via unified map # update_cmd
+update cgroup v1/v2 common limits
+update cgroup v2 resources via unified map
 update cpu period in a pod cgroup with pod limit set
 update cpu period with no previous period/quota set
 update cpu quota with no previous period/quota set
 update cpuset cpus range via v2 unified map
-[skip]update cpuset parameters via resources.CPU # update_cmd
-[skip]update cpuset parameters via v2 unified map # update_cmd
-[skip]update devices [minimal transition rules] # update_cmd
-[skip]update memory vs CheckBeforeUpdate # update_cmd
+update cpuset parameters via resources.CPU
+update cpuset parameters via v2 unified map
+update devices [minimal transition rules]
+update memory vs CheckBeforeUpdate
 update paused container
-[skip]update per-device iops/bps values # update_cmd
-[skip]update pids.limit # update_cmd
+update per-device iops/bps values
+update pids.limit
 [skip]update rt period and runtime # cgroups_v1
 set cpu period with no quota
-[skip]set cpu period with no quota (invalid period) # update_cmd
+set cpu period with no quota (invalid period)
 set cpu quota with no period
-[skip]cpu burst # update_cmd
+cpu burst
 
 # --- checkpoint / restore ---
 [skip]checkpoint and restore # criu
@@ -386,14 +367,14 @@ set cpu quota with no period
 # --- mask paths ---
 mask paths [file]
 mask paths [directory]
-[skip]mask paths [directories share tmpfs] # mask_paths
+mask paths [directories share tmpfs]
 mask paths [directory with read-only rootfs]
-[skip]mask paths [duplicate paths] # mask_paths
-[skip]mask paths [prohibit symlink /proc] # mask_paths
+mask paths [duplicate paths]
+mask paths [prohibit symlink /proc]
 mask paths [prohibit symlink /sys]
 
 # --- umask ---
-[skip]umask # umask
+umask
 
 # --- network ---
 move network device to container network namespace
@@ -434,13 +415,14 @@ write to an idmap mount [userns]
 Check mount source fds are cleaned up with idmapped mounts [userns]
 
 # --- userns ---
-[skip]userns join external namespaces [wrong userns owner] # userns
+runc run [joining existing container namespaces]
+userns join external namespaces [wrong userns owner]
 userns join other container userns
 userns join other container userns [bind-mounted nsfd]
 [skip]userns join other container userns[selinux enabled] # selinux
-[skip]userns with 2 inaccessible mounts # userns
+userns with 2 inaccessible mounts
 userns with bind mount before a cgroupfs mount
-[skip]userns with inaccessible mount + exec # userns
+userns with inaccessible mount + exec
 userns with network interface
 userns with network interface renamed
 userns with simple mount

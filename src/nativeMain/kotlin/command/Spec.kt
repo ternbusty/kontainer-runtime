@@ -37,7 +37,6 @@ fun spec(bundlePath: String) {
                             bounding = DEFAULT_CAPS,
                             effective = DEFAULT_CAPS,
                             permitted = DEFAULT_CAPS,
-                            ambient = DEFAULT_CAPS,
                         ),
                     rlimits =
                         listOf(

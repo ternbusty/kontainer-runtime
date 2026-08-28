@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package rootfs
 
 import channel.InitReceiver
@@ -90,6 +92,16 @@ fun prepareRootfs(
     if (access(procPath, F_OK) != 0) {
         mkdir(procPath, 0x1EDu) // 0755
     }
+    // runc compat: /proc must be a real directory, not a symlink (CVE-2019-19921).
+    memScoped {
+        val lst = alloc<stat>()
+        if (lstat(procPath, lst.ptr) == 0) {
+            val mode = lst.st_mode.toInt() and S_IFMT
+            if (mode == S_IFLNK) {
+                throw Exception("/proc must be mounted on ordinary directory")
+            }
+        }
+    }
     if (syscall.mount(
             source = "proc",
             target = procPath,
@@ -105,10 +117,14 @@ fun prepareRootfs(
     Logger.debug("mounted /proc")
 
     // Mount /dev — create the mount point if missing (e.g. busybox rootfs).
+    // Always mount read-write initially so device nodes can be created,
+    // then remount read-only if the spec requests it.
     val devPath = "$rootfsPath/dev"
     if (access(devPath, F_OK) != 0) {
         mkdir(devPath, 0x1EDu) // 0755
     }
+    val devMount = specMounts?.find { it.destination == "/dev" }
+    val devWantsRo = devMount?.options?.contains("ro") == true
     if (syscall.mount(
             source = "tmpfs",
             target = devPath,
@@ -126,24 +142,49 @@ fun prepareRootfs(
 
     createDeviceNodes(syscall, devPath)
 
-    // Mount /sys — create the mount point if missing (e.g. busybox rootfs).
+    // Remount /dev as read-only after device nodes are created.
+    if (devWantsRo) {
+        if (syscall.mount(
+                source = "tmpfs",
+                target = devPath,
+                fstype = "tmpfs",
+                flags = (MS_REMOUNT or MS_NOSUID or MS_NOEXEC or MS_RDONLY).toULong(),
+                data = "mode=755",
+            ) != 0
+        ) {
+            Logger.warn("failed to remount /dev as read-only (errno=$errno)")
+        } else {
+            Logger.debug("remounted /dev as read-only")
+        }
+    }
+
+    // Mount /sys — only if the spec's /sys mount is actually sysfs.
+    // When the spec converts it to a bind-mount (e.g. when the container's
+    // network namespace isn't owned by its user namespace), skip the
+    // hardcoded sysfs mount and let applySpecMounts handle it.
+    val specSysMount = specMounts?.find { it.destination == "/sys" }
+    val sysIsSysfs = specSysMount == null || specSysMount.type == "sysfs"
     val sysPath = "$rootfsPath/sys"
     if (access(sysPath, F_OK) != 0) {
         mkdir(sysPath, 0x1EDu) // 0755
     }
-    if (syscall.mount(
-            source = "sysfs",
-            target = sysPath,
-            fstype = "sysfs",
-            flags = (MS_NOSUID or MS_NODEV or MS_NOEXEC or MS_RDONLY).toULong(),
-        ) != 0
-    ) {
-        val errNum = errno
-        perror("mount /sys")
-        Logger.error("failed to mount /sys (errno=$errNum)")
-        throw Exception("Failed to mount /sys (errno=$errNum)")
+    if (sysIsSysfs) {
+        if (syscall.mount(
+                source = "sysfs",
+                target = sysPath,
+                fstype = "sysfs",
+                flags = (MS_NOSUID or MS_NODEV or MS_NOEXEC or MS_RDONLY).toULong(),
+            ) != 0
+        ) {
+            val errNum = errno
+            perror("mount /sys")
+            Logger.error("failed to mount /sys (errno=$errNum)")
+            throw Exception("Failed to mount /sys (errno=$errNum)")
+        }
+        Logger.debug("mounted /sys")
+    } else {
+        Logger.debug("skipping hardcoded sysfs mount for /sys (spec type=${specSysMount?.type})")
     }
-    Logger.debug("mounted /sys")
 
     // Mount /sys/fs/cgroup if cgroup v2 is available.
     // Like runc (mountCgroupV2), first try mounting a fresh cgroup2 filesystem.
@@ -152,8 +193,9 @@ fun prepareRootfs(
     // giving the container full subcgroup management (mkdir, subtree_control).
     // If that fails (EPERM in user namespace without cgroupns), fall back to a
     // bind mount of the container's specific cgroup path.
+    // Skip when /sys is not sysfs — there's no sysfs to put cgroup under.
     val cgroupMountPath = "$rootfsPath/sys/fs/cgroup"
-    if (access("/sys/fs/cgroup/cgroup.controllers", F_OK) == 0) {
+    if (sysIsSysfs && access("/sys/fs/cgroup/cgroup.controllers", F_OK) == 0) {
         Logger.debug("setting up /sys/fs/cgroup (cgroup v2)")
 
         if (access(cgroupMountPath, F_OK) != 0) {
@@ -680,10 +722,21 @@ fun setRootfsReadonly(syscall: Syscall) {
  *
  * Called after pivot_root, while still root, so paths are relative to "/".
  */
+/**
+ * Create device nodes listed in spec.linux.devices inside the container
+ * rootfs.  Called BEFORE pivot_root so that the host's device nodes are
+ * still reachable for bind-mount fallback when the device cgroup denies
+ * mknod.
+ *
+ * @param rootfsPath absolute host path to the container rootfs
+ *                   (e.g. "/path/to/bundle/rootfs").  Device paths from the
+ *                   spec (e.g. "/dev/kmsg") are joined onto this prefix.
+ */
 @OptIn(ExperimentalForeignApi::class)
 fun applyLinuxDevices(
     syscall: Syscall,
     devices: List<spec.LinuxDevice>?,
+    rootfsPath: String,
 ) {
     if (devices.isNullOrEmpty()) return
     for (d in devices) {
@@ -708,41 +761,78 @@ fun applyLinuxDevices(
                     ((minor and 0xfff00) shl 12) or ((major and 0xfffff000) shl 32)
             ).toULong()
 
-        // Ensure parent directory exists. For /dev/test1, parent is /dev (already mounted).
-        val parent = d.path.substringBeforeLast('/', missingDelimiterValue = "")
-        if (parent.isNotEmpty()) mkdirP(parent)
+        // Resolve target path inside the rootfs (before pivot_root).
+        val target = "$rootfsPath/${d.path.trimStart('/')}"
 
-        // Remove any pre-existing file at the destination so mknod doesn't EEXIST.
-        unlink(d.path)
+        // Ensure parent directory exists. For /dev/test1, parent is /dev (already mounted).
+        val parent = target.substringBeforeLast('/', missingDelimiterValue = "")
+        if (parent.isNotEmpty()) mkdirP(parent)
 
         // Temporarily clear umask so mknod creates the file with the exact mode
         // from the spec instead of letting the inherited umask trim bits off.
+        //
+        // First try mknod without unlink — if the device already exists with
+        // the correct attributes (redundant default device), we skip creation.
         val savedUmask = umask(0u)
-        val rc = mknod(d.path, (mode or perms).toUInt(), devNum)
+        var rc = mknod(target, (mode or perms).toUInt(), devNum)
+        var mknodErrno = if (rc != 0) errno else 0
+        if (rc != 0 && mknodErrno == EEXIST) {
+            // Device already exists. Check if it already has the right
+            // major/minor (e.g. default device duplicated in spec). If
+            // so, keep the existing node and just fix permissions/ownership.
+            val keepExisting =
+                memScoped {
+                    val existing = alloc<stat>()
+                    if (stat(target, existing.ptr) == 0) {
+                        val existingMajor = ((existing.st_rdev.toLong() shr 8) and 0xFFF).toLong()
+                        val existingMinor = (existing.st_rdev.toLong() and 0xFF).toLong()
+                        existingMajor == major && existingMinor == minor
+                    } else {
+                        false
+                    }
+                }
+            if (keepExisting) {
+                Logger.debug("device ${d.path} already exists with correct major:minor, keeping")
+                chmod(target, perms.toUInt())
+                umask(savedUmask)
+                chown(target, d.uid?.toUInt() ?: 0u, d.gid?.toUInt() ?: 0u)
+                continue
+            }
+            // Wrong attributes — remove and recreate.
+            unlink(target)
+            rc = mknod(target, (mode or perms).toUInt(), devNum)
+            mknodErrno = if (rc != 0) errno else 0
+        }
         umask(savedUmask)
         if (rc != 0) {
-            Logger.warn("mknod ${d.path} (major=$major, minor=$minor) failed (errno=$errno); falling back to /dev/null bind")
-            // Fall back: empty file + bind mount from /dev/null
-            val fd = open(d.path, O_RDWR or O_CREAT, 0x1B6u)
-            if (fd >= 0) close(fd)
-            if (syscall.mount(
-                    source = "/dev/null",
-                    target = d.path,
-                    fstype = null,
-                    flags = MS_BIND.toULong(),
-                ) != 0
-            ) {
-                Logger.warn("bind /dev/null over ${d.path} failed (errno=$errno)")
-                continue
+            if (mknodErrno == EPERM) {
+                // Device cgroup denies mknod. Bind-mount from the host
+                // device instead (host filesystem is still accessible
+                // because we haven't done pivot_root yet). This matches
+                // runc's createDeviceNode fallback.
+                Logger.debug("mknod ${d.path} denied by device cgroup, falling back to bind mount from host")
+                val fd = open(target, O_WRONLY or O_CREAT, 0x1B6u)
+                if (fd >= 0) close(fd)
+                if (syscall.mount(
+                        source = d.path,
+                        target = target,
+                        fstype = null,
+                        flags = MS_BIND.toULong(),
+                    ) != 0
+                ) {
+                    Logger.warn("bind mount ${d.path} -> $target failed (errno=$errno)")
+                }
+            } else {
+                Logger.warn("mknod ${d.path} (major=$major, minor=$minor) failed (errno=$mknodErrno)")
             }
         } else {
             // mknod respects the mode-bits-in-the-low-bits of mode arg, but file system
             // mode-on-disk is mknod_mode & ~umask. We already zeroed umask, but chmod
             // afterwards covers the kernel weirdness around setuid/setgid bits.
-            chmod(d.path, perms.toUInt())
+            chmod(target, perms.toUInt())
         }
         if (d.uid != null || d.gid != null) {
-            if (chown(d.path, d.uid ?: 0u, d.gid ?: 0u) != 0) {
+            if (chown(target, d.uid ?: 0u, d.gid ?: 0u) != 0) {
                 Logger.warn("chown ${d.path} (uid=${d.uid}, gid=${d.gid}) failed (errno=$errno)")
             }
         }
@@ -781,6 +871,11 @@ fun applyRootfsPropagation(
             }
         }
     Logger.debug("setting rootfs propagation to $label (post-pivot)")
+    // First clear all propagation (MS_REC|MS_PRIVATE) to avoid stacking
+    // "shared,slave" when "/" was already rslave from prepareRootfs.
+    if (syscall.mount(source = null, target = "/", fstype = null, flags = (MS_REC or MS_PRIVATE).toULong()) != 0) {
+        Logger.warn("failed to clear rootfs propagation before setting $label (errno=$errno)")
+    }
     if (syscall.mount(
             source = null,
             target = "/",
@@ -795,6 +890,12 @@ fun applyRootfsPropagation(
 /**
  * Mask a path inside the container by bind-mounting /dev/null over a regular file
  * or an empty tmpfs over a directory. Used to implement spec.linux.maskedPaths.
+ *
+ * runc compatibility:
+ * - Paths are deduplicated (each masked exactly once)
+ * - All directory masks share a single read-only tmpfs (bind-mounted from
+ *   the first one) so they share one device number
+ * - Symlink targets are rejected (security: prevents masking host paths)
  */
 @OptIn(ExperimentalForeignApi::class)
 fun applyMaskedPaths(
@@ -802,27 +903,52 @@ fun applyMaskedPaths(
     paths: List<String>?,
 ) {
     if (paths.isNullOrEmpty()) return
-    for (path in paths) {
-        if (access(path, F_OK) != 0) {
-            Logger.debug("masked path $path does not exist, skipping")
-            continue
-        }
+
+    // runc compat: deduplicate paths so each is masked exactly once.
+    val uniquePaths = paths.distinct()
+
+    // Track the first directory that received a fresh tmpfs mount so that
+    // subsequent directories can bind-mount from it (sharing one device).
+    var firstTmpfsDir: String? = null
+
+    for (path in uniquePaths) {
+        // Check for symlinks — masking through symlinks is a security issue
+        // (could mask a host path).
         memScoped {
-            val st = alloc<stat>()
-            if (stat(path, st.ptr) != 0) {
-                Logger.warn("failed to stat masked path $path (errno=$errno)")
-                return@memScoped
+            val lst = alloc<stat>()
+            if (lstat(path, lst.ptr) != 0) {
+                Logger.debug("masked path $path does not exist, skipping")
+                continue
             }
-            val isDir = (st.st_mode.toInt() and S_IFMT) == S_IFDIR
+            val isLink = (lst.st_mode.toInt() and S_IFMT) == S_IFLNK
+            if (isLink) {
+                Logger.debug("masked path $path is a symlink, skipping")
+                continue
+            }
+            val isDir = (lst.st_mode.toInt() and S_IFMT) == S_IFDIR
             val rc =
                 if (isDir) {
-                    syscall.mount(
-                        source = "tmpfs",
-                        target = path,
-                        fstype = "tmpfs",
-                        flags = (MS_RDONLY or MS_NOSUID or MS_NODEV).toULong(),
-                        data = "size=0k",
-                    )
+                    if (firstTmpfsDir == null) {
+                        // First directory: mount a fresh read-only tmpfs.
+                        val r =
+                            syscall.mount(
+                                source = "tmpfs",
+                                target = path,
+                                fstype = "tmpfs",
+                                flags = (MS_RDONLY or MS_NOSUID or MS_NODEV).toULong(),
+                                data = "size=0k",
+                            )
+                        if (r == 0) firstTmpfsDir = path
+                        r
+                    } else {
+                        // Subsequent directories: bind-mount from the first tmpfs.
+                        syscall.mount(
+                            source = firstTmpfsDir,
+                            target = path,
+                            fstype = null,
+                            flags = (MS_BIND or MS_REC).toULong(),
+                        )
+                    }
                 } else {
                     syscall.mount(
                         source = "/dev/null",
@@ -921,6 +1047,10 @@ private data class ParsedMountOptions(
     val clearedFlags: ULong = 0uL,
     val idmap: Boolean = false,
     val ridmap: Boolean = false,
+    /** Recursive mount attributes to SET via mount_setattr(AT_RECURSIVE). */
+    val recAttrSet: ULong = 0uL,
+    /** Recursive mount attributes to CLEAR via mount_setattr(AT_RECURSIVE). */
+    val recAttrClr: ULong = 0uL,
 )
 
 private fun parseMountOptions(options: List<String>?): ParsedMountOptions {
@@ -930,6 +1060,8 @@ private fun parseMountOptions(options: List<String>?): ParsedMountOptions {
     var clearedFlags = 0uL
     var hasIdmap = false
     var hasRidmap = false
+    var recSet = 0uL
+    var recClr = 0uL
     val dataParts = mutableListOf<String>()
     for (opt in options) {
         when (opt) {
@@ -992,11 +1124,62 @@ private fun parseMountOptions(options: List<String>?): ParsedMountOptions {
             "defaults" -> { /* no-op */ }
             "idmap" -> hasIdmap = true
             "ridmap" -> hasRidmap = true
+            // Recursive mount attributes (mount_setattr with AT_RECURSIVE)
+            "rro" -> recSet = recSet or platform.linux._MOUNT_ATTR_RDONLY()
+            "rrw" -> recClr = recClr or platform.linux._MOUNT_ATTR_RDONLY()
+            "rnosuid" -> recSet = recSet or platform.linux._MOUNT_ATTR_NOSUID()
+            "rsuid" -> recClr = recClr or platform.linux._MOUNT_ATTR_NOSUID()
+            "rnodev" -> recSet = recSet or platform.linux._MOUNT_ATTR_NODEV()
+            "rdev" -> recClr = recClr or platform.linux._MOUNT_ATTR_NODEV()
+            "rnoexec" -> recSet = recSet or platform.linux._MOUNT_ATTR_NOEXEC()
+            "rexec" -> recClr = recClr or platform.linux._MOUNT_ATTR_NOEXEC()
+            "rnoatime" -> {
+                recClr = recClr or platform.linux._MOUNT_ATTR__ATIME()
+                recSet = recSet or platform.linux._MOUNT_ATTR_NOATIME()
+            }
+            "ratime" -> {
+                recClr = recClr or platform.linux._MOUNT_ATTR__ATIME()
+                recSet = recSet or platform.linux._MOUNT_ATTR_RELATIME()
+            }
+            "rrelatime" -> {
+                recClr = recClr or platform.linux._MOUNT_ATTR__ATIME()
+                recSet = recSet or platform.linux._MOUNT_ATTR_RELATIME()
+            }
+            "rnorelatime" -> {
+                // runc v1.5.1: {clear: true, flag: MOUNT_ATTR_RELATIME (0)}.
+                // Clearing RELATIME (0) is a no-op on attr_clr, but the special
+                // _ATIME handling adds MOUNT_ATTR__ATIME to attr_clr, resulting
+                // in attr_set=0 (RELATIME) — same effect as rrelatime.
+                recClr = recClr or platform.linux._MOUNT_ATTR__ATIME()
+                // Do NOT set STRICTATIME — RELATIME (0) is the implicit result
+                // when only _ATIME is cleared.
+            }
+            "rstrictatime" -> {
+                recClr = recClr or platform.linux._MOUNT_ATTR__ATIME()
+                recSet = recSet or platform.linux._MOUNT_ATTR_STRICTATIME()
+            }
+            "rnostrictatime" -> {
+                recClr = recClr or platform.linux._MOUNT_ATTR__ATIME()
+                recSet = recSet or platform.linux._MOUNT_ATTR_RELATIME()
+            }
+            "rnodiratime" -> recSet = recSet or platform.linux._MOUNT_ATTR_NODIRATIME()
+            "rdiratime" -> recClr = recClr or platform.linux._MOUNT_ATTR_NODIRATIME()
+            "rnosymfollow" -> recSet = recSet or platform.linux._MOUNT_ATTR_NOSYMFOLLOW()
+            "rsymfollow" -> recClr = recClr or platform.linux._MOUNT_ATTR_NOSYMFOLLOW()
             else -> dataParts.add(opt)
         }
     }
     val data = if (dataParts.isEmpty()) null else dataParts.joinToString(",")
-    return ParsedMountOptions(flags, propagation, data, clearedFlags, idmap = hasIdmap, ridmap = hasRidmap)
+    return ParsedMountOptions(
+        flags,
+        propagation,
+        data,
+        clearedFlags,
+        idmap = hasIdmap,
+        ridmap = hasRidmap,
+        recAttrSet = recSet,
+        recAttrClr = recClr,
+    )
 }
 
 // statfs() f_flags constants (from linux/statfs.h).
@@ -1061,6 +1244,77 @@ private fun mkdirP(path: String) {
 }
 
 /**
+ * Resolve a container-relative destination path within rootfsPath, following
+ * symlinks component by component while staying confined to rootfsPath.
+ * Absolute symlink targets are re-rooted under rootfsPath. Multi-hop chains
+ * are followed recursively. This ensures bind mounts through dangling symlinks
+ * end up at the correct host-side path (runc compat).
+ *
+ * Returns the fully resolved host-side path (always under rootfsPath).
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun resolveInRootfs(
+    rootfsPath: String,
+    destination: String,
+): String {
+    // If the destination already starts with rootfsPath, strip the prefix
+    // so we don't double-prefix it. This matches runc's LexicallyStripRoot
+    // behaviour and handles config entries where the destination is a full
+    // host path (e.g. container-source bind mounts in mount-order tests).
+    val relDest =
+        if (destination.startsWith("$rootfsPath/")) {
+            destination.removePrefix(rootfsPath).trimStart('/')
+        } else {
+            destination.trimStart('/')
+        }
+    val components = relDest.split("/").filter { it.isNotEmpty() }
+    return resolveComponents(rootfsPath, components, 0, rootfsPath, 0)
+}
+
+@OptIn(ExperimentalForeignApi::class)
+private fun resolveComponents(
+    rootfs: String,
+    components: List<String>,
+    startIdx: Int,
+    current: String,
+    depth: Int,
+): String {
+    if (depth > 255) return current // symlink loop guard
+    var cur = current
+    for (i in startIdx until components.size) {
+        val comp = components[i]
+        if (comp.isEmpty()) continue
+        val next = "$cur/$comp"
+        // Check if this path component is a symlink
+        val isLink =
+            memScoped {
+                val st = alloc<stat>()
+                lstat(next, st.ptr) == 0 && (st.st_mode.toInt() and 0xF000) == 0xA000
+            }
+        if (isLink) {
+            val linkTarget =
+                memScoped {
+                    val buf = allocArray<ByteVar>(4096)
+                    val n = readlink(next, buf, 4095u)
+                    if (n <= 0) null else buf.toKString().substring(0, n.toInt())
+                }
+            if (linkTarget != null) {
+                val base = if (linkTarget.startsWith("/")) rootfs else cur
+                val linkParts = linkTarget.trimStart('/').split("/").filter { it.isNotEmpty() }
+                // Concatenate remaining original components after the link parts.
+                val remaining = components.subList(i + 1, components.size)
+                val merged = linkParts + remaining
+                val resolved = resolveComponents(rootfs, merged, 0, base, depth + 1)
+                // Security: ensure we're still under rootfs.
+                return if (resolved.startsWith(rootfs)) resolved else rootfs
+            }
+        }
+        cur = next
+    }
+    return cur
+}
+
+/**
  * Process the spec.mounts[] array. Skips mount destinations that are already
  * established by prepareRootfs (/proc, /dev, /sys etc.) so we don't double-mount,
  * but processes everything else (user bind mounts, /dev/pts, /dev/shm, /dev/mqueue,
@@ -1084,7 +1338,20 @@ fun applySpecMounts(
     if (mounts.isNullOrEmpty()) return emptyList()
     val deferredPropagation = mutableListOf<Pair<String, ULong>>()
     // prepareRootfs() already establishes these defaults; skip to avoid double-mount.
-    val handledByPrepareRootfs = setOf("/proc", "/dev", "/sys", "/sys/fs/cgroup")
+    // /sys is only handled by prepareRootfs when the spec's mount type is sysfs;
+    // when the spec converts it to a bind-mount (e.g. for wrong-userns-owner
+    // scenarios), applySpecMounts must process it.
+    val sysMount = mounts.find { it.destination == "/sys" }
+    val sysHandled = sysMount == null || sysMount.type == "sysfs"
+    val handledByPrepareRootfs =
+        buildSet {
+            add("/proc")
+            add("/dev")
+            if (sysHandled) {
+                add("/sys")
+                add("/sys/fs/cgroup")
+            }
+        }
     for (m in mounts) {
         if (m.destination in handledByPrepareRootfs) {
             Logger.debug("skipping spec.mount ${m.destination} (already handled by prepareRootfs)")
@@ -1098,12 +1365,9 @@ fun applySpecMounts(
         // The target is relative to the future container root; the actual filesystem
         // path before pivot_root is rootfsPath + destination. Destination may be
         // relative (no leading '/') per OCI spec, so ensure a separator.
-        val target =
-            if (m.destination.startsWith("/")) {
-                rootfsPath + m.destination
-            } else {
-                "$rootfsPath/${m.destination}"
-            }
+        // Resolve symlinks within the rootfs so bind mounts through dangling
+        // symlinks work (runc compat — creates intermediate dirs as needed).
+        val target = resolveInRootfs(rootfsPath, m.destination)
 
         // For tmpfs mounts: capture the existing directory's permissions before
         // mounting so we can restore them when no explicit mode= option was given.
@@ -1124,15 +1388,86 @@ fun applySpecMounts(
             }
         }
 
-        mkdirP(target)
-        val rc =
-            syscall.mount(
-                source = source,
-                target = target,
-                fstype = if ((parsed.flags and MS_BIND.toULong()) != 0uL) null else fsType,
-                flags = parsed.flags,
-                data = parsed.data,
-            )
+        // Create mount target. For bind mounts where the source is a regular file,
+        // create a file (not a directory). This matches runc behaviour.
+        val isBindMount = (parsed.flags and MS_BIND.toULong()) != 0uL
+        val sourceIsFile =
+            isBindMount && m.source != null &&
+                memScoped {
+                    val st = alloc<stat>()
+                    stat(m.source, st.ptr) == 0 && (st.st_mode.toInt() and 0xF000) == 0x8000
+                }
+        if (sourceIsFile) {
+            // Create parent directories, then touch the file.
+            val parent = target.substringBeforeLast('/', missingDelimiterValue = "")
+            if (parent.isNotEmpty()) mkdirP(parent)
+            if (access(target, F_OK) != 0) {
+                val fd = open(target, O_WRONLY or O_CREAT, 0x1B6u) // 0666
+                if (fd >= 0) close(fd)
+            }
+        } else {
+            mkdirP(target)
+        }
+
+        // For tmpfs: inject mode= into the mount data before the initial mount
+        // so the kernel records it in /proc/self/mounts. This avoids a fragile
+        // post-mount remount. When no explicit mode= option was given and the
+        // mount target directory already existed, inherit its permissions
+        // (runc compat — see https://github.com/opencontainers/runc/issues/4971).
+        val mountData =
+            if (originalMode != null) {
+                val octalMode = originalMode.toString(8)
+                if (parsed.data.isNullOrEmpty()) "mode=$octalMode" else "${parsed.data},mode=$octalMode"
+            } else {
+                parsed.data
+            }
+
+        // For bind mounts whose source is inaccessible (e.g. owned by an
+        // unmapped UID in a user namespace), request the main process to
+        // clone the mount via open_tree(OPEN_TREE_CLONE) and send us the
+        // detached mount tree fd. We then install it with move_mount().
+        // This replaces the O_PATH + /proc/self/fd/N + mount() approach
+        // which fails with EINVAL on kernel 6.17+ in user namespaces.
+        var bindSourceFd = -1
+        if (isBindMount && m.source != null && mainSender != null && initReceiver != null) {
+            // Check if the source is accessible from our current namespace
+            val statResult =
+                memScoped {
+                    val st = alloc<stat>()
+                    stat(m.source, st.ptr)
+                }
+            if (statResult != 0 && errno == EACCES) {
+                val isRbind = (parsed.flags and MS_REC.toULong()) != 0uL
+                Logger.debug("bind source ${m.source} inaccessible (EACCES), requesting open_tree fd from main (isRbind=$isRbind)")
+                mainSender.bindSourceRequest(m.source, isRbind)
+                bindSourceFd = initReceiver.waitForBindSourceFd()
+                Logger.debug("received open_tree fd=$bindSourceFd for ${m.source}")
+            }
+        }
+
+        val rc: Int
+        if (bindSourceFd >= 0) {
+            // Install the detached mount tree via move_mount.
+            val moveMountRc =
+                platform.linux._move_mount(
+                    bindSourceFd,
+                    "",
+                    -100, // AT_FDCWD
+                    target,
+                    platform.linux._MOVE_MOUNT_F_EMPTY_PATH(),
+                )
+            close(bindSourceFd)
+            rc = if (moveMountRc < 0) -1 else 0
+        } else {
+            rc =
+                syscall.mount(
+                    source = source,
+                    target = target,
+                    fstype = if ((parsed.flags and MS_BIND.toULong()) != 0uL) null else fsType,
+                    flags = parsed.flags,
+                    data = mountData,
+                )
+        }
         if (rc != 0) {
             if (errno == EBUSY) {
                 Logger.debug("spec.mount ${m.destination}: already mounted, skipping")
@@ -1143,17 +1478,6 @@ fun applySpecMounts(
         }
         Logger.debug("mounted ${m.destination} (type=$fsType, flags=${parsed.flags})")
 
-        // For tmpfs: restore the original directory permissions when no mode=
-        // option was specified. The tmpfs default root mode is 01777, but when
-        // the mount target already existed, runc preserves its permissions.
-        if (originalMode != null) {
-            if (chmod(target, originalMode) != 0) {
-                Logger.warn("failed to chmod tmpfs ${m.destination} to original mode (errno=$errno)")
-            } else {
-                Logger.debug("restored original mode on tmpfs ${m.destination}")
-            }
-        }
-
         // Bind-remount once more with the requested flags. The kernel ignores flag
         // bits other than MS_BIND/MS_REC on the initial bind mount; MS_RDONLY etc.
         // only take effect via a subsequent MS_REMOUNT.
@@ -1163,7 +1487,6 @@ fun applySpecMounts(
         // clears MS_NODEV). In runc's semantics, specifying ANY mount option
         // on a bind mount means "I want exactly these flags, clear everything
         // else" — which differs from mount(8)'s default inherit-all behavior.
-        val isBindMount = (parsed.flags and MS_BIND.toULong()) != 0uL
         val justBind = parsed.flags == MS_BIND.toULong() || parsed.flags == (MS_BIND or MS_REC).toULong()
         val hasExtraOptions = !justBind || parsed.clearedFlags != 0uL
         if (isBindMount && hasExtraOptions) {
@@ -1313,6 +1636,13 @@ fun applySpecMounts(
             }
         }
 
+        // Apply recursive mount attributes (rro, rnodev, ratime, etc.) via
+        // mount_setattr(AT_RECURSIVE). Must be done after the bind mount and
+        // remount, before propagation.
+        if (parsed.recAttrSet != 0uL || parsed.recAttrClr != 0uL) {
+            applyRecursiveMountAttr(target, parsed.recAttrSet, parsed.recAttrClr)
+        }
+
         // Apply propagation flag in a separate mount() call (kernel requirement).
         // This must happen AFTER idmap processing because the idmap step does
         // open_tree + move_mount which replaces the mount — propagation set
@@ -1324,7 +1654,15 @@ fun applySpecMounts(
         // deferred entries use the post-pivot path (m.destination, not target)
         // since after pivot_root rootfsPath becomes "/".
         if (parsed.propagation != 0uL) {
-            deferredPropagation.add(m.destination to parsed.propagation)
+            // Use the container-relative destination path (strip rootfsPath
+            // prefix if present) since this is applied after pivot_root.
+            val postPivotDest =
+                if (m.destination.startsWith("$rootfsPath/")) {
+                    m.destination.removePrefix(rootfsPath)
+                } else {
+                    m.destination
+                }
+            deferredPropagation.add(postPivotDest to parsed.propagation)
         }
     }
     return deferredPropagation
@@ -1339,6 +1677,53 @@ fun applySpecMounts(
  *
  * @param entries list of (destination, propagation_flags) pairs
  */
+
+/**
+ * Apply recursive mount attributes via mount_setattr(2) with AT_RECURSIVE.
+ * Used for options like rro, rnodev, ratime, etc. that apply to all
+ * mounts in a bind-mount tree recursively.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun applyRecursiveMountAttr(
+    target: String,
+    attrSet: ULong,
+    attrClr: ULong,
+) {
+    Logger.debug("applying recursive mount attrs on $target (set=0x${attrSet.toString(16)}, clr=0x${attrClr.toString(16)})")
+    memScoped {
+        val attr = alloc<platform.linux._mount_attr>()
+        attr.attr_set = attrSet
+        attr.attr_clr = attrClr
+        attr.propagation = 0uL
+        attr.userns_fd = 0uL
+
+        val fd = open(target, platform.linux._O_PATH_FLAG() or O_CLOEXEC)
+        if (fd < 0) {
+            Logger.warn("failed to open $target for mount_setattr (errno=$errno)")
+            return
+        }
+        try {
+            val flags = platform.linux._AT_EMPTY_PATH() or platform.linux._AT_RECURSIVE()
+            val rc =
+                platform.linux._mount_setattr(
+                    fd,
+                    "",
+                    flags,
+                    attr.ptr,
+                    platform.linux._sizeof_mount_attr(),
+                )
+            if (rc < 0) {
+                val errNum = errno
+                Logger.warn("mount_setattr on $target failed (errno=$errNum)")
+            } else {
+                Logger.debug("recursive mount attrs applied to $target")
+            }
+        } finally {
+            close(fd)
+        }
+    }
+}
+
 @OptIn(ExperimentalForeignApi::class)
 fun applyDeferredPropagation(entries: List<Pair<String, ULong>>) {
     for ((destination, flags) in entries) {

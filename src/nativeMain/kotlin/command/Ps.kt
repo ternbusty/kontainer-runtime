@@ -12,11 +12,15 @@ import utils.JsonCodec
 /**
  * Ps command - List processes running in a container
  *
- * It reads the cgroup.procs file to get PIDs and outputs them in JSON or table format.
+ * Reads the cgroup.procs file to get PIDs and runs the host's `ps` command
+ * filtered to those PIDs.  With `--format json` outputs a JSON PID array;
+ * otherwise passes any extra arguments through to `ps` (defaulting to
+ * `ps -ef` when none are given).  This matches runc's behaviour.
  *
  * @param rootPath Root directory for container state
  * @param containerId Container ID
- * @param format Output format ("json" or "table", default: "json")
+ * @param format Output format ("json" forces JSON array; anything else is table)
+ * @param psArgs Extra arguments forwarded to the host `ps` command
  */
 @OptIn(ExperimentalForeignApi::class)
 fun ps(
@@ -24,15 +28,10 @@ fun ps(
     cgroup: Cgroup,
     rootPath: String,
     containerId: String,
-    format: String = "json",
+    format: String = "table",
+    psArgs: List<String> = emptyList(),
 ) {
     Logger.info("listing processes for container: $containerId (format: $format)")
-
-    // Validate format
-    if (format != "json" && format != "table") {
-        Logger.error("invalid format: $format (must be 'json' or 'table')")
-        exit(1)
-    }
 
     // Load container state to verify it exists
     val state =
@@ -82,9 +81,10 @@ fun ps(
     }
 
     // Output according to format
-    when (format) {
-        "json" -> outputJson(pids)
-        "table" -> outputTable(pids)
+    if (format == "json") {
+        outputJson(pids)
+    } else {
+        outputTable(pids, psArgs)
     }
 }
 
@@ -100,20 +100,30 @@ private fun outputJson(pids: List<Int>) {
 }
 
 /**
- * Output PIDs in table format
+ * Output process information in table format using the host's `ps` command.
  *
- * Executes 'ps -ef' and filters output to show only processes with matching PIDs.
- * This provides a human-readable table with process information.
+ * Runs `ps <psArgs>` (defaulting to `ps -ef`) and filters the output to
+ * show only processes whose PIDs belong to the container.  When no extra
+ * args are given runc uses the SysV-style `ps -ef`; when additional args
+ * are present (e.g. `-e -x`) they are forwarded verbatim, which may
+ * produce BSD-style output where the PID column is in a different position.
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun outputTable(pids: List<Int>) {
+private fun outputTable(
+    pids: List<Int>,
+    psArgs: List<String>,
+) {
     if (pids.isEmpty()) {
         println("No processes found")
         return
     }
 
-    // Execute 'ps -ef' to get all processes
-    Logger.debug("executing 'ps -ef' to get process information")
+    // Determine the full argv for ps.
+    // runc default is `ps -ef`; when the caller supplies extra args those
+    // replace `-ef`.
+    val args: List<String> = if (psArgs.isEmpty()) listOf("ps", "-ef") else listOf("ps") + psArgs
+
+    Logger.debug("executing '${args.joinToString(" ")}' to get process information")
 
     memScoped {
         // Create pipe for reading ps output
@@ -138,7 +148,7 @@ private fun outputTable(pids: List<Int>) {
             }
 
             0 -> {
-                // Child process: execute ps -ef
+                // Child process: execute ps with the determined args.
                 close(readFd)
 
                 // Redirect stdout to pipe
@@ -148,11 +158,9 @@ private fun outputTable(pids: List<Int>) {
                 }
                 close(writeFd)
 
-                // Execute ps -ef
-                val argv = allocArray<CPointerVar<ByteVar>>(3)
-                argv[0] = "ps".cstr.ptr
-                argv[1] = "-ef".cstr.ptr
-                argv[2] = null
+                val argv = allocArray<CPointerVar<ByteVar>>(args.size + 1)
+                args.forEachIndexed { i, a -> argv[i] = a.cstr.ptr }
+                argv[args.size] = null
 
                 execvp("ps", argv)
 
@@ -165,18 +173,25 @@ private fun outputTable(pids: List<Int>) {
                 // Parent process: read ps output and filter
                 close(writeFd)
 
-                // Read all output from ps
-                val buffer = allocArray<ByteVar>(65536) // 64KB buffer
-                val bytesRead = read(readFd, buffer, 65535u)
+                // Read all output from ps (loop until EOF).
+                // ps -e -x on a busy host can exceed 64KB easily, so
+                // use a 512KB buffer.
+                val bufSize = 524288
+                val buffer = allocArray<ByteVar>(bufSize + 1)
+                var totalRead = 0
+                while (totalRead < bufSize) {
+                    val n = read(readFd, buffer + totalRead, (bufSize - totalRead).toULong())
+                    if (n <= 0) break
+                    totalRead += n.toInt()
+                }
                 close(readFd)
 
-                if (bytesRead < 0) {
-                    perror("read")
-                    Logger.error("failed to read ps output")
+                if (totalRead == 0) {
+                    Logger.error("no output from ps command")
                     exit(1)
                 }
 
-                buffer[bytesRead.toInt()] = 0 // Null terminate
+                buffer[totalRead] = 0 // Null terminate
                 val psOutput = buffer.toKString()
 
                 // Wait for child process
@@ -193,7 +208,7 @@ private fun outputTable(pids: List<Int>) {
 /**
  * Filter ps output to show only processes with matching PIDs
  *
- * @param psOutput Full output from 'ps -ef'
+ * @param psOutput Full output from `ps`
  * @param pids List of PIDs to include
  */
 private fun filterPsOutput(

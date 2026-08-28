@@ -3,7 +3,7 @@ package seccomp
 import kotlinx.cinterop.*
 import libseccomp.*
 import logger.Logger
-import platform.posix.perror
+import platform.posix.*
 import spec.LinuxSeccomp
 import spec.LinuxSyscall
 import spec.SeccompArg
@@ -180,10 +180,27 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int? {
             Logger.warn("failed to set SCMP_FLTATR_CTL_NNP")
         }
 
-        // Process seccomp flags from the OCI spec
-        seccomp.flags?.forEach { flag ->
-            applySeccompFlag(ctx, flag)
+        // Process seccomp flags from the OCI spec.
+        // When no flags are specified (null or absent), default to SPEC_ALLOW
+        // if supported (matching runc behavior).
+        val effectiveFlags = seccomp.flags
+        if (effectiveFlags == null) {
+            // No flags field: auto-add SPEC_ALLOW
+            try {
+                applySeccompFlag(ctx, "SECCOMP_FILTER_FLAG_SPEC_ALLOW")
+            } catch (_: Exception) {
+                Logger.debug("SECCOMP_FILTER_FLAG_SPEC_ALLOW not supported, skipping default")
+            }
+        } else {
+            effectiveFlags.forEach { flag ->
+                applySeccompFlag(ctx, flag)
+            }
         }
+
+        // Compute the combined numeric value of the applied flags and log it
+        // (runc debug output: "seccomp filter flags: N")
+        val flagsValue = computeSeccompFlagsValue(effectiveFlags)
+        Logger.debug("seccomp filter flags: $flagsValue")
 
         // Handle architecture specification and Add specified architectures
         if (seccomp.architectures != null && seccomp.architectures.isNotEmpty()) {
@@ -231,6 +248,15 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int? {
         }
 
         Logger.debug("seccomp filter loaded successfully")
+
+        // runc compat (patchbpf): install a second BPF filter that returns
+        // ENOSYS for syscall numbers beyond the native architecture's known
+        // range. Without this stub, unknown/future syscalls hit the libseccomp
+        // default action (typically ERRNO+EPERM) instead of ENOSYS. Since
+        // the kernel picks the most restrictive result across multiple filters,
+        // and ERRNO(ENOSYS) beats ALLOW, this correctly upgrades unknown
+        // syscalls to ENOSYS without affecting explicit rules.
+        installEnosysStub(seccomp.syscalls, computeSeccompFlagsValue(seccomp.flags))
 
         // If SCMP_ACT_NOTIFY is used, get the notify FD
         val notifyFd =
@@ -418,6 +444,30 @@ private fun applySeccompFlag(
 }
 
 /**
+ * Compute the combined numeric kernel flags value from OCI flag names.
+ * When [flags] is null (field absent), runc defaults to SPEC_ALLOW (4)
+ * if the kernel supports it.
+ */
+private fun computeSeccompFlagsValue(flags: List<String>?): Int {
+    if (flags == null) {
+        // No flags field: runc defaults to SPEC_ALLOW
+        return 4 // SECCOMP_FILTER_FLAG_SPEC_ALLOW
+    }
+    var sum = 0
+    for (flag in flags) {
+        sum +=
+            when (flag) {
+                "SECCOMP_FILTER_FLAG_TSYNC" -> 0
+                "SECCOMP_FILTER_FLAG_LOG" -> 2
+                "SECCOMP_FILTER_FLAG_SPEC_ALLOW" -> 4
+                "SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV" -> 32
+                else -> 0
+            }
+    }
+    return sum
+}
+
+/**
  * Add a syscall rule with argument comparison
  */
 @OptIn(ExperimentalForeignApi::class)
@@ -436,3 +486,184 @@ private fun addSyscallArgRule(
 
         seccomp_rule_add_array(ctx, action, syscallNum, 1u, cmp.ptr)
     }
+
+/**
+ * Install a raw BPF filter that returns ENOSYS for syscall numbers beyond the
+ * native architecture's known range. Installed as a second seccomp filter after
+ * the libseccomp one. Since the kernel picks the most restrictive result across
+ * filters, and ERRNO(ENOSYS) beats ALLOW, this correctly upgrades "unknown
+ * syscall gets ALLOW" to ENOSYS without affecting rules that already return
+ * something more restrictive (KILL, TRAP).
+ *
+ * BPF program (6 instructions):
+ *   [0] LD_ABS  arch           (seccomp_data.arch at offset 4)
+ *   [1] JEQ    native_arch 0 3 (if not native arch, skip to ALLOW)
+ *   [2] LD_ABS  nr             (seccomp_data.nr at offset 0)
+ *   [3] JGE    threshold 0 1   (if nr < threshold, skip to ALLOW)
+ *   [4] RET    ERRNO|ENOSYS
+ *   [5] RET    ALLOW
+ */
+@Suppress("NOTHING_TO_INLINE")
+@OptIn(ExperimentalForeignApi::class)
+private fun installEnosysStub(
+    syscalls: List<LinuxSyscall>?,
+    filterFlagsValue: Int,
+) {
+    val threshold = findMaxSyscallNr(syscalls) + 1
+    if (threshold <= 1) {
+        Logger.debug("patchbpf: no syscalls resolved, skipping ENOSYS stub")
+        return
+    }
+    Logger.debug("patchbpf: ENOSYS stub for nr >= $threshold")
+
+    // AUDIT_ARCH_* = EM_<arch> | __AUDIT_ARCH_64BIT | __AUDIT_ARCH_LE
+    // aarch64: 0xC00000B7 (EM_AARCH64=183), x86_64: 0xC000003E (EM_X86_64=62)
+    val auditArch: UInt =
+        if (platform.posix.sysconf(platform.posix._SC_PAGESIZE) > 0) {
+            // Detect architecture at runtime via uname
+            memScoped {
+                val uts = alloc<platform.posix.utsname>()
+                platform.posix.uname(uts.ptr)
+                val machine = uts.machine.toKString()
+                when {
+                    machine.contains("aarch64") -> 0xC00000B7u
+                    else -> 0xC000003Eu // x86_64
+                }
+            }
+        } else {
+            0xC000003Eu
+        }
+
+    val retEnosys = 0x00050000u or 38u // SECCOMP_RET_ERRNO | ENOSYS
+    val retAllow = 0x7FFF0000u // SECCOMP_RET_ALLOW
+
+    memScoped {
+        // struct sock_filter = { __u16 code; __u8 jt; __u8 jf; __u32 k; } = 8 bytes
+        val instCount = 6
+        val filter = allocArray<ByteVar>(instCount * 8)
+
+        fun writeBpfInst(
+            idx: Int,
+            code: UShort,
+            jt: UByte,
+            jf: UByte,
+            k: UInt,
+        ) {
+            val off = idx * 8
+            filter[off + 0] = (code.toInt() and 0xFF).toByte()
+            filter[off + 1] = ((code.toInt() shr 8) and 0xFF).toByte()
+            filter[off + 2] = jt.toByte()
+            filter[off + 3] = jf.toByte()
+            filter[off + 4] = (k.toInt() and 0xFF).toByte()
+            filter[off + 5] = ((k.toInt() shr 8) and 0xFF).toByte()
+            filter[off + 6] = ((k.toInt() shr 16) and 0xFF).toByte()
+            filter[off + 7] = ((k.toInt() shr 24) and 0xFF).toByte()
+        }
+
+        writeBpfInst(0, 0x20u, 0u, 0u, 4u) // LD_ABS arch
+        writeBpfInst(1, 0x15u, 0u, 3u, auditArch) // JEQ native_arch, skip 0, else skip 3
+        writeBpfInst(2, 0x20u, 0u, 0u, 0u) // LD_ABS nr
+        writeBpfInst(3, 0x35u, 0u, 1u, threshold.toUInt()) // JGE threshold, skip 0, else skip 1
+        writeBpfInst(4, 0x06u, 0u, 0u, retEnosys) // RET ERRNO|ENOSYS
+        writeBpfInst(5, 0x06u, 0u, 0u, retAllow) // RET ALLOW
+
+        // struct sock_fprog { unsigned short len; struct sock_filter *filter; }
+        // On 64-bit: 2 bytes len + 6 bytes pad + 8 bytes pointer = 16 bytes
+        val prog = allocArray<ByteVar>(16)
+        prog[0] = (instCount and 0xFF).toByte()
+        prog[1] = ((instCount shr 8) and 0xFF).toByte()
+        // bytes 2-7: padding (zeroed by allocArray)
+        // bytes 8-15: pointer to filter
+        val filterPtr = filter.rawValue.toLong()
+        for (i in 0..7) {
+            prog[8 + i] = ((filterPtr shr (i * 8)) and 0xFF).toByte()
+        }
+
+        // seccomp(SECCOMP_SET_MODE_FILTER=1, flags, &prog)
+        // Strip NEW_LISTENER (0x08) and WAIT_KILLABLE_RECV (0x20) flags
+        // — those only apply when the filter uses NOTIFY.
+        val stubFlags = (filterFlagsValue and (0x08 or 0x20).inv()).toLong()
+        // __NR_seccomp: 317 on x86_64, 277 on aarch64
+        val nrSeccomp = if (auditArch == 0xC00000B7u) 277L else 317L
+        val rc = syscall(nrSeccomp, 1L, stubFlags, prog)
+        if (rc != 0L) {
+            Logger.warn("patchbpf: seccomp(SET_MODE_FILTER) failed (errno=${platform.posix.errno})")
+        } else {
+            Logger.debug("patchbpf: ENOSYS stub installed")
+        }
+    }
+}
+
+/**
+ * Find the highest native syscall number by probing libseccomp with
+ * names from the spec and a list of recently-added syscalls.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun findMaxSyscallNr(syscalls: List<LinuxSyscall>?): Int {
+    var max = 0
+
+    // Probe spec-referenced syscalls.
+    syscalls?.forEach { sc ->
+        sc.names.forEach { name ->
+            val nr = seccomp_syscall_resolve_name(name)
+            if (nr > 0 && nr > max) max = nr
+        }
+    }
+
+    // Probe well-known high-numbered syscalls to find the native arch's max.
+    val probes =
+        listOf(
+            "removexattrat",
+            "listxattrat",
+            "getxattrat",
+            "setxattrat",
+            "mseal",
+            "lsm_list_modules",
+            "lsm_set_self_attr",
+            "lsm_get_self_attr",
+            "listmount",
+            "statmount",
+            "futex_requeue",
+            "futex_wait",
+            "futex_wake",
+            "fchmodat2",
+            "cachestat",
+            "set_mempolicy_home_node",
+            "process_mrelease",
+            "futex_waitv",
+            "epoll_pwait2",
+            "mount_setattr",
+            "openat2",
+            "pidfd_getfd",
+            "close_range",
+            "io_uring_setup",
+            "pidfd_send_signal",
+            "io_uring_enter",
+            "rseq",
+            "pkey_free",
+            "pkey_alloc",
+            "pkey_mprotect",
+            "statx",
+            "copy_file_range",
+            "preadv2",
+            "memfd_create",
+            "getrandom",
+            "membarrier",
+            "execveat",
+            "userfaultfd",
+            "seccomp",
+            "sched_setattr",
+            "renameat2",
+            "kcmp",
+            "finit_module",
+            "process_vm_writev",
+            "process_vm_readv",
+        )
+    for (name in probes) {
+        val nr = seccomp_syscall_resolve_name(name)
+        if (nr > 0 && nr > max) max = nr
+    }
+
+    if (max < 100) max = 450 // safe fallback
+    return max
+}
