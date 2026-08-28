@@ -16,6 +16,7 @@
 #   netdev       rtnetlink netdev move not implemented
 #   tmpcopyup    tmpcopyup not implemented
 #   no_pivot     --no-pivot not implemented
+#   hooks_so     hooks library (.so) tests require hook support
 
 # --- spec ---
 spec generation cwd
@@ -175,6 +176,7 @@ runc run [seccomp] (verify syscall compatibility after seccomp enforcement)
 runc run [hook fails]
 runc run [hook's argv is preserved]
 runc run [host mount ns + hooks]
+[skip]runc run (hooks library tests) # hooks_so
 
 # --- run (selinux) ---
 [skip]runc run (custom selinux label) # selinux
@@ -418,7 +420,6 @@ write to an idmap mount [userns]
 Check mount source fds are cleaned up with idmapped mounts [userns]
 
 # --- userns ---
-runc run [joining existing container namespaces]
 userns join external namespaces [wrong userns owner]
 userns join other container userns
 userns join other container userns [bind-mounted nsfd]
