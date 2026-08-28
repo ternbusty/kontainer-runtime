@@ -802,17 +802,22 @@ fun applyLinuxDevices(
                 // device instead (host filesystem is still accessible
                 // because we haven't done pivot_root yet). This matches
                 // runc's createDeviceNode fallback.
-                Logger.debug("mknod ${d.path} denied by device cgroup, falling back to bind mount from host")
+                //
+                // Use the host device path when it exists; fall back to
+                // /dev/null for synthetic devices that only exist inside
+                // the container (e.g. test devices).
+                val hostSource = if (access(d.path, F_OK) == 0) d.path else "/dev/null"
+                Logger.debug("mknod ${d.path} denied by device cgroup, falling back to bind mount from $hostSource")
                 val fd = open(target, O_WRONLY or O_CREAT, 0x1B6u)
                 if (fd >= 0) close(fd)
                 if (syscall.mount(
-                        source = d.path,
+                        source = hostSource,
                         target = target,
                         fstype = null,
                         flags = MS_BIND.toULong(),
                     ) != 0
                 ) {
-                    Logger.warn("bind mount ${d.path} -> $target failed (errno=$errno)")
+                    Logger.warn("bind mount $hostSource -> $target failed (errno=$errno)")
                 }
             } else {
                 Logger.warn("mknod ${d.path} (major=$major, minor=$minor) failed (errno=$mknodErrno)")

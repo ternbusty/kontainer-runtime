@@ -18,6 +18,7 @@ import rootfs.handleMountFdRequest
 import seccomp.seccompUsesNotify
 import seccomp.sendToSeccompListener
 import seccomp.validateSeccompFlags
+import spec.LinuxDeviceCgroup
 import spec.LinuxIdMapping
 import spec.Spec
 import state.ContainerStatus
@@ -84,8 +85,47 @@ private fun runMainProcessInternal(
         // cgroup (including Stage-2 which will be added below), so we must
         // NOT call it again when Stage-2 PID arrives — a second
         // BPF_PROG_ATTACH would stack a duplicate filter.
-        val deviceRules = spec.linux?.resources?.devices
-        if (!deviceRules.isNullOrEmpty()) {
+        //
+        // Ensure that spec.linux.devices[] entries have matching allow rules
+        // so the init process can mknod them. The spec SHOULD include these,
+        // but without them the eBPF filter would block mknod, causing the
+        // device creation to fall back to a /dev/null bind mount (wrong
+        // major/minor/permissions). This matches runc's behavior of allowing
+        // devices that the runtime itself needs to create.
+        val deviceRules =
+            spec.linux
+                ?.resources
+                ?.devices
+                ?.toMutableList() ?: mutableListOf()
+        val specDevices = spec.linux?.devices
+        if (!specDevices.isNullOrEmpty() && deviceRules.isNotEmpty()) {
+            for (d in specDevices) {
+                val alreadyAllowed =
+                    deviceRules.any { rule ->
+                        rule.allow && (rule.type == null || rule.type == d.type) &&
+                            (rule.major == null || rule.major == d.major) &&
+                            (rule.minor == null || rule.minor == d.minor)
+                    }
+                if (!alreadyAllowed) {
+                    // Insert at position 0 so the allow rule comes BEFORE
+                    // any deny-all rule in the spec.  The eBPF program
+                    // evaluates rules in order (first match wins), so an
+                    // allow rule after a deny-all would be unreachable.
+                    deviceRules.add(
+                        0,
+                        LinuxDeviceCgroup(
+                            allow = true,
+                            type = d.type,
+                            major = d.major,
+                            minor = d.minor,
+                            access = "rwm",
+                        ),
+                    )
+                    Logger.debug("auto-allowed device ${d.path} (${d.type} ${d.major}:${d.minor}) for mknod")
+                }
+            }
+        }
+        if (deviceRules.isNotEmpty()) {
             val cgroupDirPath = "/sys/fs/cgroup/${resolvedCgroupPath.removePrefix("/")}"
             DeviceCgroup.apply(cgroupDirPath, deviceRules)
         }
