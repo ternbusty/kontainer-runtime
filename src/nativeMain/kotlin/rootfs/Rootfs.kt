@@ -715,14 +715,6 @@ fun setRootfsReadonly(syscall: Syscall) {
 }
 
 /**
- * Create the device nodes specified by spec.linux.devices[] inside the container's
- * /dev. Uses mknod(2) so the device has the requested major/minor. Falls back to
- * a bind mount from /dev/null on EPERM (e.g. running in a user namespace without
- * CAP_MKNOD).
- *
- * Called after pivot_root, while still root, so paths are relative to "/".
- */
-/**
  * Create device nodes listed in spec.linux.devices inside the container
  * rootfs.  Called BEFORE pivot_root so that the host's device nodes are
  * still reachable for bind-mount fallback when the device cgroup denies
