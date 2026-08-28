@@ -40,6 +40,13 @@ class FakeMainSender : MainSender {
         calls += "mountFdRequest(treeFd=$treeFd, recursive=$recursive, implied=$implied)"
     }
 
+    override fun bindSourceRequest(
+        source: String,
+        isRbind: Boolean,
+    ) {
+        calls += "bindSourceRequest(source=$source, isRbind=$isRbind)"
+    }
+
     override fun execFailed(error: String) {
         calls += "execFailed(error=$error)"
     }
@@ -112,6 +119,10 @@ class FakeInitSender : InitSender {
         calls += "mountFdDone()"
     }
 
+    override fun bindSourceDone(fd: Int) {
+        calls += "bindSourceDone(fd=$fd)"
+    }
+
     override fun close() {
         calls += "close()"
     }
@@ -146,9 +157,17 @@ class FakeInitReceiver : InitReceiver {
             ?: error("no mount fd done signal preseeded")
     }
 
+    override fun waitForBindSourceFd(): Int {
+        calls += "waitForBindSourceFd()"
+        return bindSourceFds.removeFirstOrNull()
+            ?: error("no bind source fd preseeded")
+    }
+
     override fun close() {
         calls += "close()"
     }
+
+    val bindSourceFds: ArrayDeque<Int> = ArrayDeque()
 }
 
 class FakeNotifyListener : NotifyListener {
