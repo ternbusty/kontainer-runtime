@@ -732,9 +732,8 @@ private val SUBCOMMAND_DESCRIPTIONS =
         "update" to "update container resource constraints",
     )
 
-/** Get the runtime binary name — original name saved before exeseal, or fallback.
- *  Defaults to "runc" for OCI compatibility (runc bats tests hardcode this name). */
-private fun getRuntimeName(): String = getenv("_KONTAINER_BINARY_NAME")?.toKString() ?: "runc"
+/** Get the runtime binary name — original name saved before exeseal, or fallback. */
+private fun getRuntimeName(): String = getenv("_KONTAINER_BINARY_NAME")?.toKString() ?: "kontainer-runtime"
 
 private fun printRuncHelp() {
     val name = getRuntimeName()
@@ -873,9 +872,15 @@ fun main(args: Array<String>) {
         // re-exec /proc/self/exe points to the memfd, not the original binary.
         // The help output and version strings need the original name.
         if (getenv("_KONTAINER_BINARY_NAME") == null) {
-            // Default to "runc" for OCI compatibility — the runc bats
-            // integration tests hard-code "runc" in help-text assertions.
-            setenv("_KONTAINER_BINARY_NAME", "runc", 1)
+            memScoped {
+                val buf = allocArray<ByteVar>(PATH_MAX)
+                val len = readlink("/proc/self/exe", buf, (PATH_MAX - 1).convert())
+                if (len > 0) {
+                    buf[len.toInt()] = 0
+                    val baseName = buf.toKString().substringAfterLast('/')
+                    setenv("_KONTAINER_BINARY_NAME", baseName, 1)
+                }
+            }
         }
 
         val subcmd = peekSubcommand(args)

@@ -5,10 +5,7 @@ import kotlinx.cinterop.toKString
 import logger.Logger
 import platform.linux.*
 import platform.posix.errno
-import platform.posix.fflush
-import platform.posix.fprintf
 import platform.posix.perror
-import platform.posix.stderr
 import platform.posix.strerror
 import spec.LinuxCapabilities
 import syscall.CapabilitySets
@@ -162,14 +159,8 @@ private fun setAmbientCapabilities(
 
     for (cap in caps) {
         if (syscall.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE.toULong(), cap.value.toULong(), 0UL, 0UL) != 0) {
-            // runc-compatible warning: "can't raise ambient capability <name>: <error>"
             val errMsg = strerror(errno)?.toKString() ?: "unknown error"
             Logger.warn("can't raise ambient capability ${cap.capName}: $errMsg")
-            // Also write directly to stderr for runc compatibility — the
-            // warning must appear in non-debug output so bats tests that
-            // check $output (stdout+stderr combined) can see it.
-            fprintf(stderr, "can't raise ambient capability %s: %s\n", cap.capName, errMsg)
-            fflush(stderr)
         }
     }
 }

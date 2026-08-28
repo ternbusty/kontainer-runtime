@@ -1469,7 +1469,7 @@ fun applySpecMounts(
             if (errno == EBUSY) {
                 Logger.debug("spec.mount ${m.destination}: already mounted, skipping")
             } else {
-                Logger.warn("failed to mount ${m.destination} (type=$fsType, errno=$errno)")
+                Logger.debug("failed to mount ${m.destination} (type=$fsType, errno=$errno)")
             }
             continue
         }

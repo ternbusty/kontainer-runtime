@@ -250,13 +250,11 @@ object Logger {
             val timestamp = getCurrentTimestamp()
 
             // Write to stderr (or its override fd) when appropriate:
-            // - ERROR: always (genuine errors must be visible)
-            // - WARN: only in main process (init WARN would pollute
-            //   $output in bats tests)
+            // - WARN and above: always (matches runc/logrus default)
             // - DEBUG/INFO: only with --debug (stderrEnabled)
             val shouldWriteStderr =
                 logFile == null &&
-                    (stderrEnabled || level >= Level.ERROR || (processContext == "main" && level >= Level.WARN))
+                    (stderrEnabled || level >= Level.WARN)
 
             when (logFormat) {
                 Format.TEXT -> {
