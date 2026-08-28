@@ -89,13 +89,13 @@ class CgroupTest :
 
         test("setup converts cgroup v1 shares to v2 cpu.weight") {
             val fs = FakeFileSystem()
-            // shares=1024 → weight = 1 + ((1024 - 2) * 9999) / 262142 = 1 + 38.99 ~ 39
+            // shares=1024 → weight=100 (runc's non-linear log-based conversion)
             CgroupV2(fs).setup(
                 pid = 1,
                 cgroupPath = "x",
                 resources = LinuxResources(cpu = LinuxCpu(shares = 1024L)),
             )
-            fs.files["/sys/fs/cgroup/x/cpu.weight"] shouldBe "39"
+            fs.files["/sys/fs/cgroup/x/cpu.weight"] shouldBe "100"
         }
 
         test("setup writes memory.swap.max as swap minus limit (cgroup v2 semantics)") {

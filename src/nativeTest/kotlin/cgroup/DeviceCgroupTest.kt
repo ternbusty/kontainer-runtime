@@ -89,8 +89,10 @@ class DeviceCgroupTest :
             (deny[denyImmOffset].toInt() and 0xFF) shouldBe 0
         }
 
-        test("wildcard type emits no type-check instruction") {
-            // type=null (or "a") means any device type, so no JNE for R2
+        test("wildcard type sets default-allow via emulator") {
+            // type=null (or "a") is treated as a wildcard by the emulator,
+            // which sets defaultAllow=true rather than emitting a per-rule check.
+            // A typed rule becomes an exception under deny-all default.
             val wildcard =
                 DeviceCgroup.buildProgram(
                     listOf(rule(true, null, 1L, 3L, "rwm")),
@@ -99,8 +101,9 @@ class DeviceCgroupTest :
                 DeviceCgroup.buildProgram(
                     listOf(rule(true, "c", 1L, 3L, "rwm")),
                 )
-            // The typed version should have one extra JNE instruction (8 bytes)
-            (typed.size - wildcard.size) shouldBe 8
+            // The wildcard program is smaller (allow-all tail only) while
+            // the typed program includes a full exception chain + deny-all tail
+            typed.size shouldBeGreaterThan wildcard.size
         }
 
         test("wildcard major/minor emits fewer instructions") {
