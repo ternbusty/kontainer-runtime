@@ -195,10 +195,11 @@ if [[ "$SELINUX_MODE" == "true" ]]; then
   fi
 
   TMPOUT=$(mktemp)
+  rc=0
   sudo -E PATH="$PATH" RUNC="$KONTAINER_BIN" \
       timeout 300 script -q -e -c \
-      "exec bats -t $SELINUX_BATS" /dev/null > "$TMPOUT" 2>&1
-  rc=$?
+      "exec bats -t $SELINUX_BATS" /dev/null > "$TMPOUT" 2>&1 \
+    || rc=$?
 
   # Append to TAP output.
   cat "$TMPOUT" >> "$TAP_OUTPUT"
@@ -385,15 +386,16 @@ for file in $(printf '%s\n' "${!FILE_FILTER[@]}" | sort); do
   }
 
   # Use script(1) for a PTY (needed for console-socket tests in CI).
-  run_bats
-  rc=$?
+  # Suppress set -e: we need the exit code, not an abort.
+  rc=0
+  run_bats || rc=$?
 
   # Retry once on timeout.
   if [[ $rc -eq 124 ]]; then
     echo "  TIMEOUT ($fname), retrying..."
     cleanup_stale_state
-    run_bats
-    rc=$?
+    rc=0
+    run_bats || rc=$?
   fi
 
   # Append to TAP output for CI upload.

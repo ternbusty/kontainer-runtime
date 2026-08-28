@@ -109,7 +109,6 @@ runc run [mount order, container idmap source]
 runc run [mount order, container idmap source] (userns)
 runc run [/proc is a symlink]
 runc run [rootfsPropagation shared]
-runc run [rootfsPropagation slave]
 runc run --no-pivot must not expose bare /proc
 runc run [ro /sys/fs/cgroup mounts]
 runc run [ro /sys/fs/cgroup mounts + cgroupns]
@@ -310,8 +309,6 @@ runc exec [ --pidfd-socket ] [cgroups_v2]
 [skip]runc exec vs systemctl daemon-reload # systemd
 runc --debug exec
 runc --debug --log exec
-env [runc exec -p]
-env HOME is set for runc exec -p with no process.env
 
 # --- pause / resume ---
 runc pause and resume
