@@ -60,9 +60,16 @@ object DeviceCgroup {
     private const val BPF_DEVCG_DEV_BLOCK = 0x1
     private const val BPF_DEVCG_DEV_CHAR = 0x2
 
-    /** Default allowed devices prepended to every program (runc parity). */
+    /** Default allowed devices appended to every program (runc parity).
+     *  See runc libcontainer/specconv/spec_linux.go AllowedDevices. */
     private val DEFAULT_ALLOWED_DEVICES =
         listOf(
+            // Wildcard mknod-allow: permit mknod for ANY char/block device.
+            // This matches runc's AllowedDevices which always allows mknod
+            // even when the spec has a deny-all resources.devices rule.
+            allowRule("c", null, null, "m"), // allow mknod for any char device
+            allowRule("b", null, null, "m"), // allow mknod for any block device
+            // Default device allows (rwm)
             allowRule("c", 1L, 3L, "rwm"), // /dev/null
             allowRule("c", 1L, 5L, "rwm"), // /dev/zero
             allowRule("c", 1L, 7L, "rwm"), // /dev/full
