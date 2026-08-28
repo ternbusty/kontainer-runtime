@@ -297,6 +297,12 @@ class CgroupV2(
             cpu.idle?.let { idle ->
                 writeCgroupFile("$cgroupPath/cpu.idle", idle.toString(), "cpu.idle")
             }
+            cpu.cpus?.let { cpus ->
+                writeCgroupFile("$cgroupPath/cpuset.cpus", cpus, "cpuset.cpus")
+            }
+            cpu.mems?.let { mems ->
+                writeCgroupFile("$cgroupPath/cpuset.mems", mems, "cpuset.mems")
+            }
         }
         if (!deferPids) {
             resources.pids?.let { pids ->
@@ -305,14 +311,6 @@ class CgroupV2(
         }
         resources.hugepageLimits?.forEach { hp ->
             applyHugepageLimit(cgroupPath, hp.pageSize, hp.limit)
-        }
-        resources.cpu?.let { cpu ->
-            cpu.cpus?.let { cpus ->
-                writeCgroupFile("$cgroupPath/cpuset.cpus", cpus, "cpuset.cpus")
-            }
-            cpu.mems?.let { mems ->
-                writeCgroupFile("$cgroupPath/cpuset.mems", mems, "cpuset.mems")
-            }
         }
         resources.unified?.forEach { (key, value) ->
             // Multi-line values: write each line separately (kernel cgroup

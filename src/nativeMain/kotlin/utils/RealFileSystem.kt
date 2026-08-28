@@ -86,9 +86,7 @@ class RealFileSystem : FileSystem {
                 //   (sysfs/cgroupfs/procfs report size 0 via stat/seek but
                 //   still return content on read). Fall back to streaming
                 //   read which handles both cases correctly.
-                if (fseek(fp, 0, SEEK_SET) != 0) {
-                    return readStreamToString(fp, path)
-                }
+                fseek(fp, 0, SEEK_SET) // best-effort rewind
                 return readStreamToString(fp, path)
             }
 

@@ -231,14 +231,9 @@ fun create(
                 setenv("_KONTAINER_NOTIFY_SOCKET", notifySocketPath, 1)
                 setenv("_KONTAINER_CONTAINER_ID", containerId, 1)
 
-                // Forward log file and format to init so that init
-                // process debug output goes to the same log file.
-                getenv("_KONTAINER_LOG_FILE")?.let { f ->
-                    setenv("_KONTAINER_LOG_FILE", f.toKString(), 1)
-                }
-                getenv("_KONTAINER_LOG_FORMAT")?.let { f ->
-                    setenv("_KONTAINER_LOG_FORMAT", f.toKString(), 1)
-                }
+                // Log env vars (_KONTAINER_LOG_FILE, _KONTAINER_LOG_FORMAT)
+                // are already set by KontainerRuntime.run() and inherited
+                // by fork() — no re-forwarding needed.
 
                 if (noPivot) {
                     setenv("_KONTAINER_NO_PIVOT", "1", 1)

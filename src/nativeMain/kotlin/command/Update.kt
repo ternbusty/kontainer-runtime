@@ -100,7 +100,7 @@ fun update(
             )
     }
     if (cpuQuota != null || cpuPeriod != null || cpuShares != null ||
-        cpuBurst != null || cpuIdle != null
+        cpuBurst != null || cpuIdle != null || cpusetCpus != null || cpusetMems != null
     ) {
         val cpu = resources.cpu ?: LinuxCpu()
         resources =
@@ -112,15 +112,6 @@ fun update(
                         shares = cpuShares ?: cpu.shares,
                         burst = cpuBurst ?: cpu.burst,
                         idle = cpuIdle ?: cpu.idle,
-                    ),
-            )
-    }
-    if (cpusetCpus != null || cpusetMems != null) {
-        val cpu = resources.cpu ?: LinuxCpu()
-        resources =
-            resources.copy(
-                cpu =
-                    cpu.copy(
                         cpus = cpusetCpus ?: cpu.cpus,
                         mems = cpusetMems ?: cpu.mems,
                     ),
