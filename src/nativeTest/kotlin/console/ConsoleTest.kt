@@ -168,7 +168,7 @@ private fun acceptAndReceiveFd(listenFd: Int): Int? =
             msg.msg_iov = iov.ptr
             msg.msg_iovlen = 1u
             msg.msg_control = cmsgBuf
-            msg.msg_controllen = cmsgLen.toULong()
+            msg.msg_controllen = cmsgLen
 
             val received = recvmsg(clientFd, msg.ptr, 0)
             if (received < 0) return null

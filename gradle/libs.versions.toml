@@ -1,5 +1,6 @@
 [versions]
 kotlin = "2.4.10"
+kotlinxCoroutines = "1.11.0"
 kotlinxSerialization = "1.11.0"
 clikt = "5.1.0"
 kotest = "6.2.4"
@@ -7,6 +8,7 @@ ksp = "2.3.11"
 ktlint = "14.2.0"
 
 [libraries]
+kotlinxCoroutinesCore = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
 kotlinxSerializationJson = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 clikt = { module = "com.github.ajalt.clikt:clikt-core", version.ref = "clikt" }
 kotestAssertionsCore = { module = "io.kotest:kotest-assertions-core", version.ref = "kotest" }

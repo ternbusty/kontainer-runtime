@@ -46,7 +46,7 @@ fun sendPidfd(
         msg.msg_iov = iov.ptr
         msg.msg_iovlen = 1u
         msg.msg_control = cmsgBuf
-        msg.msg_controllen = cmsgSpace.toULong()
+        msg.msg_controllen = cmsgSpace
 
         val cmsg = _CMSG_FIRSTHDR(msg.ptr)
         if (cmsg == null) {

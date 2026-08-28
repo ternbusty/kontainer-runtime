@@ -264,7 +264,7 @@ class RealFileSystem : FileSystem {
                 // filesystems don't fill d_type); the latter is rare in
                 // practice (state lives on tmpfs/ext4, both DT_DIR-aware).
                 val dtype = entry.pointed.d_type.toInt()
-                if (dtype == DT_DIR.toInt() || dtype == DT_UNKNOWN.toInt()) {
+                if (dtype == DT_DIR || dtype == DT_UNKNOWN) {
                     result.add(name)
                 }
             }

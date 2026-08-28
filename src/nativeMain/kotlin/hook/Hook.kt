@@ -1,9 +1,12 @@
 package hook
 
+import ioloop.withIoLoop
 import kotlinx.cinterop.*
+import kotlinx.coroutines.*
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import logger.Logger
+import platform.linux._NR_pidfd_open
 import platform.posix.*
 import spec.Hook
 import state.State
@@ -165,16 +168,23 @@ fun execHook(
         // Wait for the hook with a timeout.
         val status = alloc<IntVar>()
         val timeoutMs = (hook.timeout ?: 0) * 1000L
-        val pollSleepMicros = 50_000u // 50ms
-        val deadline = if (timeoutMs > 0) monotonicMillis() + timeoutMs else 0L
-        while (true) {
-            val rc = waitpid(pid, status.ptr, WNOHANG)
-            if (rc == pid) break
-            if (rc < 0) {
-                Logger.warn("hook ${hook.path}: waitpid failed (errno=$errno)")
-                return@memScoped HookResult(success = false, output = output)
-            }
-            if (deadline != 0L && monotonicMillis() >= deadline) {
+
+        val pidfd = syscall(_NR_pidfd_open(), pid, 0).toInt()
+        if (pidfd >= 0) {
+            val timedOut =
+                try {
+                    withIoLoop { io ->
+                        if (timeoutMs > 0) {
+                            withTimeoutOrNull(timeoutMs) { io.awaitReadable(pidfd) } == null
+                        } else {
+                            io.awaitReadable(pidfd)
+                            false
+                        }
+                    }
+                } finally {
+                    close(pidfd)
+                }
+            if (timedOut) {
                 Logger.warn("hook ${hook.path}: timed out after ${hook.timeout}s; killing")
                 kill(pid, SIGKILL)
                 waitpid(pid, status.ptr, 0)
@@ -186,7 +196,31 @@ fun execHook(
                     signal = SIGKILL,
                 )
             }
-            usleep(pollSleepMicros)
+            waitpid(pid, status.ptr, 0)
+        } else {
+            // Fallback for kernel < 5.3: WNOHANG + usleep
+            val deadline = if (timeoutMs > 0) monotonicMillis() + timeoutMs else 0L
+            while (true) {
+                val rc = waitpid(pid, status.ptr, WNOHANG)
+                if (rc == pid) break
+                if (rc < 0) {
+                    Logger.warn("hook ${hook.path}: waitpid failed (errno=$errno)")
+                    return@memScoped HookResult(success = false, output = output)
+                }
+                if (deadline != 0L && monotonicMillis() >= deadline) {
+                    Logger.warn("hook ${hook.path}: timed out after ${hook.timeout}s; killing")
+                    kill(pid, SIGKILL)
+                    waitpid(pid, status.ptr, 0)
+                    return@memScoped HookResult(
+                        success = false,
+                        output = output,
+                        exitCode = -1,
+                        signaled = true,
+                        signal = SIGKILL,
+                    )
+                }
+                usleep(50_000u)
+            }
         }
 
         // Decode wait status.
@@ -215,7 +249,7 @@ fun execHook(
 private fun monotonicMillis(): Long =
     memScoped {
         val ts = alloc<timespec>()
-        clock_gettime(CLOCK_MONOTONIC.toInt(), ts.ptr)
+        clock_gettime(CLOCK_MONOTONIC, ts.ptr)
         ts.tv_sec * 1000L + ts.tv_nsec / 1_000_000L
     }
 

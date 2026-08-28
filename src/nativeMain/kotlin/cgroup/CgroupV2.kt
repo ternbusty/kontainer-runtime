@@ -225,13 +225,28 @@ class CgroupV2(
      * Recursively remove a cgroup directory and all its sub-cgroups.
      * Walks depth-first (children before parent) because cgroupfs rejects
      * rmdir on a non-empty cgroup.
+     *
+     * After children are removed, retries rmdir with exponential backoff
+     * because the kernel may still be cleaning up SIGKILL'd processes —
+     * rmdir returns EBUSY until every process has fully exited.  This
+     * matches runc's `cgroups/utils.go` `rmdir(path, retry=true)` pattern:
+     * 1 ms initial delay, doubling each attempt, up to 10 retries (~1 s).
      */
     private fun removeCgroupRecursive(path: String) {
         val children = fs.listDirectories(path)
         for (child in children) {
             removeCgroupRecursive("$path/$child")
         }
-        fs.removeDirectory(path)
+
+        if (fs.removeDirectory(path)) return
+
+        // Retry with exponential backoff on failure (typically EBUSY).
+        var delayUs: UInt = 1_000u // 1 ms in microseconds
+        for (attempt in 0 until 10) {
+            usleep(delayUs)
+            if (fs.removeDirectory(path)) return
+            delayUs = delayUs * 2u
+        }
     }
 
     override fun getPids(cgroupPath: String): List<Int> {
