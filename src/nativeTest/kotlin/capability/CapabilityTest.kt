@@ -2,6 +2,7 @@ package capability
 
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
+import io.kotest.matchers.ints.shouldBeGreaterThan
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldNotContain
@@ -43,10 +44,11 @@ class CapabilityTest :
 
         // applyBoundingSet
 
-        test("applyBoundingSet does not invoke prctl when bounding is null") {
+        test("applyBoundingSet drops all capabilities when bounding is null") {
+            // null bounding list → drop everything (matches runc)
             val syscall = FakeSyscall()
             applyBoundingSet(syscall, LinuxCapabilities(bounding = null))
-            syscall.calls.count { it.startsWith("prctl(") } shouldBe 0
+            syscall.calls.count { it.startsWith("prctl(") } shouldBeGreaterThan 0
         }
 
         test("applyBoundingSet drops every capability not in the bounding set") {

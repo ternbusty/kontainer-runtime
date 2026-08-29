@@ -52,7 +52,7 @@ private val EXEC_VALUE_FLAGS =
     )
 
 /** Exec-option flags that are boolean (no following value). */
-private val EXEC_BOOL_FLAGS = setOf("-d", "--detach", "-t", "--tty")
+private val EXEC_BOOL_FLAGS = setOf("-d", "--detach", "-t", "--tty", "--ignore-paused")
 
 /**
  * Exec-option flags that use `--flag=value` form (value attached with `=`).
@@ -90,6 +90,63 @@ private val EXEC_EQ_VALUE_PREFIXES =
  * Returns a new args array with the command args removed; the removed
  * args are appended to [commandArgsOut].
  */
+
+/**
+ * Strip trailing ps arguments out of a `ps` invocation so the CLI parser
+ * never sees them.
+ *
+ * The grammar is:
+ *
+ *     runtime [global-opts] ps [--format fmt] <container-id> [ps-args…]
+ *
+ * Everything after the container ID is forwarded verbatim to the host's
+ * `ps` command (e.g. `-e -x`).
+ */
+internal fun preprocessPsArgs(
+    args: Array<String>,
+    psArgsOut: MutableList<String>,
+): Array<String> {
+    val psIdx = args.indexOf("ps")
+    if (psIdx < 0) return args
+
+    val kept = args.slice(0..psIdx).toMutableList()
+    var i = psIdx + 1
+    var foundContainerId = false
+
+    while (i < args.size) {
+        if (foundContainerId) {
+            psArgsOut.add(args[i])
+            i++
+            continue
+        }
+
+        val a = args[i]
+        if (a == "--format" || a == "-f") {
+            kept.add(a)
+            i++
+            if (i < args.size) {
+                kept.add(args[i])
+                i++
+            }
+        } else if (a.startsWith("--format=") || a.startsWith("-f=")) {
+            kept.add(a)
+            i++
+        } else if (a.startsWith("-")) {
+            // Unknown flag — might be a ps arg, but if it looks like a
+            // global flag keep it for the parser.
+            kept.add(a)
+            i++
+        } else {
+            // First positional = container ID
+            kept.add(a)
+            foundContainerId = true
+            i++
+        }
+    }
+
+    return kept.toTypedArray()
+}
+
 internal fun preprocessExecArgs(
     args: Array<String>,
     commandArgsOut: MutableList<String>,
@@ -164,6 +221,7 @@ data class GlobalConfig(
     val fs: RealFileSystem,
     val cgroup: CgroupV2,
     val execCommandArgs: List<String>,
+    val psArgs: List<String> = emptyList(),
     /** True when the user explicitly passed `--root`. */
     val rootExplicit: Boolean = false,
 )
@@ -175,6 +233,7 @@ data class GlobalConfig(
 class KontainerRuntime(
     private val originalArgs: Array<String>,
     private val execCommandArgs: List<String>,
+    private val psArgs: List<String> = emptyList(),
 ) : CoreCliktCommand(name = "kontainer-runtime") {
     private val rootPathOpt by option("--root", help = "Root directory for container state")
     val rootPath get() = rootPathOpt ?: "/run/kontainer"
@@ -185,17 +244,28 @@ class KontainerRuntime(
     val systemdCgroup by option("--systemd-cgroup", help = "Use systemd cgroup manager (accepted but not yet implemented)").flag()
 
     override fun run() {
-        logFile?.let { Logger.setLogFile(it) }
-        logFormat?.let { Logger.setLogFormat(it) }
+        logFile?.let {
+            Logger.setLogFile(it)
+            // Propagate --log to the init process so its debug output
+            // goes to the same log file rather than stderr.
+            setenv("_KONTAINER_LOG_FILE", it, 1)
+        }
+        logFormat?.let {
+            Logger.setLogFormat(it)
+            setenv("_KONTAINER_LOG_FORMAT", it, 1)
+        }
         if (debug) {
             Logger.setLogLevel(Logger.Level.DEBUG)
+            // Propagate --debug to the init process via env var so that the
+            // re-exec'd Stage-2 picks up the same log level.
+            setenv("KONTAINER_LOG_LEVEL", "DEBUG", 1)
         }
         Logger.debug("invoked with arguments: ${originalArgs.joinToString(" ") { "\"$it\"" }}")
 
         val syscall = LinuxSyscall()
         val fs = RealFileSystem()
         val cgroup = CgroupV2(fs)
-        currentContext.obj = GlobalConfig(rootPath, syscall, fs, cgroup, execCommandArgs, rootExplicit)
+        currentContext.obj = GlobalConfig(rootPath, syscall, fs, cgroup, execCommandArgs, psArgs, rootExplicit)
     }
 }
 
@@ -216,6 +286,10 @@ class CreateCommand : CoreCliktCommand(name = "create") {
         "--pidfd-socket",
         help = "Path to AF_UNIX socket for pidfd handoff",
     )
+    val noPivot by option(
+        "--no-pivot",
+        help = "Use MS_MOVE and chroot instead of pivot_root",
+    ).flag()
     val containerId by argument(help = "Container ID")
     val config by requireObject<GlobalConfig>()
 
@@ -230,6 +304,7 @@ class CreateCommand : CoreCliktCommand(name = "create") {
             pidFile,
             consoleSocket,
             pidfdSocket,
+            noPivot,
         )
         // create() returns normally so run() can chain start().
         // Standalone create must use _exit to bypass the Kotlin/Native
@@ -260,6 +335,10 @@ class RunCommand : CoreCliktCommand(name = "run") {
         "--keep",
         help = "Keep container state after it exits (don't delete automatically)",
     ).flag()
+    val noPivot by option(
+        "--no-pivot",
+        help = "Use MS_MOVE and chroot instead of pivot_root",
+    ).flag()
     val containerId by argument(help = "Container ID")
     val config by requireObject<GlobalConfig>()
 
@@ -276,6 +355,7 @@ class RunCommand : CoreCliktCommand(name = "run") {
             detach,
             keep,
             pidfdSocket,
+            noPivot,
         )
         _exit(0)
     }
@@ -368,13 +448,20 @@ class UpdateCommand : CoreCliktCommand(name = "update") {
     val resourcesFile by option(
         "--resources",
         "-r",
-        help = "Path to a JSON file with linux resources spec",
+        help = "Path to a JSON file with linux resources spec (use '-' for stdin)",
     )
     val memory by option("--memory", help = "Memory limit in bytes")
+    val memorySwap by option("--memory-swap", help = "Memory + swap limit in bytes")
+    val memoryReservation by option("--memory-reservation", help = "Memory soft limit in bytes")
     val cpuQuota by option("--cpu-quota", help = "CPU quota in microseconds")
     val cpuPeriod by option("--cpu-period", help = "CPU period in microseconds")
-    val cpuShares by option("--cpu-share", help = "CPU shares (relative weight)")
+    val cpuShares by option("--cpu-share", "--cpu-shares", help = "CPU shares (relative weight)")
+    val cpuBurst by option("--cpu-burst", help = "CPU burst in microseconds")
+    val cpuIdle by option("--cpu-idle", help = "CPU idle scheduling (0 or 1)")
+    val cpusetCpus by option("--cpuset-cpus", help = "CPUs in which to allow execution (e.g. 0-3)")
+    val cpusetMems by option("--cpuset-mems", help = "Memory nodes in which to allow execution")
     val pidsLimit by option("--pids-limit", help = "PIDs limit")
+    val blkioWeight by option("--blkio-weight", help = "Block IO weight (10-1000)")
     val containerId by argument(help = "Container ID")
     val config by requireObject<GlobalConfig>()
 
@@ -384,11 +471,18 @@ class UpdateCommand : CoreCliktCommand(name = "update") {
             config.rootPath,
             containerId,
             resourcesPath = resourcesFile,
-            memory = memory?.toLongOrNull(),
+            memory = memory?.let { parseHumanSize(it) },
+            memorySwap = memorySwap?.let { parseHumanSize(it) },
+            memoryReservation = memoryReservation?.let { parseHumanSize(it) },
             cpuQuota = cpuQuota?.toLongOrNull(),
             cpuPeriod = cpuPeriod?.toLongOrNull(),
             cpuShares = cpuShares?.toLongOrNull(),
+            cpuBurst = cpuBurst?.toLongOrNull(),
+            cpuIdle = cpuIdle?.toLongOrNull(),
+            cpusetCpus = cpusetCpus,
+            cpusetMems = cpusetMems,
             pidsLimit = pidsLimit?.toLongOrNull(),
+            blkioWeight = blkioWeight?.toLongOrNull(),
         )
     }
 }
@@ -444,15 +538,41 @@ private fun parseDurationMs(input: String): Long {
     return 5000
 }
 
+/**
+ * Parse a human-readable size string with optional suffix into bytes.
+ * Supported suffixes: K/KB, M/MB, G/GB, T/TB (case insensitive, base-1024).
+ * Without a suffix, the value is interpreted as bytes.
+ * Returns null if the string cannot be parsed.
+ */
+private fun parseHumanSize(input: String): Long? {
+    val s = input.trim()
+    // Try plain number first
+    s.toLongOrNull()?.let { return it }
+
+    val regex = Regex("^([0-9]+)\\s*([a-zA-Z]+)$")
+    val match = regex.matchEntire(s) ?: return null
+    val value = match.groupValues[1].toLongOrNull() ?: return null
+    val suffix = match.groupValues[2].uppercase()
+    return when (suffix) {
+        "K", "KB" -> value * 1024
+        "M", "MB" -> value * 1024 * 1024
+        "G", "GB" -> value * 1024 * 1024 * 1024
+        "T", "TB" -> value * 1024 * 1024 * 1024 * 1024
+        else -> null
+    }
+}
+
 class PsCommand : CoreCliktCommand(name = "ps") {
     override fun help(context: Context) = "List processes in a container"
 
-    val format by option("--format", "-f", help = "Output format (json or table)").default("json")
+    val format by option("--format", "-f", help = "Output format (json or table)").default("table")
     val containerId by argument(help = "Container ID")
     val config by requireObject<GlobalConfig>()
 
     override fun run() {
-        ps(config.fs, config.cgroup, config.rootPath, containerId, format)
+        // Extra arguments after the container ID are forwarded to `ps`.
+        val psArgs = config.psArgs
+        ps(config.fs, config.cgroup, config.rootPath, containerId, format, psArgs)
     }
 }
 
@@ -512,6 +632,10 @@ class ExecCommand : CoreCliktCommand(name = "exec") {
         "--cap",
         help = "Add a capability to the bounding set",
     ).multiple()
+    val ignorePaused by option(
+        "--ignore-paused",
+        help = "Allow exec into a paused container (waits for resume)",
+    ).flag()
     val containerId by argument(help = "Container ID")
     val config by requireObject<GlobalConfig>()
 
@@ -535,6 +659,8 @@ class ExecCommand : CoreCliktCommand(name = "exec") {
             preserveFds = preserveFds,
             cgroupOverride = cgroupOverride,
             pidfdSocket = pidfdSocket,
+            capOverrides = capOverride,
+            ignorePaused = ignorePaused,
         )
     }
 }
@@ -546,6 +672,14 @@ class SpecCommand : CoreCliktCommand(name = "spec") {
 
     override fun run() {
         spec(bundle)
+    }
+}
+
+class FeaturesCommand : CoreCliktCommand(name = "features") {
+    override fun help(context: Context) = "Show the enabled features"
+
+    override fun run() {
+        features()
     }
 }
 
@@ -743,8 +877,7 @@ fun main(args: Array<String>) {
                 val len = readlink("/proc/self/exe", buf, (PATH_MAX - 1).convert())
                 if (len > 0) {
                     buf[len.toInt()] = 0
-                    val exePath = buf.toKString()
-                    val baseName = exePath.substringAfterLast('/')
+                    val baseName = buf.toKString().substringAfterLast('/')
                     setenv("_KONTAINER_BINARY_NAME", baseName, 1)
                 }
             }
@@ -760,6 +893,10 @@ fun main(args: Array<String>) {
 
     // If this is Stage-2 (init process) forked by bootstrap.c
     if (isInit != 0 || (args.size == 1 && args[0] == "__init__")) {
+        // Configure Logger from parent's env vars (--log, --log-format).
+        // KONTAINER_LOG_LEVEL is already picked up by Logger.detectLogLevel().
+        getenv("_KONTAINER_LOG_FILE")?.toKString()?.let { Logger.setLogFile(it) }
+        getenv("_KONTAINER_LOG_FORMAT")?.toKString()?.let { Logger.setLogFormat(it) }
         Logger.debug("running as init process (Stage-2, forked by bootstrap.c)")
 
         val syscall = LinuxSyscall()
@@ -859,10 +996,12 @@ fun main(args: Array<String>) {
     // try to parse dash-prefixed args (e.g. `sh -c '...'`) as runtime flags.
     // We split the trailing command args out before the parser sees them.
     val execCommandArgs = mutableListOf<String>()
-    val effectiveArgs = preprocessExecArgs(args, execCommandArgs)
+    val psExtraArgs = mutableListOf<String>()
+    var effectiveArgs = preprocessExecArgs(args, execCommandArgs)
+    effectiveArgs = preprocessPsArgs(effectiveArgs, psExtraArgs)
 
     try {
-        KontainerRuntime(args, execCommandArgs)
+        KontainerRuntime(args, execCommandArgs, psExtraArgs)
             .subcommands(
                 CreateCommand(),
                 RunCommand(),
@@ -878,6 +1017,7 @@ fun main(args: Array<String>) {
                 PsCommand(),
                 ExecCommand(),
                 SpecCommand(),
+                FeaturesCommand(),
             ).parse(effectiveArgs)
     } catch (e: UsageError) {
         // Clikt's main() on K/N prints usage errors to stdout with exit code 0,

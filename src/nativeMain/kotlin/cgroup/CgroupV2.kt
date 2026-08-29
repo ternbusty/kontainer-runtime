@@ -5,6 +5,23 @@ import logger.Logger
 import platform.posix.*
 import spec.LinuxResources
 import utils.FileSystem
+import kotlin.math.ceil
+import kotlin.math.ln
+import kotlin.math.pow
+
+/**
+ * Convert cgroup v1 CPU shares [2..262144] to cgroup v2 CPU weight [1..10000]
+ * using a non-linear quadratic mapping that fits min (2→1), default (1024→100),
+ * and max (262144→10000). Matches runc's ConvertCPUSharesToCgroupV2Value.
+ */
+fun convertCpuSharesV2(shares: Long): Long {
+    if (shares == 0L) return 0L
+    if (shares <= 2L) return 1L
+    if (shares >= 262144L) return 10000L
+    val l = ln(shares.toDouble()) / ln(2.0)
+    val exponent = (l * l + 125.0 * l) / 612.0 - 7.0 / 34.0
+    return ceil(10.0.pow(exponent)).toLong()
+}
 
 /**
  * cgroup v2 implementation backed by cgroupfs writes via [FileSystem].
@@ -17,6 +34,7 @@ class CgroupV2(
         pid: Int?,
         cgroupPath: String?,
         resources: LinuxResources?,
+        deferPids: Boolean,
     ) {
         if (cgroupPath == null && resources == null) {
             return
@@ -76,6 +94,31 @@ class CgroupV2(
                 }
             }
 
+            // Reject if the cgroup already has processes (runc compat: error for
+            // a non-empty cgroup to avoid resource conflicts).
+            try {
+                val procs = fs.readTextFile("$fullPath/$CGROUP_PROCS").trim()
+                if (procs.isNotEmpty()) {
+                    throw Exception("container's cgroup is not empty: $fullPath")
+                }
+            } catch (e: Exception) {
+                if (e.message?.contains("not empty") == true) throw e
+                // File might not exist yet (freshly created) — OK.
+            }
+
+            // Reject if the cgroup is frozen (runc compat: refuse pre-existing
+            // frozen cgroup to avoid containers silently starting in a frozen
+            // state).
+            try {
+                val freeze = fs.readTextFile("$fullPath/cgroup.freeze").trim()
+                if (freeze == "1") {
+                    throw Exception("container's cgroup unexpectedly frozen")
+                }
+            } catch (e: Exception) {
+                if (e.message?.contains("unexpectedly frozen") == true) throw e
+                // cgroup.freeze may not exist (no freezer controller) — OK.
+            }
+
             if (pid != null) {
                 val procsPath = "$fullPath/$CGROUP_PROCS"
                 try {
@@ -88,7 +131,7 @@ class CgroupV2(
             }
 
             if (resources != null) {
-                applyResources(fullPath, resources)
+                applyResources(fullPath, resources, deferPids = deferPids)
             }
         }
     }
@@ -109,6 +152,23 @@ class CgroupV2(
             throw Exception("adding pid $pid to $procsPath: $reason", e)
         }
         Logger.debug("added PID $pid to cgroup $normalizedPath")
+    }
+
+    /**
+     * Apply the pids.max limit that was deferred during [setup] with
+     * `deferPids = true`. Call AFTER the init process has completed its
+     * setup (received InitReady) so that Kotlin/Native runtime threads
+     * created during init don't hit the limit.
+     */
+    fun applyDeferredPids(
+        cgroupPath: String,
+        resources: LinuxResources?,
+    ) {
+        resources?.pids?.let { pids ->
+            val normalizedPath = cgroupPath.removePrefix("/")
+            val fullPath = "$CGROUP_ROOT/$normalizedPath"
+            applyPidsLimit(fullPath, pids.limit)
+        }
     }
 
     override fun cleanup(cgroupPath: String?) {
@@ -222,18 +282,72 @@ class CgroupV2(
     private fun applyResources(
         cgroupPath: String,
         resources: LinuxResources,
+        deferPids: Boolean = false,
     ) {
         resources.memory?.let { memory ->
             applyMemoryLimits(cgroupPath, memory.limit, memory.reservation, memory.swap)
         }
         resources.cpu?.let { cpu ->
             applyCpuLimits(cgroupPath, cpu.shares, cpu.quota, cpu.period)
+            cpu.burst?.let { burst ->
+                if (burst >= 0) {
+                    writeCgroupFile("$cgroupPath/cpu.max.burst", burst.toString(), "cpu.max.burst")
+                }
+            }
+            cpu.idle?.let { idle ->
+                writeCgroupFile("$cgroupPath/cpu.idle", idle.toString(), "cpu.idle")
+            }
+            cpu.cpus?.let { cpus ->
+                writeCgroupFile("$cgroupPath/cpuset.cpus", cpus, "cpuset.cpus")
+            }
+            cpu.mems?.let { mems ->
+                writeCgroupFile("$cgroupPath/cpuset.mems", mems, "cpuset.mems")
+            }
         }
-        resources.pids?.let { pids ->
-            applyPidsLimit(cgroupPath, pids.limit)
+        if (!deferPids) {
+            resources.pids?.let { pids ->
+                applyPidsLimit(cgroupPath, pids.limit)
+            }
         }
         resources.hugepageLimits?.forEach { hp ->
             applyHugepageLimit(cgroupPath, hp.pageSize, hp.limit)
+        }
+        resources.unified?.forEach { (key, value) ->
+            // Multi-line values: write each line separately (kernel cgroup
+            // interface processes one line per write() call).
+            val lines = value.split('\n').filter { it.isNotBlank() }
+            for (line in lines) {
+                writeCgroupFile("$cgroupPath/$key", line, key)
+            }
+        }
+        // Block IO (v1 blockIO → v2 io.max conversion)
+        resources.blockIO?.let { bio ->
+            bio.weight?.let { w ->
+                if (w > 0) {
+                    writeCgroupFile("$cgroupPath/io.weight", w.toString(), "io.weight")
+                }
+            }
+            val deviceMap = mutableMapOf<String, MutableMap<String, String>>()
+            bio.throttleReadBpsDevice?.forEach { d ->
+                val k = "${d.major}:${d.minor}"
+                deviceMap.getOrPut(k) { mutableMapOf() }["rbps"] = d.rate.toString()
+            }
+            bio.throttleWriteBpsDevice?.forEach { d ->
+                val k = "${d.major}:${d.minor}"
+                deviceMap.getOrPut(k) { mutableMapOf() }["wbps"] = d.rate.toString()
+            }
+            bio.throttleReadIOPSDevice?.forEach { d ->
+                val k = "${d.major}:${d.minor}"
+                deviceMap.getOrPut(k) { mutableMapOf() }["riops"] = d.rate.toString()
+            }
+            bio.throttleWriteIOPSDevice?.forEach { d ->
+                val k = "${d.major}:${d.minor}"
+                deviceMap.getOrPut(k) { mutableMapOf() }["wiops"] = d.rate.toString()
+            }
+            for ((dev, limits) in deviceMap) {
+                val parts = limits.entries.sortedBy { it.key }.joinToString(" ") { "${it.key}=${it.value}" }
+                writeCgroupFile("$cgroupPath/io.max", "$dev $parts", "io.max")
+            }
         }
     }
 
@@ -242,7 +356,12 @@ class CgroupV2(
         limit: Long?,
     ) {
         if (limit == null) return
-        val value = if (limit <= 0) "max" else limit.toString()
+        val value =
+            when {
+                limit < 0 -> "max" // -1 = unlimited
+                limit == 0L -> "1" // runc compat: 0 → 1 (TasksMax=0 invalid)
+                else -> limit.toString()
+            }
         writeCgroupFile("$cgroupPath/$PIDS_MAX", value, "pids.max")
     }
 
@@ -296,22 +415,24 @@ class CgroupV2(
         quota: Long?,
         period: Long?,
     ) {
-        // Convert cgroup v1 shares to cgroup v2 weight
-        // Formula: weight = 1 + ((shares - 2) * 9999) / 262142
+        // Convert cgroup v1 shares to cgroup v2 weight using a quadratic
+        // function that maps [2..262144] → [1..10000], matching the
+        // opencontainers/cgroups ConvertCPUSharesToCgroupV2Value.
         shares?.let {
-            if (it > 0) {
-                val weight =
-                    if (it == 0L) {
-                        0L
-                    } else {
-                        val w = 1L + ((it - 2) * 9999 / 262142)
-                        minOf(w, 10000L) // MAX_CPU_WEIGHT
-                    }
-                if (weight != 0L) {
-                    val cpuWeightPath = "$cgroupPath/$CPU_WEIGHT"
-                    writeCgroupFile(cpuWeightPath, weight.toString(), "cpu.weight")
-                }
+            val weight = convertCpuSharesV2(it)
+            if (weight != 0L) {
+                val cpuWeightPath = "$cgroupPath/$CPU_WEIGHT"
+                writeCgroupFile(cpuWeightPath, weight.toString(), "cpu.weight")
             }
+        }
+
+        // Validate CPU period. The kernel requires 1000 <= period <= 1000000.
+        // Reject out-of-range values early (matching runc) rather than letting
+        // the kernel EINVAL propagate as a cryptic cgroup write failure.
+        if (period != null && (period < 1000 || period > 1000000)) {
+            throw IllegalArgumentException(
+                "invalid cpu.cfs_period_us value $period: must be between 1000 and 1000000",
+            )
         }
 
         // Set cpu.max (format: "quota period")

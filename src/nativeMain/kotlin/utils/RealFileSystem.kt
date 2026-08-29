@@ -80,7 +80,13 @@ class RealFileSystem : FileSystem {
             }
 
             val fileSize = ftell(fp)
-            if (fileSize == -1L) {
+            if (fileSize <= 0L) {
+                // fileSize == -1: ftell failed
+                // fileSize == 0:  either genuinely empty OR a pseudo-file
+                //   (sysfs/cgroupfs/procfs report size 0 via stat/seek but
+                //   still return content on read). Fall back to streaming
+                //   read which handles both cases correctly.
+                fseek(fp, 0, SEEK_SET) // best-effort rewind
                 return readStreamToString(fp, path)
             }
 

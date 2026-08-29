@@ -57,3 +57,39 @@ static inline long _NR_pidfd_open() {
     return 434;
 #endif
 }
+
+// ioprio_set(2) — set I/O scheduling class and priority.
+static inline long _NR_ioprio_set() {
+#ifdef __NR_ioprio_set
+    return __NR_ioprio_set;
+#else
+    return 251;
+#endif
+}
+
+// sched_setattr(2) — set scheduling policy and attributes.
+static inline long _NR_sched_setattr() {
+#ifdef __NR_sched_setattr
+    return __NR_sched_setattr;
+#else
+    return 314;
+#endif
+}
+
+// sched_setaffinity(2) — set CPU affinity mask.
+static inline long _NR_sched_setaffinity() {
+#ifdef __NR_sched_setaffinity
+    return __NR_sched_setaffinity;
+#else
+    return 203;
+#endif
+}
+
+// set_mempolicy(2) — set NUMA memory policy.
+static inline long _NR_set_mempolicy() {
+#ifdef __NR_set_mempolicy
+    return __NR_set_mempolicy;
+#else
+    return 238;
+#endif
+}

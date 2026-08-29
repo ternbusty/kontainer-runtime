@@ -60,9 +60,16 @@ object DeviceCgroup {
     private const val BPF_DEVCG_DEV_BLOCK = 0x1
     private const val BPF_DEVCG_DEV_CHAR = 0x2
 
-    /** Default allowed devices prepended to every program (runc parity). */
+    /** Default allowed devices appended to every program (runc parity).
+     *  See runc libcontainer/specconv/spec_linux.go AllowedDevices. */
     private val DEFAULT_ALLOWED_DEVICES =
         listOf(
+            // Wildcard mknod-allow: permit mknod for ANY char/block device.
+            // This matches runc's AllowedDevices which always allows mknod
+            // even when the spec has a deny-all resources.devices rule.
+            allowRule("c", null, null, "m"), // allow mknod for any char device
+            allowRule("b", null, null, "m"), // allow mknod for any block device
+            // Default device allows (rwm)
             allowRule("c", 1L, 3L, "rwm"), // /dev/null
             allowRule("c", 1L, 5L, "rwm"), // /dev/zero
             allowRule("c", 1L, 7L, "rwm"), // /dev/full
@@ -99,7 +106,11 @@ object DeviceCgroup {
         cgroupDirPath: String,
         rules: List<LinuxDeviceCgroup>,
     ) {
-        val effective = DEFAULT_ALLOWED_DEVICES + rules
+        // Process user rules first, then default device allows.
+        // The emulator resolves the final state: default action +
+        // exception list. This matches runc's approach where default
+        // devices are appended AFTER user rules.
+        val effective = rules + DEFAULT_ALLOWED_DEVICES
         val prog = buildProgram(effective)
         Logger.debug("built cgroup_device bpf program, ${prog.size / 8} insns")
 
@@ -129,13 +140,60 @@ object DeviceCgroup {
         }
     }
 
+    // ---- Device emulator (mirrors runc's devices_emulator.go) ----
+
+    /**
+     * Emulated device cgroup state: a default action plus a list of
+     * exceptions.  Mirrors runc's Emulator from
+     * libcontainer/cgroups/devices/devices_emulator.go.
+     */
+    internal data class EmulatedState(
+        val defaultAllow: Boolean,
+        val exceptions: List<LinuxDeviceCgroup>,
+    )
+
+    /**
+     * Process rules in order through the emulator to produce a final
+     * (default, exceptions) state.  Wildcard rules (type=null/"a") reset
+     * the default and clear exceptions.  Specific rules that differ from
+     * the current default are added as exceptions; rules that match the
+     * default are no-ops (but may remove a prior conflicting exception).
+     */
+    internal fun emulate(rules: List<LinuxDeviceCgroup>): EmulatedState {
+        var defaultAllow = false
+        val exceptions = mutableListOf<LinuxDeviceCgroup>()
+
+        for (rule in rules) {
+            if (rule.type == null || rule.type == "" || rule.type == "a") {
+                // Wildcard rule — set default and clear all exceptions
+                defaultAllow = rule.allow
+                exceptions.clear()
+            } else {
+                // Specific rule — remove any existing exception for the
+                // same (type, major, minor) and if this rule differs from
+                // the default, add it as an exception.
+                exceptions.removeAll { ex ->
+                    ex.type == rule.type && ex.major == rule.major && ex.minor == rule.minor
+                }
+                if (rule.allow != defaultAllow) {
+                    exceptions.add(rule)
+                }
+            }
+        }
+        return EmulatedState(defaultAllow, exceptions)
+    }
+
     // ---- BPF bytecode emitter (package-visible for testing) ----
 
     /**
      * Build the BPF program for the given device rules.
+     * First emulates the rule list to determine the default action and
+     * exception list, then generates BPF that checks exceptions before
+     * falling through to the default.
      * Visible internally so unit tests can assert on the bytecode.
      */
     internal fun buildProgram(rules: List<LinuxDeviceCgroup>): ByteArray {
+        val state = emulate(rules)
         val out = mutableListOf<Byte>()
 
         // 6-instruction prelude: load ctx fields into registers.
@@ -152,8 +210,10 @@ object DeviceCgroup {
         emit(out, BPF_LDX_MEM_W, 5, 1, 4, 0)
         emit(out, BPF_LDX_MEM_W, 6, 1, 8, 0)
 
-        // Per-rule branch chains.
-        for (r in rules) {
+        // Per-exception branch chains.  Each exception is the OPPOSITE
+        // of the default (if default=deny, exceptions are allows, and
+        // vice versa).
+        for (r in state.exceptions) {
             val devType = parseDevType(r.type)
             val accBits = parseAccessBits(r.access)
 
@@ -174,7 +234,7 @@ object DeviceCgroup {
             if (r.minor != null) {
                 emit(sub, BPF_JMP_JNE_K, 6, 0, 0, r.minor.toInt())
             }
-            // Match: return allow/deny.
+            // Match: return exception's action (opposite of default).
             emit(sub, BPF_ALU_MOV_K, 0, 0, 0, if (r.allow) 1 else 0)
             emit(sub, BPF_EXIT_INSN, 0, 0, 0, 0)
 
@@ -184,8 +244,8 @@ object DeviceCgroup {
             out.addAll(subBytes.toList())
         }
 
-        // Default tail: deny.
-        emit(out, BPF_ALU_MOV_K, 0, 0, 0, 0)
+        // Default tail: return the emulated default action.
+        emit(out, BPF_ALU_MOV_K, 0, 0, 0, if (state.defaultAllow) 1 else 0)
         emit(out, BPF_EXIT_INSN, 0, 0, 0, 0)
 
         return out.toByteArray()

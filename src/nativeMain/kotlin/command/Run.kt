@@ -47,6 +47,7 @@ fun run(
     detach: Boolean = false,
     keep: Boolean = false,
     pidfdSocket: String? = null,
+    noPivot: Boolean = false,
 ) {
     // Determine if we need an internal console socket.
     // When terminal=true and no --console-socket was provided, we set one up
@@ -86,7 +87,7 @@ fun run(
     }
 
     // Step 1: create the container (leaves it in CREATED state)
-    create(syscall, fs, cgroup, rootPath, containerId, bundlePath, pidFile, effectiveConsoleSocket, pidfdSocket)
+    create(syscall, fs, cgroup, rootPath, containerId, bundlePath, pidFile, effectiveConsoleSocket, pidfdSocket, noPivot)
 
     // If we have an internal console socket, accept the PTY master now.
     // The container sends it during create, before the create call returns.

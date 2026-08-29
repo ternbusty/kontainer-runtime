@@ -92,6 +92,36 @@ static void maybe_setns_by_path(const char *name, int nstype) {
     debug_log("[stage-1] joined %s namespace at %s\n", name, path);
 }
 
+/**
+ * Try to join a namespace by path (non-fatal). Returns 1 if joined
+ * (or no path configured), 0 if setns failed. On open failure, exits.
+ */
+static int try_setns_by_path(const char *name, int nstype) {
+    char env_name[64];
+    snprintf(env_name, sizeof(env_name), "%s%s", ENV_NS_PATH_PREFIX, name);
+    const char *path = getenv(env_name);
+    if (!path || !*path) {
+        debug_log("[stage-1] try_setns %s: no path (env=%s)\n", name, env_name);
+        return 1;  /* nothing to join */
+    }
+    debug_log("[stage-1] try_setns %s: path=%s\n", name, path);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "[stage-1] failed to open %s namespace path %s: %s\n",
+                name, path, strerror(errno));
+        exit(1);
+    }
+    if (setns(fd, nstype) != 0) {
+        debug_log("[stage-1] setns(%s, %s) deferred: %s\n",
+                path, name, strerror(errno));
+        close(fd);
+        return 0;
+    }
+    close(fd);
+    debug_log("[stage-1] joined %s namespace at %s\n", name, path);
+    return 1;
+}
+
 // Global state
 static int is_init_process = 0;
 
@@ -311,13 +341,28 @@ void kontainer_bootstrap(void) {
     // works because bootstrap.c is single-threaded (the Kotlin runtime, which
     // would otherwise be multi-threaded, hasn't started yet).
     //
-    // User namespace MUST be joined first: it establishes the capability
-    // context required for joining the remaining namespaces. After joining,
-    // the process UID/GID is 65534 (overflow/nobody) because the host UID
-    // does not appear in the target namespace's mapping. We must become
-    // root (UID 0) in the target namespace so that subsequent VFS operations
-    // (mount, mknod, file creation) work correctly.
-    // See: https://github.com/opencontainers/runc/issues/4466
+    // Three-pass join order (matches runc's nsexec.c):
+    //
+    // 1. Try all non-userns namespaces first. Some (e.g. a network namespace
+    //    owned by the root userns) require host root privileges that are lost
+    //    after joining a different user namespace.
+    // 2. Join the user namespace (if requested) and become root inside it.
+    // 3. Retry any non-userns namespaces that failed in pass 1. These are
+    //    namespaces owned by the target userns that become joinable only
+    //    after we've entered that userns.
+    //
+    // See: https://github.com/opencontainers/runc/issues/4390
+
+    // Pass 1: try non-userns namespaces (non-fatal on failure)
+    int joined_mount   = try_setns_by_path("MOUNT",   CLONE_NEWNS);
+    int joined_network = try_setns_by_path("NETWORK", CLONE_NEWNET);
+    int joined_uts     = try_setns_by_path("UTS",     CLONE_NEWUTS);
+    int joined_ipc     = try_setns_by_path("IPC",     CLONE_NEWIPC);
+    int joined_cgroup  = try_setns_by_path("CGROUP",  CLONE_NEWCGROUP);
+    int joined_time    = try_setns_by_path("TIME",    CLONE_NEWTIME);
+    int joined_pid     = try_setns_by_path("PID",     CLONE_NEWPID);
+
+    // Pass 2: join user namespace
     maybe_setns_by_path("USER",    CLONE_NEWUSER);
     {
         char env_check[64];
@@ -337,13 +382,15 @@ void kontainer_bootstrap(void) {
             debug_log("[stage-1] became root (uid=0, gid=0) in joined user namespace\n");
         }
     }
-    maybe_setns_by_path("MOUNT",   CLONE_NEWNS);
-    maybe_setns_by_path("NETWORK", CLONE_NEWNET);
-    maybe_setns_by_path("UTS",     CLONE_NEWUTS);
-    maybe_setns_by_path("IPC",     CLONE_NEWIPC);
-    maybe_setns_by_path("CGROUP",  CLONE_NEWCGROUP);
-    maybe_setns_by_path("TIME",    CLONE_NEWTIME);
-    maybe_setns_by_path("PID",     CLONE_NEWPID);
+
+    // Pass 3: retry any non-userns namespaces that failed in pass 1
+    if (!joined_mount)   maybe_setns_by_path("MOUNT",   CLONE_NEWNS);
+    if (!joined_network) maybe_setns_by_path("NETWORK", CLONE_NEWNET);
+    if (!joined_uts)     maybe_setns_by_path("UTS",     CLONE_NEWUTS);
+    if (!joined_ipc)     maybe_setns_by_path("IPC",     CLONE_NEWIPC);
+    if (!joined_cgroup)  maybe_setns_by_path("CGROUP",  CLONE_NEWCGROUP);
+    if (!joined_time)    maybe_setns_by_path("TIME",    CLONE_NEWTIME);
+    if (!joined_pid)     maybe_setns_by_path("PID",     CLONE_NEWPID);
 
     // Step 7: Unshare other namespaces (mount, network, uts, ipc)
     // These must be done AFTER user namespace mapping is complete

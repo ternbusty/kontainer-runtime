@@ -47,6 +47,27 @@ sealed class Message {
     @Serializable
     object MountFdDone : Message()
 
+    /**
+     * Init → Main: request the main process to clone a bind-mount source
+     * that is inaccessible from the container's user namespace.
+     *
+     * The main process (running as host root) calls open_tree(OPEN_TREE_CLONE)
+     * to create a detached mount tree and sends the fd back in a [BindSourceFd]
+     * response. Init then calls move_mount() to install it at the target.
+     *
+     * @param source the source path to clone
+     * @param isRbind true for recursive bind mounts (adds AT_RECURSIVE to open_tree)
+     */
+    @Serializable
+    data class BindSourceRequest(
+        val source: String,
+        val isRbind: Boolean = false,
+    ) : Message()
+
+    /** Main → Init: a detached mount tree fd for a bind-mount source, sent via SCM_RIGHTS. */
+    @Serializable
+    object BindSourceFd : Message()
+
     @Serializable
     data class ExecFailed(
         val error: String,

@@ -16,8 +16,9 @@ class FakeCgroup : Cgroup {
         pid: Int?,
         cgroupPath: String?,
         resources: LinuxResources?,
+        deferPids: Boolean,
     ) {
-        calls += "setup(pid=$pid, cgroupPath=$cgroupPath, hasResources=${resources != null})"
+        calls += "setup(pid=$pid, cgroupPath=$cgroupPath, hasResources=${resources != null}, deferPids=$deferPids)"
     }
 
     override fun addProcess(

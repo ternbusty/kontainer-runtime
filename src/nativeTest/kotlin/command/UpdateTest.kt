@@ -72,12 +72,15 @@ class UpdateTest :
             fs.files["$cgroupDir/pids.max"] shouldBe "100"
         }
 
-        test("applyCgroupResources writes pids max as 'max' for 0 or negative") {
+        test("applyCgroupResources writes pids max as 'max' for negative, '1' for zero") {
             val fs = FakeFileSystem()
-            val resources = LinuxResources(pids = LinuxPids(limit = 0))
 
-            applyCgroupResources(fs, cgroupDir, resources)
+            // limit=0 → "1" (runc compat: TasksMax=0 is invalid in the kernel)
+            applyCgroupResources(fs, cgroupDir, LinuxResources(pids = LinuxPids(limit = 0)))
+            fs.files["$cgroupDir/pids.max"] shouldBe "1"
 
+            // limit=-1 → "max" (unlimited)
+            applyCgroupResources(fs, cgroupDir, LinuxResources(pids = LinuxPids(limit = -1)))
             fs.files["$cgroupDir/pids.max"] shouldBe "max"
         }
 

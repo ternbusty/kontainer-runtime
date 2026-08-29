@@ -159,7 +159,8 @@ private fun setAmbientCapabilities(
 
     for (cap in caps) {
         if (syscall.prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE.toULong(), cap.value.toULong(), 0UL, 0UL) != 0) {
-            Logger.warn("Failed to raise ambient capability ${cap.capName}: ${strerror(errno)?.toKString()}")
+            val errMsg = strerror(errno)?.toKString() ?: "unknown error"
+            Logger.warn("can't raise ambient capability ${cap.capName}: $errMsg")
         }
     }
 }
@@ -202,12 +203,12 @@ fun applyBoundingSet(
 ) {
     Logger.debug("applying bounding set capabilities")
 
+    // When a capabilities object is present, always apply the bounding set.
+    // A null bounding list is treated as empty (drop everything), matching runc's
+    // behavior of Clear+Set which clears all then sets only listed caps.
     val boundingCaps = parseCapabilities(capabilities.bounding)
-
-    if (capabilities.bounding != null) {
-        Logger.debug("setting bounding capabilities: ${boundingCaps.map { it.capName }}")
-        dropBoundingCapabilities(syscall, boundingCaps)
-    }
+    Logger.debug("setting bounding capabilities: ${boundingCaps.map { it.capName }}")
+    dropBoundingCapabilities(syscall, boundingCaps)
 
     Logger.debug("bounding set applied successfully")
 }

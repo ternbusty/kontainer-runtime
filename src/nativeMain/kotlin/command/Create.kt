@@ -39,6 +39,7 @@ fun create(
     pidFile: String? = null,
     consoleSocket: String? = null,
     pidfdSocket: String? = null,
+    noPivot: Boolean = false,
 ): Unit =
     memScoped {
         if (containerExists(fs, rootPath, containerId)) {
@@ -83,6 +84,18 @@ fun create(
             for (err in sysctlErrors) {
                 Logger.error(err)
             }
+            exit(1)
+        }
+
+        // Reject SCHED_DEADLINE combined with specific CPUs (cpuset).
+        // sched_setattr(2) returns EPERM if the CPU affinity doesn't include
+        // all CPUs, so this combination can never work.  Match runc's error.
+        if (spec.process.scheduler != null && spec.linux
+                ?.resources
+                ?.cpu
+                ?.cpus != null
+        ) {
+            Logger.error("process scheduler can't be used together with AllowedCPUs")
             exit(1)
         }
 
@@ -217,6 +230,14 @@ fun create(
                 setenv("_KONTAINER_ROOTFS_PATH", rootfsPath, 1)
                 setenv("_KONTAINER_NOTIFY_SOCKET", notifySocketPath, 1)
                 setenv("_KONTAINER_CONTAINER_ID", containerId, 1)
+
+                // Log env vars (_KONTAINER_LOG_FILE, _KONTAINER_LOG_FORMAT)
+                // are already set by KontainerRuntime.run() and inherited
+                // by fork() — no re-forwarding needed.
+
+                if (noPivot) {
+                    setenv("_KONTAINER_NO_PIVOT", "1", 1)
+                }
 
                 // Console socket: connect NOW, while still in the host
                 // namespace with full credentials.  Inside a user namespace the

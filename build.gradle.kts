@@ -28,7 +28,7 @@ val buildConfigDir = layout.buildDirectory.dir("generated/buildconfig")
 val generateBuildConfig =
     tasks.register("generateBuildConfig") {
         val isRelease = isReleaseTask()
-        val defaultLogLevel = if (isRelease) "ERROR" else "ERROR"
+        val defaultLogLevel = if (isRelease) "WARN" else "WARN"
 
         // Track build type as input to invalidate cache when it changes
         inputs.property("buildType", if (isRelease) "release" else "debug")

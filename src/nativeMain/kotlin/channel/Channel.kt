@@ -30,6 +30,12 @@ interface MainSender {
         implied: Boolean,
     )
 
+    /** Request the main process to clone a bind-mount source via open_tree (no fd attached). */
+    fun bindSourceRequest(
+        source: String,
+        isRbind: Boolean = false,
+    )
+
     fun execFailed(error: String)
 
     fun sendError(error: String)
@@ -73,6 +79,9 @@ interface InitSender {
     /** Notify init that mount_setattr has been applied to the tree fd. */
     fun mountFdDone()
 
+    /** Send an O_PATH fd for a bind-mount source to init via SCM_RIGHTS. */
+    fun bindSourceDone(fd: Int)
+
     fun close()
 }
 
@@ -88,6 +97,9 @@ interface InitReceiver {
 
     /** Block until main confirms mount_setattr is done. */
     fun waitForMountFdDone()
+
+    /** Block until main sends a bind-source fd via SCM_RIGHTS. Returns the fd. */
+    fun waitForBindSourceFd(): Int
 
     fun close()
 }

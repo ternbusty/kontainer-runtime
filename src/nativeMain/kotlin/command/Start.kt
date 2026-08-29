@@ -61,9 +61,8 @@ fun start(
         Logger.info("container $containerId started successfully")
 
         // Run poststart hooks AFTER the container is running. The hook stdin sees
-        // the State JSON with status="running". A failing hook here is logged but
-        // not fatal — the container is already up and tearing it down would be
-        // worse than the hook's intent.
+        // the State JSON with status="running". A failing hook is propagated as
+        // an error (runc compat), causing `runc run` / `runc start` to fail.
         val spec =
             try {
                 loadSpec(fs, "${state.bundle}/config.json")
@@ -71,7 +70,9 @@ fun start(
                 null
             }
         if (spec?.hooks?.poststart != null) {
-            runHooks(spec.hooks.poststart, updatedState)
+            if (!runHooks(spec.hooks.poststart, updatedState, phase = "poststart")) {
+                exit(1)
+            }
         }
     } catch (e: Exception) {
         Logger.error("failed to start container: ${e.message ?: "unknown"}")

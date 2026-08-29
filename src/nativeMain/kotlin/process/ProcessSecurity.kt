@@ -69,7 +69,7 @@ fun applyProcessSecurity(
     }
 
     // Set umask (default 0o022)
-    val umaskValue = process.umask ?: 0x12u // 0x12 = 0o022 (octal)
+    val umaskValue = process.user.umask ?: 0x12u // 0x12 = 0o022 (octal)
     syscall.umask(umaskValue)
     Logger.debug("set umask to ${umaskValue.toString(8)}")
 

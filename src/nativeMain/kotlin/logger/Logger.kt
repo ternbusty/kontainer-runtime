@@ -249,6 +249,13 @@ object Logger {
         if (level.value >= currentLevel.value) {
             val timestamp = getCurrentTimestamp()
 
+            // Write to stderr (or its override fd) when appropriate:
+            // - WARN and above: always (matches runc/logrus default)
+            // - DEBUG/INFO: only with --debug (stderrEnabled)
+            val shouldWriteStderr =
+                logFile == null &&
+                    (stderrEnabled || level >= Level.WARN)
+
             when (logFormat) {
                 Format.TEXT -> {
                     // Use logrus-compatible format: time="..." level=info msg="..."
@@ -257,40 +264,30 @@ object Logger {
                     val formattedMessage =
                         "time=\"$timestamp\" level=${level.label.lowercase()} msg=\"$escapedMsg\"\n"
 
-                    // Write to stderr (or its override fd).
-                    // Error/fatal messages are ALWAYS emitted — they must be
-                    // visible even without --debug, matching runc's behavior.
-                    // Lower-severity messages require explicit opt-in via
-                    // --debug or KONTAINER_LOG_LEVEL.
-                    val shouldWriteStderr = (stderrEnabled || level >= Level.ERROR) && logFile == null
                     if (shouldWriteStderr) {
                         val target = stderrOverride ?: stderr
                         fprintf(target, "%s", formattedMessage)
                         fflush(target)
                     }
 
-                    // Log to file if configured
                     logFile?.let { file ->
                         fprintf(file, "%s", formattedMessage)
-                        fflush(file) // Ensure immediate write
+                        fflush(file)
                     }
                 }
 
                 Format.JSON -> {
-                    // Escape quotes in message for JSON
                     val escapedMessage = message.replace("\"", "\\\"").replace("\n", "\\n")
                     val jsonMessage =
-                        "{\"timestamp\":\"$timestamp\",\"level\":\"${level.label}\"," +
+                        "{\"timestamp\":\"$timestamp\",\"level\":\"${level.label.lowercase()}\"," +
                             "\"context\":\"$processContext\",\"message\":\"$escapedMessage\"}\n"
 
-                    val shouldWriteStderrJson = (stderrEnabled || level >= Level.ERROR) && logFile == null
-                    if (shouldWriteStderrJson) {
+                    if (shouldWriteStderr) {
                         val target = stderrOverride ?: stderr
                         fprintf(target, "%s", jsonMessage)
                         fflush(target)
                     }
 
-                    // Log to file if configured
                     logFile?.let { file ->
                         fprintf(file, "%s", jsonMessage)
                         fflush(file)

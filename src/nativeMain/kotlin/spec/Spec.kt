@@ -1,6 +1,7 @@
 package spec
 
 import kotlinx.cinterop.*
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import utils.FileSystem
 import utils.JsonCodec
@@ -89,12 +90,14 @@ data class Process(
     val user: User = User(),
     val capabilities: LinuxCapabilities? = null,
     val rlimits: List<POSIXRlimit>? = null,
-    val umask: UInt? = null,
     val oomScoreAdj: Int? = null,
     val apparmorProfile: String? = null,
     val selinuxLabel: String? = null,
     val terminal: Boolean = false,
     val consoleSize: ConsoleSize? = null,
+    val ioPriority: LinuxIOPriority? = null,
+    val scheduler: LinuxScheduler? = null,
+    val execCPUAffinity: ExecCPUAffinity? = null,
 )
 
 /** Window size of the container's pseudo-terminal. */
@@ -108,6 +111,7 @@ data class ConsoleSize(
 data class User(
     val uid: UInt = 0u,
     val gid: UInt = 0u,
+    val umask: UInt? = null,
     val additionalGids: List<UInt>? = null,
 )
 
@@ -153,6 +157,7 @@ data class LinuxMemory(
     val limit: Long? = null,
     val reservation: Long? = null,
     val swap: Long? = null,
+    val checkBeforeUpdate: Boolean? = null,
 )
 
 @Serializable
@@ -160,6 +165,10 @@ data class LinuxCpu(
     val shares: Long? = null,
     val quota: Long? = null,
     val period: Long? = null,
+    val cpus: String? = null,
+    val mems: String? = null,
+    val burst: Long? = null,
+    val idle: Long? = null,
 )
 
 @Serializable
@@ -188,6 +197,30 @@ data class LinuxDeviceCgroup(
 )
 
 /**
+ * A per-device throttle entry for block I/O.
+ */
+@Serializable
+data class LinuxThrottleDevice(
+    val major: Long,
+    val minor: Long,
+    val rate: Long,
+)
+
+/**
+ * Block I/O resource limits (OCI v1-era structure; the runtime
+ * translates these to cgroup v2 io.max / io.weight).
+ */
+@Serializable
+data class LinuxBlockIO(
+    val weight: Long? = null,
+    val leafWeight: Long? = null,
+    val throttleReadBpsDevice: List<LinuxThrottleDevice>? = null,
+    val throttleWriteBpsDevice: List<LinuxThrottleDevice>? = null,
+    val throttleReadIOPSDevice: List<LinuxThrottleDevice>? = null,
+    val throttleWriteIOPSDevice: List<LinuxThrottleDevice>? = null,
+)
+
+/**
  * Linux resource limits
  */
 @Serializable
@@ -197,6 +230,8 @@ data class LinuxResources(
     val hugepageLimits: List<LinuxHugepageLimit>? = null,
     val memory: LinuxMemory? = null,
     val cpu: LinuxCpu? = null,
+    val unified: Map<String, String>? = null,
+    val blockIO: LinuxBlockIO? = null,
 )
 
 /**
@@ -273,6 +308,8 @@ data class Linux(
     val devices: List<LinuxDevice>? = null,
     val mountLabel: String? = null,
     val timeOffsets: Map<String, LinuxTimeOffset>? = null,
+    val memoryPolicy: LinuxMemoryPolicy? = null,
+    val netDevices: Map<String, LinuxNetDevice>? = null,
 )
 
 /**
@@ -299,6 +336,101 @@ data class LinuxDevice(
     val fileMode: UInt? = null,
     val uid: UInt? = null,
     val gid: UInt? = null,
+)
+
+/**
+ * I/O priority for the container process (process.ioPriority).
+ * https://github.com/opencontainers/runtime-spec/blob/main/config.md#io-priority
+ */
+@Serializable
+data class LinuxIOPriority(
+    @SerialName("class") val clazz: String? = null,
+    val priority: Int = 0,
+) {
+    /** Map the OCI class string to the kernel IOPRIO_CLASS_* value. */
+    fun classValue(): Int =
+        when (clazz) {
+            "IOPRIO_CLASS_RT" -> 1
+            "IOPRIO_CLASS_BE" -> 2
+            "IOPRIO_CLASS_IDLE" -> 3
+            else -> 2 // default: best-effort
+        }
+}
+
+/**
+ * Scheduler policy for the container process (process.scheduler).
+ * https://github.com/opencontainers/runtime-spec/blob/main/config.md#scheduler
+ */
+@Serializable
+data class LinuxScheduler(
+    val policy: String? = null,
+    val nice: Int? = null,
+    val priority: Int? = null,
+    val flags: List<String>? = null,
+    val runtime: Long? = null,
+    val deadline: Long? = null,
+    val period: Long? = null,
+) {
+    fun policyValue(): Int =
+        when (policy) {
+            "SCHED_OTHER" -> 0
+            "SCHED_FIFO" -> 1
+            "SCHED_RR" -> 2
+            "SCHED_BATCH" -> 3
+            "SCHED_ISO" -> 4
+            "SCHED_IDLE" -> 5
+            "SCHED_DEADLINE" -> 6
+            else -> 0
+        }
+
+    fun flagBits(): Long {
+        if (flags.isNullOrEmpty()) return 0
+        var bits = 0L
+        for (f in flags) {
+            bits = bits or
+                when (f) {
+                    "SCHED_FLAG_RESET_ON_FORK" -> 0x01L
+                    "SCHED_FLAG_RECLAIM" -> 0x02L
+                    "SCHED_FLAG_DL_OVERRUN" -> 0x04L
+                    "SCHED_FLAG_KEEP_POLICY" -> 0x08L
+                    "SCHED_FLAG_KEEP_PARAMS" -> 0x10L
+                    "SCHED_FLAG_UTIL_CLAMP_MIN" -> 0x20L
+                    "SCHED_FLAG_UTIL_CLAMP_MAX" -> 0x40L
+                    else -> 0L
+                }
+        }
+        return bits
+    }
+}
+
+/**
+ * Per-process CPU affinity for exec (process.execCPUAffinity).
+ * https://github.com/opencontainers/runtime-spec/blob/main/config.md#exec-cpu-affinity
+ */
+@Serializable
+data class ExecCPUAffinity(
+    val initial: String? = null,
+    @SerialName("final") val fin: String? = null,
+)
+
+/**
+ * NUMA memory policy (linux.memoryPolicy).
+ * https://github.com/opencontainers/runtime-spec/blob/main/config-linux.md#memory-policy
+ */
+@Serializable
+data class LinuxMemoryPolicy(
+    val mode: String? = null,
+    val nodes: String? = null,
+    val flags: List<String>? = null,
+)
+
+/**
+ * Network device to move into the container namespace (linux.netDevices).
+ * The map key in the spec is the host interface name.
+ */
+@Serializable
+data class LinuxNetDevice(
+    val name: String? = null,
 )
 
 /**

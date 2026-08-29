@@ -17,14 +17,22 @@ import logger.Logger
 import namespace.NsJoin
 import namespace.nsJoinList
 import platform.posix.*
+import process.applyIOPriority
+import process.applyMemoryPolicy
 import process.applyProcessEnv
 import process.applyProcessSecurity
+import process.applyScheduler
 import process.ensureHomeEnv
+import process.parseCpuList
+import process.resetCpuAffinity
 import process.sendPidfd
+import process.setCpuAffinity
 import process.setupSessionKeyring
 import process.syncSeccompNotifyFd
 import seccomp.seccompUsesNotify
 import seccomp.sendToSeccompListener
+import spec.ExecCPUAffinity
+import spec.LinuxCapabilities
 import spec.Process
 import spec.Spec
 import spec.User
@@ -95,6 +103,8 @@ fun exec(
     preserveFds: Int = 0,
     cgroupOverride: List<String> = emptyList(),
     pidfdSocket: String? = null,
+    capOverrides: List<String> = emptyList(),
+    ignorePaused: Boolean = false,
 ) {
     if (processSpecPath != null && args.isNotEmpty()) {
         Logger.error("exec: --process cannot be combined with a positional command")
@@ -123,6 +133,27 @@ fun exec(
             return
         }
     state = state.refreshStatus()
+    if (state.status == ContainerStatus.PAUSED) {
+        if (!ignorePaused) {
+            Logger.error("cannot exec in a paused container")
+            exit(255)
+        }
+        // --ignore-paused: wait for the container to be resumed.
+        // Re-load state from disk each iteration — `runc resume` writes
+        // RUNNING to the state file, but refreshStatus() alone only checks
+        // the in-memory object and keeps PAUSED when the process is alive.
+        Logger.debug("exec: container is paused, waiting for resume (--ignore-paused)")
+        while (true) {
+            usleep(100_000u) // 100ms
+            state =
+                try {
+                    loadState(fs, rootPath, containerId).refreshStatus()
+                } catch (_: Exception) {
+                    state.refreshStatus()
+                }
+            if (state.status != ContainerStatus.PAUSED) break
+        }
+    }
     if (!state.status.canExec()) {
         Logger.error("exec: cannot exec into container in '${state.status.value}' state; container must be created or running")
         exit(1)
@@ -184,7 +215,8 @@ fun exec(
         val uid = parts[0].toUIntOrNull() ?: 0u
         val gid = if (parts.size > 1) parts[1].toUIntOrNull() ?: 0u else uid
         val existingAdditionalGids = execProcess.user.additionalGids
-        execProcess = execProcess.copy(user = User(uid = uid, gid = gid, additionalGids = existingAdditionalGids))
+        val existingUmask = execProcess.user.umask
+        execProcess = execProcess.copy(user = User(uid = uid, gid = gid, umask = existingUmask, additionalGids = existingAdditionalGids))
     }
     if (additionalGids.isNotEmpty()) {
         val existingGids = execProcess.user.additionalGids?.toMutableList() ?: mutableListOf()
@@ -197,6 +229,33 @@ fun exec(
     // value is the default; --tty forces it on).
     if (processSpecPath != null && tty) {
         execProcess = execProcess.copy(terminal = true)
+    }
+
+    // Apply --cap overrides: add capabilities to bounding, effective,
+    // and permitted. Add to ambient ONLY if the capability is already
+    // in the inheritable set (which means inheritable is non-null).
+    // Never add to inheritable itself. Matches runc's exec --cap logic.
+    if (capOverrides.isNotEmpty()) {
+        var caps = execProcess.capabilities ?: LinuxCapabilities()
+        for (cap in capOverrides) {
+            val c = if (cap.startsWith("CAP_")) cap else "CAP_$cap"
+            // Add to bounding, effective, permitted
+            caps =
+                caps.copy(
+                    bounding = ((caps.bounding ?: emptyList()) + c).distinct(),
+                    effective = ((caps.effective ?: emptyList()) + c).distinct(),
+                    permitted = ((caps.permitted ?: emptyList()) + c).distinct(),
+                    // Add to ambient only if inheritable is non-null AND
+                    // the cap is already in inheritable
+                    ambient =
+                        if (caps.inheritable != null && caps.inheritable.contains(c)) {
+                            ((caps.ambient ?: emptyList()) + c).distinct()
+                        } else {
+                            caps.ambient
+                        },
+                )
+        }
+        execProcess = execProcess.copy(capabilities = caps)
     }
 
     // Build a spec overlay that carries the exec process profile but
@@ -239,23 +298,41 @@ fun exec(
             baseCgroupPath
         }
 
-    // Fallback: when NO explicit --cgroup was given, if the resolved cgroup
-    // path no longer exists (e.g. the container's init process moved itself
-    // to a different cgroup and the original was removed), use the init
-    // process's current cgroup. This matches runc's fallback behaviour in
-    // getExecCgroupPath(). When --cgroup IS given, the user explicitly wants
-    // a specific subcgroup — no fallback, let it fail naturally.
+    // Fallback: when NO explicit --cgroup was given, check if the resolved
+    // cgroup is an internal node (cgroup.subtree_control is non-empty) or
+    // no longer exists. Internal nodes cannot hold processes, so fall back
+    // to the init process's current cgroup (runc compat: getExecCgroupPath).
     if (cgroupOverride.isEmpty()) {
         val normalizedCgroupPath = cgroupPath.removePrefix("/")
-        val cgroupProcsPath = "/sys/fs/cgroup/$normalizedCgroupPath/cgroup.procs"
-        if (access(cgroupProcsPath, F_OK) != 0) {
-            Logger.debug("exec: original cgroup $cgroupPath no longer exists, falling back to init's cgroup")
+        val cgroupDir = "/sys/fs/cgroup/$normalizedCgroupPath"
+        val needsFallback =
+            when {
+                access("$cgroupDir/cgroup.procs", F_OK) != 0 -> true
+                else -> {
+                    val subtree =
+                        try {
+                            val content = ByteArray(256)
+                            val fp = fopen("$cgroupDir/cgroup.subtree_control", "r")
+                            if (fp != null) {
+                                content.usePinned { fgets(it.addressOf(0), content.size, fp) }
+                                fclose(fp)
+                                content.toKString().trim()
+                            } else {
+                                ""
+                            }
+                        } catch (_: Exception) {
+                            ""
+                        }
+                    subtree.isNotEmpty()
+                }
+            }
+        if (needsFallback) {
             val initCgroup = readInitCgroup(initPid)
             if (initCgroup != null) {
-                Logger.debug("exec: using init's current cgroup: $initCgroup")
+                Logger.debug("exec: original cgroup is internal/missing, using init's current cgroup: $initCgroup")
                 cgroupPath = initCgroup
             } else {
-                Logger.warn("exec: could not determine init's cgroup, using original path")
+                Logger.debug("exec: could not determine init's cgroup, using original path")
             }
         }
     }
@@ -411,6 +488,7 @@ fun exec(
         if (grandchildPid > 0) {
             try {
                 cgroup.addProcess(grandchildPid, cgroupPath)
+                applyExecCpuAffinity(grandchildPid, execSpec.process.execCPUAffinity)
                 syscall.raiseRlimits(grandchildPid, execSpec.process.rlimits)
                 true
             } catch (e: Exception) {
@@ -431,6 +509,7 @@ fun exec(
                                     "falling back to init cgroup $fallbackPath",
                             )
                             cgroup.addProcess(grandchildPid, fallbackPath)
+                            applyExecCpuAffinity(grandchildPid, execSpec.process.execCPUAffinity)
                             syscall.raiseRlimits(grandchildPid, execSpec.process.rlimits)
                             true
                         } catch (e2: Exception) {
@@ -544,20 +623,58 @@ private fun runExecChild(
     // setupPipe[0] stays open so the grandchild inherits it and can wait
     // for the parent's go byte before proceeding to execvp.
 
-    // Join order matters: user first (grants the capabilities inside the
-    // container's userns that authorize the remaining joins), pid last.
-    // The CLONE_NEW* nstype guard makes the kernel verify each fd is the
-    // namespace type we think it is.
+    // Apply initial CPU affinity BEFORE joining namespaces, so it's active
+    // during the namespace transition.  Log in runc-compatible format.
+    spec.process.execCPUAffinity?.initial?.let { initial ->
+        if (initial.isNotEmpty()) {
+            val mask = parseCpuList(initial)
+            val hex = mask.firstOrNull { it != 0L } ?: 0L
+            Logger.debug("nsexec: affinity: 0x${hex.toString(16)}")
+            setCpuAffinity(0, initial)
+        }
+    }
+
+    // Three-pass namespace join (matches runc's nsexec.c pattern):
+    //
+    // 1. Try all non-userns namespaces first (non-fatal on failure).
+    //    Some namespaces (e.g. netns owned by the root userns in a
+    //    "wrong userns owner" scenario) require host-root privileges
+    //    that are lost after joining a different user namespace.
+    // 2. Join the user namespace (grants capabilities in the target userns).
+    // 3. Retry any non-userns namespaces that failed in pass 1 (fatal).
+    //    These are namespaces owned by the target userns that become
+    //    joinable only after entering that userns.
     //
     // setns(CLONE_NEWNS) also changes the process's root and CWD to the
     // root of the new mount namespace (done by the kernel's mntns_install).
     // After pivot_root by the container's init process, the mount
     // namespace root IS the container's rootfs, so no explicit chroot is
-    // needed — unlike the init path which uses pivot_root. Attempting
-    // fchdir(rootFd)+chroot to the same inode via a different dentry
-    // (e.g. from /proc/<pid>/root opened in the host namespace) would
-    // break mount-point resolution, making /proc invisible.
-    for (nsj in joins) {
+    // needed — unlike the init path which uses pivot_root.
+    val userNs = joins.find { it.ociType == "user" }
+    val nonUserJoins = joins.filter { it.ociType != "user" }
+
+    // Pass 1: try non-userns namespaces (non-fatal)
+    val deferredJoins = mutableListOf<NsJoin>()
+    for (nsj in nonUserJoins) {
+        val fd = nsFds[nsj.procName] ?: continue
+        if (syscall.setns(fd, nsj.cloneFlag) != 0) {
+            deferredJoins.add(nsj)
+        }
+    }
+
+    // Pass 2: join user namespace
+    if (userNs != null) {
+        val fd = nsFds[userNs.procName]
+        if (fd != null) {
+            if (syscall.setns(fd, userNs.cloneFlag) != 0) {
+                fprintf(stderr, "exec: setns(%s) failed: %s\n", userNs.ociType, strerror(errno))
+                _exit(1)
+            }
+        }
+    }
+
+    // Pass 3: retry deferred non-userns namespaces (fatal on failure)
+    for (nsj in deferredJoins) {
         val fd = nsFds[nsj.procName] ?: continue
         if (syscall.setns(fd, nsj.cloneFlag) != 0) {
             fprintf(stderr, "exec: setns(%s) failed: %s\n", nsj.ociType, strerror(errno))
@@ -741,6 +858,12 @@ private fun runExecGrandchild(
         sendPidfd(pidfdSocketFd, "setns")
     }
 
+    // I/O priority, scheduler, and memory policy must be applied before
+    // privilege drop — they may require CAP_SYS_ADMIN / CAP_SYS_NICE.
+    applyIOPriority(spec.process.ioPriority)
+    applyScheduler(spec.process.scheduler)
+    applyMemoryPolicy(spec.linux?.memoryPolicy)
+
     applyProcessSecurity(syscall, spec.process, spec.linux?.seccomp) { notifyFd ->
         if (notifyMainSender != null && notifyInitReceiver != null) {
             // Same synchronization as init: blocks until the parent has
@@ -865,4 +988,23 @@ private fun readInitCgroup(pid: Int): String? {
         fclose(fp)
     }
     return null
+}
+
+/**
+ * Apply CPU affinity for the exec path after cgroup assignment.
+ * Three branches (matching runc/takoyaki):
+ * 1. If affinity.final is set: apply that specific mask
+ * 2. If no affinity configured at all: reset to all CPUs (kernel clamps to cpuset)
+ * 3. If only initial was set: do nothing (initial persists through exec)
+ */
+private fun applyExecCpuAffinity(
+    pid: Int,
+    affinity: ExecCPUAffinity?,
+) {
+    if (affinity != null && !affinity.fin.isNullOrEmpty()) {
+        setCpuAffinity(pid, affinity.fin)
+    } else if (affinity == null || affinity.initial.isNullOrEmpty()) {
+        resetCpuAffinity(pid)
+    }
+    // else: only initial was set, do nothing
 }
