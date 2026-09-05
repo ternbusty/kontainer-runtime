@@ -1,5 +1,6 @@
 package command
 
+import config.BuildConfig
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 import utils.RealFileSystem
@@ -18,7 +19,7 @@ fun spec(bundlePath: String) {
     // The default spec mirrors what `runc spec` generates.
     val defaultSpec =
         spec.Spec(
-            ociVersion = "1.0.0",
+            ociVersion = BuildConfig.OCI_SPEC_VERSION,
             root = spec.Root(path = "rootfs", readonly = true),
             process =
                 spec.Process(
