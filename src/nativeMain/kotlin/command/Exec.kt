@@ -1,5 +1,6 @@
 package command
 
+import bootstrap.kontainer_clone_into_cgroup
 import cgroup.Cgroup
 import channel.InitReceiver
 import channel.InitSender
@@ -65,23 +66,30 @@ import utils.JsonCodec
  * non-args values come from process.json or the bundle's config.json.
  *
  * Process topology (three processes, mirroring runc's exec shape):
- * - parent: multithreaded runtime CLI. Loads state/spec, opens the ns fds,
- *   attaches the child to the container's cgroup and raises its hard
- *   rlimits (host-context work: the host cgroupfs view and
- *   CAP_SYS_RESOURCE in the initial user ns are both unavailable once the
- *   child has joined the container's namespaces — and doing it here keeps
- *   allocation-heavy Kotlin out of the forked child, where the runtime is
- *   not fork-safe), forwards the seccomp notify FD if needed, waitpid's
- *   and propagates the exit code.
+ * - parent: multithreaded runtime CLI. Loads state/spec, opens the ns fds
+ *   and a directory fd of the target cgroup, raises the grandchild's hard
+ *   rlimits (host-context work: CAP_SYS_RESOURCE in the initial user ns is
+ *   unavailable once the child has joined the container's namespaces — and
+ *   doing it here keeps allocation-heavy Kotlin out of the forked child,
+ *   where the runtime is not fork-safe), forwards the seccomp notify FD if
+ *   needed, waitpid's and propagates the exit code. Only if the child could
+ *   not create the grandchild inside the cgroup does the parent migrate it
+ *   by writing cgroup.procs.
  * - child: forked, therefore single-threaded — a requirement for
  *   setns(CLONE_NEWNS) etc., which the kernel rejects from multithreaded
- *   processes. Waits for the parent's cgroup/rlimit setup over a pipe
- *   (both are inherited at fork, so they must precede the grandchild
- *   fork), then joins the namespaces.
+ *   processes. Joins every namespace except the cgroup namespace, then
+ *   creates the grandchild with clone3(CLONE_INTO_CGROUP) on the cgroup fd
+ *   so it is born inside the container's cgroup (like runc's and crun's
+ *   exec; a cgroup.procs migration costs 4-8 ms on cgroup v2 when execs are
+ *   sporadic). Falls back to fork() if clone3 is refused.
  * - grandchild: setns(CLONE_NEWPID) only puts CHILDREN of the caller into
  *   the pid namespace, so the child forks once more; the grandchild is the
- *   process that is actually born inside the container's pid ns. It applies
- *   the spec.process restrictions and execvp's the user command in place.
+ *   process that is actually born inside the container's pid ns. It joins
+ *   the cgroup namespace itself (doing that in the child would make the
+ *   clone3 fail with ENOENT on `nsdelegate` mounts, because the child's own
+ *   cgroup is then invisible from inside the container's cgroup namespace),
+ *   applies the spec.process restrictions and execvp's the user command in
+ *   place.
  */
 @OptIn(ExperimentalForeignApi::class)
 fun exec(
@@ -359,6 +367,14 @@ fun exec(
     // to the container's cgroup and raised its hard rlimits — both are
     // inherited at fork time. A byte over this pipe is the go signal; EOF
     // without the byte tells the child the setup failed and it must abort.
+    // Directory fd of the target cgroup: the child creates the grandchild
+    // directly inside it with clone3(CLONE_INTO_CGROUP). -1 (e.g. a --cgroup
+    // sub-cgroup that does not exist yet) means the parent migrates the
+    // grandchild through cgroup.procs as before.
+    val cgroupDirFd = open("/sys/fs/cgroup/${cgroupPath.removePrefix("/")}", O_RDONLY or O_DIRECTORY or O_CLOEXEC)
+    if (cgroupDirFd < 0) {
+        Logger.debug("exec: cannot open cgroup dir for $cgroupPath (errno=$errno); will attach via cgroup.procs")
+    }
     val setupPipe = IntArray(2)
     setupPipe.usePinned { pinned ->
         if (pipe(pinned.addressOf(0)) != 0) {
@@ -443,12 +459,14 @@ fun exec(
                 preserveFds,
                 consoleSocketFd,
                 pidfdSocketFd,
+                cgroupDirFd,
             )
         } catch (t: Throwable) {
             fprintf(stderr, "exec: %s\n", t.message ?: "unknown error")
         }
         _exit(1)
     }
+    if (cgroupDirFd >= 0) close(cgroupDirFd)
     if (consoleSocketFd >= 0) close(consoleSocketFd)
     if (pidfdSocketFd >= 0) close(pidfdSocketFd)
 
@@ -473,11 +491,19 @@ fun exec(
 
     // Read the grandchild's host-perspective PID from the child.
     close(pidPipe[1])
+    // The child sends the grandchild's PID followed by a flag: 1 if the
+    // grandchild was created inside the cgroup (clone3 CLONE_INTO_CGROUP),
+    // 0 if it must still be migrated via cgroup.procs.
+    var grandchildInCgroup = false
     val grandchildPid =
         memScoped {
             val buf = alloc<IntVar>()
             if (read(pidPipe[0], buf.ptr, sizeOf<IntVar>().toULong()) == sizeOf<IntVar>()) {
-                buf.value
+                val pid = buf.value
+                if (read(pidPipe[0], buf.ptr, sizeOf<IntVar>().toULong()) == sizeOf<IntVar>()) {
+                    grandchildInCgroup = buf.value == 1
+                }
+                pid
             } else {
                 -1
             }
@@ -487,7 +513,11 @@ fun exec(
     val setupOk =
         if (grandchildPid > 0) {
             try {
-                cgroup.addProcess(grandchildPid, cgroupPath)
+                if (grandchildInCgroup) {
+                    Logger.debug("exec: grandchild $grandchildPid was born in cgroup $cgroupPath (CLONE_INTO_CGROUP)")
+                } else {
+                    cgroup.addProcess(grandchildPid, cgroupPath)
+                }
                 applyExecCpuAffinity(grandchildPid, execSpec.process.execCPUAffinity)
                 syscall.raiseRlimits(grandchildPid, execSpec.process.rlimits)
                 true
@@ -611,6 +641,7 @@ private fun runExecChild(
     preserveFds: Int = 0,
     consoleSocketFd: Int = -1,
     pidfdSocketFd: Int = -1,
+    cgroupDirFd: Int = -1,
 ) {
     close(pidPipe[0])
     close(setupPipe[1])
@@ -651,7 +682,11 @@ private fun runExecChild(
     // namespace root IS the container's rootfs, so no explicit chroot is
     // needed — unlike the init path which uses pivot_root.
     val userNs = joins.find { it.ociType == "user" }
-    val nonUserJoins = joins.filter { it.ociType != "user" }
+    // The cgroup namespace is joined by the grandchild, after it has been
+    // created inside the container's cgroup (see runExecGrandchild).
+    val cgroupNsJoin = joins.find { it.ociType == "cgroup" }
+    val cgroupNsFd = cgroupNsJoin?.let { nsFds[it.procName] } ?: -1
+    val nonUserJoins = joins.filter { it.ociType != "user" && it.ociType != "cgroup" }
 
     // Pass 1: try non-userns namespaces (non-fatal)
     val deferredJoins = mutableListOf<NsJoin>()
@@ -681,7 +716,7 @@ private fun runExecChild(
             _exit(1)
         }
     }
-    nsFds.values.forEach { close(it) }
+    nsFds.values.forEach { if (it != cgroupNsFd) close(it) }
 
     // PTY allocation: after joining the container's namespaces (so we are
     // inside the container's mount namespace with access to its /dev/pts),
@@ -721,7 +756,22 @@ private fun runExecChild(
         }
     }
 
-    val grandchild = fork()
+    // Create the grandchild inside the container's cgroup. We are
+    // single-threaded here (fresh fork), so a raw clone3 is as safe as fork().
+    var grandchildInCgroup = false
+    var grandchild = -1
+    if (cgroupDirFd >= 0) {
+        grandchild = kontainer_clone_into_cgroup(cgroupDirFd)
+        if (grandchild >= 0) {
+            grandchildInCgroup = true
+        } else {
+            Logger.debug("exec: clone3(CLONE_INTO_CGROUP) failed (errno=$errno); falling back to fork() + cgroup.procs")
+        }
+    }
+    if (grandchild < 0) {
+        grandchild = fork()
+    }
+    if (cgroupDirFd >= 0) close(cgroupDirFd)
     if (grandchild < 0) _exit(1)
     if (grandchild == 0) {
         close(pidPipe[1])
@@ -737,6 +787,8 @@ private fun runExecChild(
                 slaveFd,
                 setupPipe[0],
                 pidfdSocketFd,
+                cgroupNsFd,
+                cgroupNsJoin?.cloneFlag ?: 0,
             )
         } catch (t: Throwable) {
             fprintf(stderr, "exec: setup failed: %s\n", t.message ?: "unknown error")
@@ -746,6 +798,7 @@ private fun runExecChild(
 
     // Child: close pidfd socket fd — only the grandchild uses it.
     if (pidfdSocketFd >= 0) close(pidfdSocketFd)
+    if (cgroupNsFd >= 0) close(cgroupNsFd)
 
     // Child: close setupPipe read end — only the grandchild needs it now.
     close(setupPipe[0])
@@ -758,9 +811,11 @@ private fun runExecChild(
     // usesNotify is set.  setns only affects children, so fork() returned
     // the host-perspective pid.
     memScoped {
-        val gcPid = alloc<IntVar>()
-        gcPid.value = grandchild
-        write(pidPipe[1], gcPid.ptr, sizeOf<IntVar>().toULong())
+        val msg = alloc<IntVar>()
+        msg.value = grandchild
+        write(pidPipe[1], msg.ptr, sizeOf<IntVar>().toULong())
+        msg.value = if (grandchildInCgroup) 1 else 0
+        write(pidPipe[1], msg.ptr, sizeOf<IntVar>().toULong())
     }
     close(pidPipe[1])
     notifyMainSender?.close()
@@ -779,10 +834,12 @@ private fun runExecChild(
  * Already inside all of the container's namespaces (including pid, by being
  * born after the child's setns).
  *
- * Waits for the parent's go byte on [setupFd] before doing any work —
- * this ensures the parent has moved this process into the container's
- * cgroup and raised its hard rlimits.  Then applies the shared
- * spec.process setup and execvp's in place.
+ * First joins the container's cgroup namespace ([cgroupNsFd]) — this is
+ * done here rather than in the child so that the child's clone3 into the
+ * cgroup is evaluated from the host cgroup namespace. Then waits for the
+ * parent's go byte on [setupFd] — this ensures the parent has finished the
+ * cgroup migration (fallback path only) and raised the hard rlimits.  Then
+ * applies the shared spec.process setup and execvp's in place.
  *
  * When [slaveFd] >= 0, creates a new session, acquires the PTY slave as
  * the controlling terminal, and wires it to stdin/stdout/stderr before
@@ -801,7 +858,16 @@ private fun runExecGrandchild(
     slaveFd: Int = -1,
     setupFd: Int = -1,
     pidfdSocketFd: Int = -1,
+    cgroupNsFd: Int = -1,
+    cgroupNsFlag: Int = 0,
 ) {
+    if (cgroupNsFd >= 0) {
+        if (syscall.setns(cgroupNsFd, cgroupNsFlag) != 0) {
+            fprintf(stderr, "exec: setns(cgroup) failed: %s\n", strerror(errno))
+            _exit(1)
+        }
+        close(cgroupNsFd)
+    }
     // Wait for the parent to add this process to the container's cgroup and
     // raise its hard rlimits.  One byte = go; EOF = the parent failed and
     // we must not run the command outside the container's limits.
