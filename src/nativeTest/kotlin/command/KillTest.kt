@@ -2,29 +2,33 @@ package command
 
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.datatest.withTests
 import io.kotest.matchers.shouldBe
 
 class KillTest :
     FunSpec({
 
-        test("parseSignal accepts SIG-prefixed names") {
-            parseSignal("SIGKILL") shouldBe 9
-            parseSignal("SIGTERM") shouldBe 15
-            parseSignal("SIGHUP") shouldBe 1
-        }
-
-        test("parseSignal accepts bare names case-insensitively") {
-            parseSignal("KILL") shouldBe 9
-            parseSignal("TERM") shouldBe 15
-            parseSignal("kill") shouldBe 9
-            parseSignal("term") shouldBe 15
-            parseSignal("Kill") shouldBe 9
-        }
-
-        test("parseSignal accepts numeric input") {
-            parseSignal("9") shouldBe 9
-            parseSignal("15") shouldBe 15
-            parseSignal("1") shouldBe 1
+        withTests(
+            nameFn = { (input, expected) -> "parseSignal(\"$input\") == $expected" },
+            ts =
+                listOf(
+                    // SIG-prefixed names
+                    "SIGKILL" to 9,
+                    "SIGTERM" to 15,
+                    "SIGHUP" to 1,
+                    // bare names, case-insensitive
+                    "KILL" to 9,
+                    "TERM" to 15,
+                    "kill" to 9,
+                    "term" to 15,
+                    "Kill" to 9,
+                    // numeric input
+                    "9" to 9,
+                    "15" to 15,
+                    "1" to 1,
+                ),
+        ) { (input, expected) ->
+            parseSignal(input) shouldBe expected
         }
 
         test("parseSignal returns numeric input as-is even outside known signals") {

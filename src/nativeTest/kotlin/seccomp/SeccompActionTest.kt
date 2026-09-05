@@ -2,6 +2,7 @@ package seccomp
 
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.datatest.withTests
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import spec.LinuxSeccomp
@@ -10,17 +11,21 @@ import spec.LinuxSyscall
 class SeccompActionTest :
     FunSpec({
 
-        test("parse maps every OCI action string") {
-            SeccompAction.parse("SCMP_ACT_ALLOW", null) shouldBe SeccompAction.Allow
-            SeccompAction.parse("SCMP_ACT_LOG", null) shouldBe SeccompAction.Log
-            SeccompAction.parse("SCMP_ACT_NOTIFY", null) shouldBe SeccompAction.Notify
-            SeccompAction.parse("SCMP_ACT_TRAP", null) shouldBe SeccompAction.Trap
-            SeccompAction.parse("SCMP_ACT_KILL_THREAD", null) shouldBe SeccompAction.KillThread
-            SeccompAction.parse("SCMP_ACT_KILL_PROCESS", null) shouldBe SeccompAction.KillProcess
-        }
-
-        test("SCMP_ACT_KILL is an alias for KILL_THREAD") {
-            SeccompAction.parse("SCMP_ACT_KILL", null) shouldBe SeccompAction.KillThread
+        withTests(
+            nameFn = { (action, expected) -> "parse maps $action to $expected" },
+            ts =
+                listOf(
+                    "SCMP_ACT_ALLOW" to SeccompAction.Allow,
+                    "SCMP_ACT_LOG" to SeccompAction.Log,
+                    "SCMP_ACT_NOTIFY" to SeccompAction.Notify,
+                    "SCMP_ACT_TRAP" to SeccompAction.Trap,
+                    "SCMP_ACT_KILL_THREAD" to SeccompAction.KillThread,
+                    "SCMP_ACT_KILL_PROCESS" to SeccompAction.KillProcess,
+                    // SCMP_ACT_KILL is an alias for KILL_THREAD
+                    "SCMP_ACT_KILL" to SeccompAction.KillThread,
+                ),
+        ) { (action, expected) ->
+            SeccompAction.parse(action, null) shouldBe expected
         }
 
         test("ERRNO and TRACE carry errnoRet") {
