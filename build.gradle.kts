@@ -1,3 +1,7 @@
+import java.net.URI
+import java.security.MessageDigest
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.kotlinSerialization)
@@ -80,7 +84,149 @@ val generateBuildConfig =
 // under the aarch64 multilib prefix.
 val hostArch: String = System.getProperty("os.arch")
 val targetArch: String = (findProperty("targetArch") as? String) ?: hostArch
-val crossPrefix = if (targetArch in listOf("aarch64", "arm64")) "aarch64-linux-gnu-" else ""
+val isArm64Target = targetArch in listOf("aarch64", "arm64")
+val crossPrefix = if (isArm64Target) "aarch64-linux-gnu-" else ""
+
+// ── Static linking and libseccomp from source ──────────────────────────
+//
+// -Pstatic produces a fully static executable (no PT_INTERP, no DT_NEEDED),
+// the same shape as runc's `make static` release binaries, so one file runs
+// on any Linux of the same architecture regardless of the installed glibc.
+//
+// A static link mixes libc.a from the Kotlin/Native sysroot (glibc 2.19) with
+// every other archive on the link line. The host's libseccomp.a was compiled
+// against the host glibc headers and may reference symbols that 2.19 does not
+// have, so -Pstatic implies -PlibseccompFromSource: build the pinned libseccomp
+// release with the compiler and sysroot bundled in the K/N distribution. That
+// also removes the libseccomp-dev build dependency for the dynamic build when
+// -PlibseccompFromSource is given on its own.
+val staticBuild = providers.gradleProperty("static").isPresent
+val libseccompFromSource = staticBuild || providers.gradleProperty("libseccompFromSource").isPresent
+
+val libseccompVersion = "2.6.1"
+val libseccompSha256 = "501f66c667225d53791b97e1d7cf85ab764c297d04881f60f38f451c4b0ee1be"
+val libseccompDir = layout.buildDirectory.dir("libseccomp")
+val libseccompPrefix = libseccompDir.map { it.dir("prefix") }
+
+// Kotlin/Native target names and the GNU triple of its bundled sysroot.
+val konanTargetName = if (isArm64Target) "linux_arm64" else "linux_x64"
+val konanTriple = if (isArm64Target) "aarch64-unknown-linux-gnu" else "x86_64-unknown-linux-gnu"
+
+// Locate the bundled clang and per-target sysroot. ~/.konan/dependencies is
+// populated on demand by the first Kotlin/Native task, so this must only be
+// called from a task action, never at configuration time.
+fun konanToolchain(): Map<String, File> {
+    val dataDir = File(System.getenv("KONAN_DATA_DIR") ?: "${System.getProperty("user.home")}/.konan")
+    val home = File(dataDir, "kotlin-native-prebuilt-linux-x86_64-${libs.versions.kotlin.get()}")
+    val propsFile = File(home, "konan/konan.properties")
+    check(propsFile.isFile) { "Kotlin/Native distribution not found at $home; run a Kotlin/Native task first" }
+    val props = Properties().apply { propsFile.inputStream().use { load(it) } }
+    val toolchain = File(dataDir, "dependencies/${props.getProperty("toolchainDependency.$konanTargetName")}")
+    val llvm = File(dataDir, "dependencies/${props.getProperty("llvm.linux_x64.user")}")
+    check(toolchain.isDirectory && llvm.isDirectory) {
+        "Kotlin/Native dependencies not downloaded yet ($toolchain, $llvm); run a Kotlin/Native task first"
+    }
+    return mapOf(
+        "clang" to File(llvm, "bin/clang"),
+        "toolchain" to toolchain,
+        "sysroot" to File(toolchain, "$konanTriple/sysroot"),
+    )
+}
+
+fun sha256(file: File): String =
+    MessageDigest
+        .getInstance("SHA-256")
+        .digest(file.readBytes())
+        .joinToString("") { "%02x".format(it) }
+
+val downloadLibseccomp =
+    tasks.register("downloadLibseccomp") {
+        val tarball = libseccompDir.map { it.file("libseccomp-$libseccompVersion.tar.gz") }
+        outputs.file(tarball)
+        doLast {
+            val out = tarball.get().asFile
+            out.parentFile.mkdirs()
+            if (!out.isFile || sha256(out) != libseccompSha256) {
+                val url = "https://github.com/seccomp/libseccomp/releases/download/v$libseccompVersion/libseccomp-$libseccompVersion.tar.gz"
+                URI(url).toURL().openStream().use { input ->
+                    out.outputStream().use { input.copyTo(it) }
+                }
+            }
+            val actual = sha256(out)
+            check(actual == libseccompSha256) {
+                "libseccomp-$libseccompVersion.tar.gz checksum mismatch: expected $libseccompSha256, got $actual"
+            }
+        }
+    }
+
+// configure/make/install libseccomp as a static archive using the bundled
+// clang against the bundled sysroot, so the resulting .a only references
+// symbols that exist in that glibc. --gcc-toolchain points clang at the crt
+// objects and libgcc shipped next to the sysroot; lld is the linker the K/N
+// distribution ships (there is no `ld` in it). Host requirements: sh, tar,
+// make, ar/ranlib, and gperf (libseccomp's configure checks for it even
+// though the release tarball contains the generated syscall tables).
+val buildLibseccomp =
+    tasks.register<Exec>("buildLibseccomp") {
+        dependsOn(downloadLibseccomp)
+        inputs.files(downloadLibseccomp)
+        inputs.property("konanTargetName", konanTargetName)
+        outputs.dir(libseccompPrefix)
+        workingDir = libseccompDir.get().asFile
+        doFirst {
+            val tc = konanToolchain()
+            environment("CC", tc.getValue("clang").absolutePath)
+            environment(
+                "CFLAGS",
+                "--target=$konanTriple --sysroot=${tc.getValue("sysroot")} --gcc-toolchain=${tc.getValue("toolchain")} -fuse-ld=lld -O2",
+            )
+            // Host binutils `ar`/`ranlib` are format-agnostic and work for either target.
+            environment("AR", "ar")
+            environment("RANLIB", "ranlib")
+        }
+        commandLine(
+            "sh",
+            "-c",
+            """
+            set -e
+            rm -rf src prefix && mkdir src
+            tar -xzf libseccomp-$libseccompVersion.tar.gz -C src --strip-components=1
+            cd src
+            ./configure --host=$konanTriple --enable-static --disable-shared --prefix="${'$'}(pwd)/../prefix" > configure.log
+            make -j"${'$'}(nproc)" > make.log
+            make install > install.log
+            """.trimIndent(),
+        )
+    }
+
+// The bundled toolchain only exists after some Kotlin/Native task has run
+// (the compiler downloads ~/.konan/dependencies on first use). Order the
+// libseccomp build after a cinterop that does not itself need libseccomp.
+buildLibseccomp.configure {
+    dependsOn(tasks.matching { it.name.matches(Regex("cinteropSocket(LinuxX64|LinuxArm64)")) })
+}
+
+// glibc before 2.34 ships pthread as a separate libpthread.a. libstdc++
+// (gthr-posix.h) and parts of libc.a reference pthread functions only weakly
+// so that single-threaded programs need not link libpthread; a static link
+// pulls archive members for strong references only, so weak-only references
+// resolve to 0 and the K/N runtime segfaults on its first std::mutex /
+// condition_variable use. Force these members in. Check for regressions with
+// `nm <binary> | awk '$1=="w"' | grep pthread` (must print nothing).
+val staticWeakPthreadSymbols =
+    listOf(
+        "__call_tls_dtors",
+        "__pthread_cleanup_upto",
+        "__pthread_rwlock_destroy",
+        "__pthread_rwlock_init",
+        "_pthread_cleanup_pop_restore",
+        "_pthread_cleanup_push_defer",
+        "pthread_cond_signal",
+        "pthread_cond_timedwait",
+        "pthread_cond_wait",
+        "pthread_self",
+        "pthread_setcancelstate",
+    )
 
 // Build C bootstrap library. Gradle 9 removed Project.exec() / Project.copy()
 // from inside task actions — the old `doLast { exec { ... } }` block no longer
@@ -175,21 +321,52 @@ kotlin {
         // the final link, but it cannot vary by target architecture. Apply
         // them on every compilation (main + test) so the value follows the
         // active target.
+        val seccompLinkerOpts =
+            if (libseccompFromSource) {
+                listOf("-L${libseccompPrefix.get().asFile}/lib", "-lseccomp")
+            } else {
+                listOf("-L/usr/lib/$triple", "-lseccomp")
+            }
+        // -static must precede the library flags so every -l resolves to an
+        // archive. The K/N linker driver hard-codes -dynamic-linker, so drop
+        // PT_INTERP explicitly. Its default linkerKonanFlags switch back to
+        // -Bdynamic after libstdc++, which would mix static libpthread.a with a
+        // dynamic libc; override them to stay static, and swap the shared
+        // libgcc_s for libgcc_eh.
+        val staticLinkerOpts =
+            if (staticBuild) {
+                listOf("-static", "--no-dynamic-linker") + staticWeakPthreadSymbols.flatMap { listOf("-u", it) }
+            } else {
+                emptyList()
+            }
+        val staticCompilerArgs =
+            if (staticBuild) {
+                val gcSections = if (konanTargetName == "linux_x64") " --gc-sections" else ""
+                listOf(
+                    "-Xoverride-konan-properties=" +
+                        "linkerKonanFlags.$konanTargetName=-Bstatic -lstdc++ -ldl -lm -lpthread " +
+                        "--defsym __cxa_demangle=Konan_cxa_demangle$gcSections;" +
+                        "linkerGccFlags=-lgcc -lgcc_eh -lc -lgcc -lgcc_eh",
+                )
+            } else {
+                emptyList()
+            }
         compilations.configureEach {
             compileTaskProvider.configure {
                 compilerOptions.freeCompilerArgs.addAll(
-                    "-linker-option",
-                    "-L/usr/lib/$triple",
-                    "-linker-option",
-                    "-lseccomp",
+                    (staticLinkerOpts + seccompLinkerOpts).flatMap { listOf("-linker-option", it) } + staticCompilerArgs,
                 )
             }
         }
 
         compilations.getByName("main").cinterops {
             create("libseccomp") {
-                extraOpts("-compiler-option", "-I/usr/include")
-                extraOpts("-compiler-option", "-I/usr/include/$triple")
+                if (libseccompFromSource) {
+                    extraOpts("-compiler-option", "-I${libseccompPrefix.get().asFile}/include")
+                } else {
+                    extraOpts("-compiler-option", "-I/usr/include")
+                    extraOpts("-compiler-option", "-I/usr/include/$triple")
+                }
             }
             create("socket")
             create("sched")
@@ -267,4 +444,13 @@ ktlint {
 // cinteropBootstrapLinuxX64 or cinteropBootstrapLinuxArm64).
 tasks.matching { it.name.matches(Regex("cinteropBootstrap(LinuxX64|LinuxArm64)")) }.configureEach {
     dependsOn(buildBootstrap)
+}
+
+// When libseccomp is built from source, its headers must exist before the
+// libseccomp cinterop runs; the link tasks reach it transitively through the
+// compilation.
+if (libseccompFromSource) {
+    tasks.matching { it.name.matches(Regex("cinteropLibseccomp(LinuxX64|LinuxArm64)")) }.configureEach {
+        dependsOn(buildLibseccomp)
+    }
 }

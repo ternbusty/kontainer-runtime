@@ -42,14 +42,20 @@ jobs:
     strategy:
       matrix:
         include:
+          # Release binaries are fully static (-Pstatic): libseccomp is built
+          # from source against the Kotlin/Native sysroot (needs gperf), so no
+          # libseccomp-dev; the aarch64 cross gcc is still needed for
+          # bootstrap.c.
           - target: linuxX64
             targetArch: x86_64
             artifactArch: amd64
             crossPkgs: ""
+            strip: strip
           - target: linuxArm64
             targetArch: aarch64
             artifactArch: arm64
-            crossPkgs: "gcc-aarch64-linux-gnu libc6-dev:arm64 libseccomp-dev:arm64"
+            crossPkgs: "gcc-aarch64-linux-gnu libc6-dev:arm64"
+            strip: aarch64-linux-gnu-strip
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -81,13 +87,48 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libseccomp-dev ${{ matrix.crossPkgs }}
+          sudo apt-get install -y gperf ${{ matrix.crossPkgs }}
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      # Fully static, like runc's release binaries: no dynamic linker, no
+      # shared-library dependencies, so one file runs on any Linux of the same
+      # architecture regardless of the installed glibc/libseccomp.
       - name: Build release binary
-        run: ./gradlew linkReleaseExecutable${{ matrix.target }} -PtargetArch=${{ matrix.targetArch }}
+        run: ./gradlew linkReleaseExecutable${{ matrix.target }} -PtargetArch=${{ matrix.targetArch }} -Pstatic
+
+      - name: Verify static binary
+        run: |
+          bin=build/bin/${{ matrix.target }}/releaseExecutable/kontainer-runtime.kexe
+          file "$bin"
+          file "$bin" | grep -q 'statically linked'
+          if readelf -d "$bin" | grep -q NEEDED; then echo "unexpected DT_NEEDED"; exit 1; fi
+          if readelf -V "$bin" | grep -q 'GLIBC_'; then echo "unexpected glibc version need"; exit 1; fi
+          # Every weak pthread reference must have been forced in (see build.gradle.kts).
+          if nm "$bin" | awk '$1=="w"{print $2}' | grep -E '^(_*pthread_|__call_tls)'; then echo "unresolved weak pthread symbols"; exit 1; fi
+
+      # The release build already drops debug sections (konan passes -S to the
+      # linker) but keeps the symbol table, which is ~1.4 MB of the binary.
+      # Strip it like runc/crun/youki do. Trade-off: uncaught Kotlin exception
+      # traces then show raw addresses instead of kfun: names; the unstripped
+      # binary is kept as a workflow artifact so addresses can still be
+      # resolved with `nm -n` against the matching build.
+      - name: Strip symbol table
+        run: |
+          bin=build/bin/${{ matrix.target }}/releaseExecutable/kontainer-runtime.kexe
+          cp "$bin" kontainer-runtime-unstripped
+          ${{ matrix.strip }} "$bin"
+          file "$bin"
+          file "$bin" | grep -q ', stripped'
+          if [ "${{ matrix.targetArch }}" = x86_64 ]; then "$bin" --version; fi
+
+      - name: Upload unstripped binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: kontainer-runtime-unstripped-${{ matrix.artifactArch }}
+          path: kontainer-runtime-unstripped
+          retention-days: 90
 
       - name: Stage binary with versioned name
         run: |
