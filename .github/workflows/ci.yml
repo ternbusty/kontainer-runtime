@@ -12,6 +12,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
+      # Let every variant report its own result instead of cancelling the
+      # others on the first failure.
+      fail-fast: false
       matrix:
         include:
           - target: linuxX64
@@ -23,15 +26,17 @@ jobs:
             static: false
             pkgs: "libseccomp-dev gcc-aarch64-linux-gnu libc6-dev:arm64 libseccomp-dev:arm64"
           # Fully static binaries (-Pstatic): libseccomp is built from source
-          # against the Kotlin/Native sysroot, so no libseccomp-dev here.
+          # against the Kotlin/Native sysroot, so no libseccomp-dev here. Its
+          # configure script insists on gperf even though the release tarball
+          # ships the generated tables.
           - target: linuxX64
             targetArch: x86_64
             static: true
-            pkgs: ""
+            pkgs: "gperf"
           - target: linuxArm64
             targetArch: aarch64
             static: true
-            pkgs: "gcc-aarch64-linux-gnu libc6-dev:arm64"
+            pkgs: "gperf gcc-aarch64-linux-gnu libc6-dev:arm64"
 
     steps:
       - name: Checkout code

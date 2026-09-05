@@ -163,7 +163,9 @@ val downloadLibseccomp =
 // clang against the bundled sysroot, so the resulting .a only references
 // symbols that exist in that glibc. --gcc-toolchain points clang at the crt
 // objects and libgcc shipped next to the sysroot; lld is the linker the K/N
-// distribution ships (there is no `ld` in it).
+// distribution ships (there is no `ld` in it). Host requirements: sh, tar,
+// make, ar/ranlib, and gperf (libseccomp's configure checks for it even
+// though the release tarball contains the generated syscall tables).
 val buildLibseccomp =
     tasks.register<Exec>("buildLibseccomp") {
         dependsOn(downloadLibseccomp)

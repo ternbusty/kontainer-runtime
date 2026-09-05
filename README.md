@@ -26,7 +26,8 @@ The default build links `libseccomp` dynamically from the host (`libseccomp-dev`
 Two optional Gradle properties change that:
 
 - `-PlibseccompFromSource` builds the pinned libseccomp release from source with the compiler
-  and sysroot bundled in Kotlin/Native and links it statically, so `libseccomp-dev` is not needed.
+  and sysroot bundled in Kotlin/Native and links it statically, so `libseccomp-dev` is not needed
+  (libseccomp's `configure` does require `gperf` to be installed).
 - `-Pstatic` produces a fully static executable (no dynamic linker, no shared-library
   dependencies) that runs on any Linux of the same architecture. It implies `-PlibseccompFromSource`.
 
