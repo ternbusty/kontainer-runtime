@@ -47,35 +47,19 @@ private fun translateArchName(ociArchName: String): String =
     }
 
 /**
- * Translate OCI spec action string to libseccomp action constant
+ * Translate a parsed OCI action to the libseccomp action constant
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun translateAction(
-    action: String,
-    errno: UInt?,
-): UInt =
-    when (action) {
-        "SCMP_ACT_KILL" -> SCMP_ACT_KILL_THREAD
-        "SCMP_ACT_KILL_PROCESS" -> SCMP_ACT_KILL_PROCESS
-        "SCMP_ACT_KILL_THREAD" -> SCMP_ACT_KILL_THREAD
-        "SCMP_ACT_TRAP" -> SCMP_ACT_TRAP
-        "SCMP_ACT_ERRNO" -> {
-            val errnoVal = errno ?: 1u
-            _SCMP_ACT_ERRNO(errnoVal)
-        }
-
-        "SCMP_ACT_TRACE" -> {
-            val traceVal = errno ?: 1u
-            _SCMP_ACT_TRACE(traceVal)
-        }
-
-        "SCMP_ACT_ALLOW" -> SCMP_ACT_ALLOW
-        "SCMP_ACT_LOG" -> SCMP_ACT_LOG
-        "SCMP_ACT_NOTIFY" -> SCMP_ACT_NOTIFY
-        else -> {
-            Logger.error("Unknown seccomp action: $action")
-            throw Exception("Unknown seccomp action: $action")
-        }
+private fun SeccompAction.toLibseccomp(): UInt =
+    when (this) {
+        SeccompAction.KillThread -> SCMP_ACT_KILL_THREAD
+        SeccompAction.KillProcess -> SCMP_ACT_KILL_PROCESS
+        SeccompAction.Trap -> SCMP_ACT_TRAP
+        is SeccompAction.Errno -> _SCMP_ACT_ERRNO(errno)
+        is SeccompAction.Trace -> _SCMP_ACT_TRACE(id)
+        SeccompAction.Allow -> SCMP_ACT_ALLOW
+        SeccompAction.Log -> SCMP_ACT_LOG
+        SeccompAction.Notify -> SCMP_ACT_NOTIFY
     }
 
 /**
@@ -102,7 +86,7 @@ private fun translateOp(op: String): scmp_compare =
  * Public so callers (MainProcess, exec) can decide up front whether a notify
  * FD will need forwarding to the OCI seccomp listener.
  */
-fun seccompUsesNotify(seccomp: LinuxSeccomp): Boolean = seccomp.syscalls?.any { it.action == "SCMP_ACT_NOTIFY" } ?: false
+fun seccompUsesNotify(seccomp: LinuxSeccomp): Boolean = seccomp.syscalls?.any { it.parsedAction is SeccompAction.Notify } ?: false
 
 /**
  * Validate that all seccomp flags in the spec are supported by the
@@ -158,13 +142,13 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int? {
     Logger.debug("initializing seccomp filter")
 
     // Validation: SCMP_ACT_NOTIFY cannot be used as default action
-    if (seccomp.defaultAction == "SCMP_ACT_NOTIFY") {
+    if (seccomp.parsedDefaultAction is SeccompAction.Notify) {
         Logger.error("SCMP_ACT_NOTIFY cannot be used as default action")
         throw Exception("SCMP_ACT_NOTIFY cannot be used as default action")
     }
 
     // Create filter context with default action
-    val defaultAction = translateAction(seccomp.defaultAction, seccomp.defaultErrnoRet)
+    val defaultAction = seccomp.parsedDefaultAction.toLibseccomp()
     val ctx =
         seccomp_init(defaultAction) ?: run {
             perror("seccomp_init")
@@ -292,7 +276,8 @@ private fun addSyscallRule(
     syscall: LinuxSyscall,
     defaultAction: UInt,
 ) {
-    val action = translateAction(syscall.action, syscall.errnoRet)
+    val parsedAction = syscall.parsedAction
+    val action = parsedAction.toLibseccomp()
 
     // Skip if action is the same as default (redundant rule)
     if (action == defaultAction) {
@@ -303,7 +288,7 @@ private fun addSyscallRule(
     // Validation: SCMP_ACT_NOTIFY cannot be used for write syscall.
     // After seccomp init, we need to write the seccomp fd on the sync pipe
     // to the parent; if write is notified, we deadlock.
-    if (syscall.action == "SCMP_ACT_NOTIFY" && syscall.names.contains("write")) {
+    if (parsedAction is SeccompAction.Notify && syscall.names.contains("write")) {
         Logger.error("SCMP_ACT_NOTIFY cannot be used for the write syscall")
         throw Exception("SCMP_ACT_NOTIFY cannot be used for the write syscall")
     }
