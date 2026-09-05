@@ -872,9 +872,14 @@ fun main(args: Array<String>) {
     // - create/run: seal binary and store the fd; the fork+exec in Create.kt
     //   uses /proc/self/fd/<fd> so the bootstrap child is born from the sealed
     //   copy — one exec instead of two (no main-process re-exec needed).
-    // - exec (and other commands that enter namespaces directly via setns in
-    //   a fork'd child): re-exec the main process from the sealed copy so all
-    //   fork'd children automatically have /proc/self/exe → sealed binary.
+    // - exec: enters the container's namespaces via setns in a fork'd child,
+    //   so re-exec the main process from the sealed copy first; every fork'd
+    //   child then has /proc/self/exe → sealed binary.
+    // - everything else (state, start, delete, kill, list, ps, pause, resume,
+    //   events, update, spec, features, --version, --help): no process of ours
+    //   ever enters a container namespace, so there is nothing for a container
+    //   to attack through /proc/self/exe and no re-exec is needed. Skipping it
+    //   saves an execve plus a second runtime start-up (~0.7 ms) per command.
     // - init process (Stage-2): skip — it was already exec'd from the sealed
     //   binary by the parent.
     if (isInit == 0) {
@@ -893,11 +898,10 @@ fun main(args: Array<String>) {
             }
         }
 
-        val subcmd = peekSubcommand(args)
-        if (subcmd == "create" || subcmd == "run") {
-            sealBinary()
-        } else {
-            ensureSelfCloned(args)
+        when (peekSubcommand(args)) {
+            "create", "run" -> sealBinary()
+            "exec" -> ensureSelfCloned(args)
+            else -> Unit
         }
     }
 
