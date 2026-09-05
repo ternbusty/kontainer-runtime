@@ -16,10 +16,22 @@ jobs:
         include:
           - target: linuxX64
             targetArch: x86_64
-            crossPkgs: ""
+            static: false
+            pkgs: "libseccomp-dev"
           - target: linuxArm64
             targetArch: aarch64
-            crossPkgs: "gcc-aarch64-linux-gnu libc6-dev:arm64 libseccomp-dev:arm64"
+            static: false
+            pkgs: "libseccomp-dev gcc-aarch64-linux-gnu libc6-dev:arm64 libseccomp-dev:arm64"
+          # Fully static binaries (-Pstatic): libseccomp is built from source
+          # against the Kotlin/Native sysroot, so no libseccomp-dev here.
+          - target: linuxX64
+            targetArch: x86_64
+            static: true
+            pkgs: ""
+          - target: linuxArm64
+            targetArch: aarch64
+            static: true
+            pkgs: "gcc-aarch64-linux-gnu libc6-dev:arm64"
 
     steps:
       - name: Checkout code
@@ -50,30 +62,52 @@ jobs:
           | sudo tee /etc/apt/sources.list.d/arm64.sources >/dev/null
 
       - name: Install dependencies
+        if: matrix.pkgs != ''
         run: |
           sudo apt-get update
-          sudo apt-get install -y libseccomp-dev ${{ matrix.crossPkgs }}
+          sudo apt-get install -y ${{ matrix.pkgs }}
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
       - name: Run ktlintCheck
-        if: matrix.targetArch == 'x86_64'
+        if: matrix.targetArch == 'x86_64' && !matrix.static
         run: ./gradlew ktlintCheck
 
       - name: Run tests
-        if: matrix.targetArch == 'x86_64'
+        if: matrix.targetArch == 'x86_64' && !matrix.static
         run: ./gradlew linuxX64Test
 
       - name: Build release binary
-        run: ./gradlew linkReleaseExecutable${{ matrix.target }} -PtargetArch=${{ matrix.targetArch }}
+        run: ./gradlew linkReleaseExecutable${{ matrix.target }} -PtargetArch=${{ matrix.targetArch }} ${{ matrix.static && '-Pstatic' || '' }}
+
+      - name: Verify static binary
+        if: matrix.static
+        run: |
+          bin=build/bin/${{ matrix.target }}/releaseExecutable/kontainer-runtime.kexe
+          file "$bin"
+          file "$bin" | grep -q 'statically linked'
+          # No shared-library dependencies and no glibc symbol-version requirements.
+          if readelf -d "$bin" | grep -q NEEDED; then echo "unexpected DT_NEEDED"; exit 1; fi
+          if readelf -V "$bin" | grep -q 'GLIBC_'; then echo "unexpected glibc version need"; exit 1; fi
+          # Every weak pthread reference must have been forced in (see build.gradle.kts).
+          if nm "$bin" | awk '$1=="w"{print $2}' | grep -E '^(_*pthread_|__call_tls)'; then echo "unresolved weak pthread symbols"; exit 1; fi
+          if [ "${{ matrix.targetArch }}" = x86_64 ]; then "$bin" --version; fi
 
       - name: Upload x86_64 binary
-        if: matrix.targetArch == 'x86_64'
+        if: matrix.targetArch == 'x86_64' && !matrix.static
         uses: actions/upload-artifact@v7
         with:
           name: kontainer-runtime-x86_64
           path: build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe
+          retention-days: 1
+
+      - name: Upload static binary
+        if: matrix.static
+        uses: actions/upload-artifact@v7
+        with:
+          name: kontainer-runtime-${{ matrix.targetArch }}-static
+          path: build/bin/${{ matrix.target }}/releaseExecutable/kontainer-runtime.kexe
           retention-days: 1
 
   # ── Downstream test suites (reuse the x86_64 binary built above) ──
