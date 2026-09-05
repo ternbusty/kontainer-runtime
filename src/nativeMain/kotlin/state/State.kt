@@ -139,6 +139,21 @@ data class State(
 private const val STATE_FILE_NAME = "state.json"
 
 /**
+ * Whether [id] is acceptable as a container ID.
+ *
+ * Same rule as runc's validateID: a non-empty string of ASCII letters, digits,
+ * `_`, `+`, `-` and `.`, excluding `.` and `..`. The ID is used as a path
+ * component under --root (and as a cgroup name), so anything else — in
+ * particular `/`, whitespace and shell metacharacters — must be rejected before
+ * it reaches the file system.
+ */
+fun isValidContainerId(id: String): Boolean =
+    id.isNotEmpty() &&
+        id != "." &&
+        id != ".." &&
+        id.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '_' || it == '+' || it == '-' || it == '.' }
+
+/**
  * Get the directory path for a container's state
  *
  * @param rootPath Root directory for container state (e.g., /run/kontainer)
@@ -148,7 +163,11 @@ private const val STATE_FILE_NAME = "state.json"
 fun getContainerDir(
     rootPath: String,
     containerId: String,
-): String = "$rootPath/$containerId"
+): String {
+    // CLI arguments are validated up front; this guards internal callers.
+    require(isValidContainerId(containerId)) { "invalid container id: \"$containerId\"" }
+    return "$rootPath/$containerId"
+}
 
 /**
  * Get the path of the notify socket used to signal container start.

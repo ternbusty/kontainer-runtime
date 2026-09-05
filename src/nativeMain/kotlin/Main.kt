@@ -15,6 +15,7 @@ import com.github.ajalt.clikt.core.requireObject
 import com.github.ajalt.clikt.core.subcommands
 import com.github.ajalt.clikt.parameters.arguments.argument
 import com.github.ajalt.clikt.parameters.arguments.default
+import com.github.ajalt.clikt.parameters.arguments.validate
 import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.multiple
@@ -29,6 +30,7 @@ import logger.Logger
 import platform.posix.*
 import process.runInitProcess
 import spec.loadSpec
+import state.isValidContainerId
 import syscall.LinuxSyscall
 import utils.RealFileSystem
 
@@ -230,6 +232,14 @@ data class GlobalConfig(
 // Root command — parses global options and stores config in Context.
 // ---------------------------------------------------------------------------
 
+/** A positional "Container ID" argument that rejects IDs unusable as a safe path component. */
+private fun CoreCliktCommand.containerIdArgument() =
+    argument(help = "Container ID").validate { id ->
+        require(isValidContainerId(id)) {
+            "invalid container id \"$id\": only ASCII letters, digits, '_', '+', '-' and '.' are allowed, and it must not be '.' or '..'"
+        }
+    }
+
 class KontainerRuntime(
     private val originalArgs: Array<String>,
     private val execCommandArgs: List<String>,
@@ -290,7 +300,7 @@ class CreateCommand : CoreCliktCommand(name = "create") {
         "--no-pivot",
         help = "Use MS_MOVE and chroot instead of pivot_root",
     ).flag()
-    val containerId by argument(help = "Container ID")
+    val containerId by containerIdArgument()
     val config by requireObject<GlobalConfig>()
 
     override fun run() {
@@ -339,7 +349,7 @@ class RunCommand : CoreCliktCommand(name = "run") {
         "--no-pivot",
         help = "Use MS_MOVE and chroot instead of pivot_root",
     ).flag()
-    val containerId by argument(help = "Container ID")
+    val containerId by containerIdArgument()
     val config by requireObject<GlobalConfig>()
 
     override fun run() {
@@ -364,7 +374,7 @@ class RunCommand : CoreCliktCommand(name = "run") {
 class StartCommand : CoreCliktCommand(name = "start") {
     override fun help(context: Context) = "Start a created container"
 
-    val containerId by argument(help = "Container ID")
+    val containerId by containerIdArgument()
     val config by requireObject<GlobalConfig>()
 
     override fun run() {
@@ -375,7 +385,7 @@ class StartCommand : CoreCliktCommand(name = "start") {
 class StateCommand : CoreCliktCommand(name = "state") {
     override fun help(context: Context) = "Display container state"
 
-    val containerId by argument(help = "Container ID")
+    val containerId by containerIdArgument()
     val config by requireObject<GlobalConfig>()
 
     override fun run() {
@@ -387,7 +397,7 @@ class KillCommand : CoreCliktCommand(name = "kill") {
     override fun help(context: Context) = "Send a signal to a container"
 
     val all by option("--all", "-a", help = "Send the signal to all processes in the container").flag()
-    val containerId by argument(help = "Container ID")
+    val containerId by containerIdArgument()
     val signal by argument(help = "Signal to send").default("SIGTERM")
     val config by requireObject<GlobalConfig>()
 
@@ -400,7 +410,7 @@ class DeleteCommand : CoreCliktCommand(name = "delete") {
     override fun help(context: Context) = "Delete a container"
 
     val force by option("--force", "-f", help = "Force deletion").flag()
-    val containerId by argument(help = "Container ID")
+    val containerId by containerIdArgument()
     val config by requireObject<GlobalConfig>()
 
     override fun run() {
@@ -423,7 +433,7 @@ class ListCommand : CoreCliktCommand(name = "list") {
 class PauseCommand : CoreCliktCommand(name = "pause") {
     override fun help(context: Context) = "Pause a running container"
 
-    val containerId by argument(help = "Container ID")
+    val containerId by containerIdArgument()
     val config by requireObject<GlobalConfig>()
 
     override fun run() {
@@ -434,7 +444,7 @@ class PauseCommand : CoreCliktCommand(name = "pause") {
 class ResumeCommand : CoreCliktCommand(name = "resume") {
     override fun help(context: Context) = "Resume a paused container"
 
-    val containerId by argument(help = "Container ID")
+    val containerId by containerIdArgument()
     val config by requireObject<GlobalConfig>()
 
     override fun run() {
@@ -462,7 +472,7 @@ class UpdateCommand : CoreCliktCommand(name = "update") {
     val cpusetMems by option("--cpuset-mems", help = "Memory nodes in which to allow execution")
     val pidsLimit by option("--pids-limit", help = "PIDs limit")
     val blkioWeight by option("--blkio-weight", help = "Block IO weight (10-1000)")
-    val containerId by argument(help = "Container ID")
+    val containerId by containerIdArgument()
     val config by requireObject<GlobalConfig>()
 
     override fun run() {
@@ -495,7 +505,7 @@ class EventsCommand : CoreCliktCommand(name = "events") {
         "--interval",
         help = "Interval between snapshots (Go duration, e.g. 5s, 100ms). Default 5s.",
     ).default("5s")
-    val containerId by argument(help = "Container ID")
+    val containerId by containerIdArgument()
     val config by requireObject<GlobalConfig>()
 
     override fun run() {
@@ -566,7 +576,7 @@ class PsCommand : CoreCliktCommand(name = "ps") {
     override fun help(context: Context) = "List processes in a container"
 
     val format by option("--format", "-f", help = "Output format (json or table)").default("table")
-    val containerId by argument(help = "Container ID")
+    val containerId by containerIdArgument()
     val config by requireObject<GlobalConfig>()
 
     override fun run() {
@@ -636,7 +646,7 @@ class ExecCommand : CoreCliktCommand(name = "exec") {
         "--ignore-paused",
         help = "Allow exec into a paused container (waits for resume)",
     ).flag()
-    val containerId by argument(help = "Container ID")
+    val containerId by containerIdArgument()
     val config by requireObject<GlobalConfig>()
 
     override fun run() {

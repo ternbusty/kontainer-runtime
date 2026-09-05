@@ -1,5 +1,6 @@
 package state
 
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
@@ -33,14 +34,12 @@ class DeleteContainerDirTest :
             fs.calls shouldBe listOf("removeDirectoryRecursively(/run/kontainer/missing)")
         }
 
-        test("deleteContainerDir never builds a shell command from the container id") {
-            // Regression guard for the former system("rm -rf $dir") implementation: an id with
-            // shell metacharacters must reach the FileSystem verbatim and nothing else.
+        test("deleteContainerDir rejects an id with shell metacharacters before touching the file system") {
+            // Regression guard for the former system("rm -rf $dir") implementation.
             val fs = FakeFileSystem()
-            val hostile = "x; touch /pwned"
-            fs.files["/run/kontainer/$hostile/state.json"] = "{}"
-            deleteContainerDir(fs, rootPath = "/run/kontainer", containerId = hostile)
-            fs.calls shouldBe listOf("removeDirectoryRecursively(/run/kontainer/$hostile)")
-            fs.files.keys shouldNotContain "/run/kontainer/$hostile/state.json"
+            shouldThrow<IllegalArgumentException> {
+                deleteContainerDir(fs, rootPath = "/run/kontainer", containerId = "x; touch /pwned")
+            }
+            fs.calls shouldBe emptyList()
         }
     })
