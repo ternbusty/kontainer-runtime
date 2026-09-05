@@ -20,6 +20,8 @@ import rootfs.validateSysctls
 import seccomp.validateSeccompFlags
 import spec.loadSpec
 import state.containerExists
+import state.deleteContainerDir
+import state.deleteNotifySocket
 import state.getContainerDir
 import state.getNotifySocketPath
 import syscall.Syscall
@@ -193,20 +195,41 @@ fun create(
         // Go's SysProcAttr.UseCgroupFD.
         // ------------------------------------------------------------------
         val resolvedCgroupPath = CgroupV2.resolveCgroupPath(spec.linux?.cgroupsPath, containerId)
-        cgroup.setup(pid = null, cgroupPath = resolvedCgroupPath, resources = spec.linux?.resources, deferPids = true)
-        // Attach the eBPF device-cgroup program ONCE, right after the cgroup
-        // directory exists. It applies to every process that is (or will be) in
-        // the cgroup, so it must not be attached again later — a second
-        // BPF_PROG_ATTACH would stack a duplicate filter.
-        //
-        // DeviceCgroup.apply() appends DEFAULT_ALLOWED_DEVICES which include
-        // wildcard mknod-allow rules for all char/block devices (matching
-        // runc's AllowedDevices), so the init process can mknod
-        // spec.linux.devices[] entries even under a deny-all rule. Read/write
-        // access is NOT auto-allowed — only mknod.
-        val deviceRules = spec.linux?.resources?.devices
-        if (!deviceRules.isNullOrEmpty()) {
-            DeviceCgroup.apply("/sys/fs/cgroup/${resolvedCgroupPath.removePrefix("/")}", deviceRules)
+        try {
+            cgroup.setup(pid = null, cgroupPath = resolvedCgroupPath, resources = spec.linux?.resources, deferPids = true)
+            // Attach the eBPF device-cgroup program ONCE, right after the cgroup
+            // directory exists. It applies to every process that is (or will be) in
+            // the cgroup, so it must not be attached again later — a second
+            // BPF_PROG_ATTACH would stack a duplicate filter.
+            //
+            // DeviceCgroup.apply() appends DEFAULT_ALLOWED_DEVICES which include
+            // wildcard mknod-allow rules for all char/block devices (matching
+            // runc's AllowedDevices), so the init process can mknod
+            // spec.linux.devices[] entries even under a deny-all rule. Read/write
+            // access is NOT auto-allowed — only mknod.
+            val deviceRules = spec.linux?.resources?.devices
+            if (!deviceRules.isNullOrEmpty()) {
+                DeviceCgroup.apply("/sys/fs/cgroup/${resolvedCgroupPath.removePrefix("/")}", deviceRules)
+            }
+        } catch (e: Exception) {
+            // Same failure handling as runMainProcess() used to apply when this
+            // ran after the fork: invalid resources (e.g. cpu period out of
+            // range) or a pre-existing frozen cgroup must make create/run exit 1
+            // with the state directory removed, not abort with an uncaught
+            // exception.
+            Logger.error("main process failed: ${e.message ?: "unknown"}")
+            close(syncFds[0])
+            close(syncFds[1])
+            notifyListener.close()
+            try {
+                deleteNotifySocket(rootPath, containerId)
+            } catch (_: Exception) {
+            }
+            try {
+                deleteContainerDir(fs, rootPath, containerId)
+            } catch (_: Exception) {
+            }
+            _exit(1)
         }
         val cgroupDirFd =
             if (resolvedCgroupPath.isNotEmpty()) {
