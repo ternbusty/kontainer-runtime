@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.6.0](https://github.com/ternbusty/kontainer-runtime/compare/v0.5.1...v0.6.0) (2026-09-05)
+
+
+### Features
+
+* supervise foreground containers with coroutines (signal forwarding + tty resize) ([#105](https://github.com/ternbusty/kontainer-runtime/issues/105)) ([7dfb91e](https://github.com/ternbusty/kontainer-runtime/commit/7dfb91e584adc38d3b91e1186a15245757529cc4))
+
+
+### Bug Fixes
+
+* **cli:** report the real runtime name, version and OCI spec version ([#111](https://github.com/ternbusty/kontainer-runtime/issues/111)) ([8c0030d](https://github.com/ternbusty/kontainer-runtime/commit/8c0030df973dfb384f481c4a7f24c69d0a8e07cd))
+* **state:** remove container directory without a shell and validate container ids ([#110](https://github.com/ternbusty/kontainer-runtime/issues/110)) ([c80b67c](https://github.com/ternbusty/kontainer-runtime/commit/c80b67cdf15cdc4a7998b39901ae9dd2486a594c))
+
+
+### Code Refactoring
+
+* **seccomp:** model OCI actions as a sealed SeccompAction type ([#109](https://github.com/ternbusty/kontainer-runtime/issues/109)) ([15b5acf](https://github.com/ternbusty/kontainer-runtime/commit/15b5acf67ed5cd2ff5855501c2bd63b6ada06054))
+* switch bats test management from file-level include to per-test-name whitelist ([#106](https://github.com/ternbusty/kontainer-runtime/issues/106)) ([4834c2b](https://github.com/ternbusty/kontainer-runtime/commit/4834c2ba8931e7c2c4640c581e9f9f08d9fad60a))
+
 ## [0.5.1](https://github.com/ternbusty/kontainer-runtime/compare/v0.5.0...v0.5.1) (2026-08-23)
 
 
