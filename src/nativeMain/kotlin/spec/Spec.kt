@@ -1,5 +1,6 @@
 package spec
 
+import config.BuildConfig
 import kotlinx.cinterop.*
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -12,7 +13,7 @@ import utils.JsonCodec
  */
 @Serializable
 data class Spec(
-    val ociVersion: String = "1.0.0",
+    val ociVersion: String = BuildConfig.OCI_SPEC_VERSION,
     val root: Root,
     val process: Process = Process(args = emptyList()),
     val hostname: String? = null,

@@ -65,7 +65,9 @@ val generateBuildConfig =
                     const val DEFAULT_LOG_LEVEL = "$defaultLogLevel"
                     const val VERSION = "$projectVersion"
                     const val COMMIT = "$gitCommit"
-                    const val OCI_SPEC_VERSION = "1.0.0"
+                    // OCI runtime-spec version this runtime targets. Single source for
+                    // `--version` (spec:), `features` (ociVersionMax) and `spec` output.
+                    const val OCI_SPEC_VERSION = "1.2.0"
                 }
                 """.trimIndent(),
             )

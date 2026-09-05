@@ -1,5 +1,6 @@
 package command
 
+import config.BuildConfig
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -12,7 +13,7 @@ fun features() {
     val features =
         RuntimeFeatures(
             ociVersionMin = "1.0.0",
-            ociVersionMax = "1.2.0",
+            ociVersionMax = BuildConfig.OCI_SPEC_VERSION,
             hooks =
                 listOf(
                     "prestart",
