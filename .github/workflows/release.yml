@@ -46,10 +46,12 @@ jobs:
             targetArch: x86_64
             artifactArch: amd64
             crossPkgs: ""
+            strip: strip
           - target: linuxArm64
             targetArch: aarch64
             artifactArch: arm64
             crossPkgs: "gcc-aarch64-linux-gnu libc6-dev:arm64 libseccomp-dev:arm64"
+            strip: aarch64-linux-gnu-strip
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -88,6 +90,28 @@ jobs:
 
       - name: Build release binary
         run: ./gradlew linkReleaseExecutable${{ matrix.target }} -PtargetArch=${{ matrix.targetArch }}
+
+      # The release build already drops debug sections (konan passes -S to the
+      # linker) but keeps the symbol table, which is ~1.3 MB of the 5.4 MB
+      # binary. Strip it like runc/crun/youki do. Trade-off: uncaught Kotlin
+      # exception traces then show raw addresses instead of kfun: names; the
+      # unstripped binary is kept as a workflow artifact so addresses can still
+      # be resolved with `nm -n` against the matching build.
+      - name: Strip symbol table
+        run: |
+          bin=build/bin/${{ matrix.target }}/releaseExecutable/kontainer-runtime.kexe
+          cp "$bin" kontainer-runtime-unstripped
+          ${{ matrix.strip }} "$bin"
+          file "$bin"
+          file "$bin" | grep -q ', stripped'
+          if [ "${{ matrix.targetArch }}" = x86_64 ]; then "$bin" --version; fi
+
+      - name: Upload unstripped binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: kontainer-runtime-unstripped-${{ matrix.artifactArch }}
+          path: kontainer-runtime-unstripped
+          retention-days: 90
 
       - name: Stage binary with versioned name
         run: |
