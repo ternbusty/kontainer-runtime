@@ -61,6 +61,7 @@ private fun runMainProcessInternal(
     mainReceiver: MainReceiver,
     initSender: InitSender,
     initReceiver: InitReceiver,
+    stage1InCgroup: Boolean,
 ): Unit =
     memScoped {
         Logger.setContext("main")
@@ -72,30 +73,10 @@ private fun runMainProcessInternal(
         // CgroupV2.resolveCgroupPath() for the rules.
         val resolvedCgroupPath = CgroupV2.resolveCgroupPath(spec.linux?.cgroupsPath, containerId)
 
-        // Create the cgroup directory, enable controllers, and apply resource
-        // limits.  Do NOT add Stage-1's PID — Stage-1 is a short-lived bootstrap
-        // process that races against us: by the time we write its PID to
-        // cgroup.procs it may have already exited (ESRCH).  Stage-2's PID is
-        // added after we receive it via the sync pipe (see addProcess below).
-        cgroup.setup(pid = null, cgroupPath = resolvedCgroupPath, resources = spec.linux?.resources, deferPids = true)
-
-        // Attach eBPF device-cgroup program ONCE, right after the cgroup
-        // directory exists. The program applies to all processes in the
-        // cgroup (including Stage-2 which will be added below), so we must
-        // NOT call it again when Stage-2 PID arrives — a second
-        // BPF_PROG_ATTACH would stack a duplicate filter.
-        //
-        // DeviceCgroup.apply() appends DEFAULT_ALLOWED_DEVICES which
-        // include wildcard mknod-allow rules for all char/block devices
-        // (matching runc's AllowedDevices). This ensures the init process
-        // can mknod spec.linux.devices[] entries even when the spec has
-        // a deny-all resources.devices rule. Read/write access is NOT
-        // auto-allowed — only mknod.
-        val deviceRules = spec.linux?.resources?.devices
-        if (!deviceRules.isNullOrEmpty()) {
-            val cgroupDirPath = "/sys/fs/cgroup/${resolvedCgroupPath.removePrefix("/")}"
-            DeviceCgroup.apply(cgroupDirPath, deviceRules)
-        }
+        // The cgroup itself (directory, controllers, resource limits, device
+        // eBPF program) was prepared by Create.kt BEFORE Stage-1 was spawned, so
+        // that Stage-1 could be created directly inside it with
+        // clone3(CLONE_INTO_CGROUP); see prepareContainerCgroup().
 
         // Handle UID/GID mapping only when CREATING a new user namespace.
         // When joining an existing user namespace (path is set), the bootstrap
@@ -197,10 +178,16 @@ private fun runMainProcessInternal(
         val stage2Pid = readInt32(syncFd, "Failed to read Stage-2 PID from sync pipe")
         Logger.debug("received Stage-2 PID from bootstrap: $stage2Pid")
 
-        // Place Stage-2 (the long-lived init process) into the cgroup that
-        // was prepared above.  Stage-2 is guaranteed to be alive here — it is
-        // blocked in bootstrap.c waiting for SYNC_GRANDCHILD from Stage-1.
-        if (resolvedCgroupPath.isNotEmpty()) {
+        // Place Stage-2 (the long-lived init process) into the container cgroup.
+        // Fast path: Stage-1 was created inside the cgroup with
+        // clone3(CLONE_INTO_CGROUP) and Stage-2 inherited it at clone time, so
+        // nothing to do. Fallback (old kernels / clone3 refused): migrate
+        // Stage-2 by writing its PID to cgroup.procs. Stage-2 is guaranteed to
+        // be alive here — it is blocked in bootstrap.c waiting for
+        // SYNC_GRANDCHILD from Stage-1.
+        if (stage1InCgroup) {
+            Logger.debug("Stage-2 inherited cgroup $resolvedCgroupPath from Stage-1 (CLONE_INTO_CGROUP)")
+        } else if (resolvedCgroupPath.isNotEmpty()) {
             cgroup.addProcess(stage2Pid, resolvedCgroupPath)
         }
 
@@ -478,6 +465,7 @@ fun runMainProcess(
     mainReceiver: MainReceiver,
     initSender: InitSender,
     initReceiver: InitReceiver,
+    stage1InCgroup: Boolean = false,
 ) {
     try {
         runMainProcessInternal(
@@ -496,6 +484,7 @@ fun runMainProcess(
             mainReceiver,
             initSender,
             initReceiver,
+            stage1InCgroup,
         )
     } catch (e: Exception) {
         val errMsg = e.message ?: "unknown"
