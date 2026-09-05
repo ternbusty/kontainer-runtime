@@ -11,6 +11,8 @@
 #include <sched.h>
 #include <sys/syscall.h>
 #include <fcntl.h>
+#include <stdint.h>
+#include <signal.h>
 
 // Clone flags (in case not defined)
 #ifndef CLONE_NEWUSER
@@ -623,6 +625,51 @@ void kontainer_bootstrap(void) {
     // Stage-1 exits here - Stage-2 continues as init process
     debug_log("[stage-1] Exiting, stage-2 continues as init\n");
     _exit(0);
+}
+
+#ifndef CLONE_INTO_CGROUP
+#define CLONE_INTO_CGROUP 0x200000000ULL
+#endif
+#ifndef SYS_clone3
+#define SYS_clone3 435
+#endif
+
+/* struct clone_args as of Linux 5.7 (CLONE_ARGS_SIZE_VER2 = 88 bytes). Declared
+ * locally so the build does not depend on the kernel headers' version. */
+struct kontainer_clone_args {
+    uint64_t flags;
+    uint64_t pidfd;
+    uint64_t child_tid;
+    uint64_t parent_tid;
+    uint64_t exit_signal;
+    uint64_t stack;
+    uint64_t stack_size;
+    uint64_t tls;
+    uint64_t set_tid;
+    uint64_t set_tid_size;
+    uint64_t cgroup;
+};
+
+pid_t kontainer_clone_into_cgroup(int cgroup_fd) {
+    struct kontainer_clone_args args;
+    memset(&args, 0, sizeof(args));
+    args.flags = CLONE_INTO_CGROUP;
+    args.exit_signal = SIGCHLD;
+    args.cgroup = (uint64_t)cgroup_fd;
+    long ret = syscall(SYS_clone3, &args, sizeof(args));
+    return (pid_t)ret;
+}
+
+extern char **environ;
+
+char **kontainer_environ(void) {
+    return environ;
+}
+
+void kontainer_execve(const void *path, char *const argv[], char *const envp[]) {
+    execve((const char *)path, argv, envp);
+    perror("execve");
+    _exit(1);
 }
 
 int kontainer_is_init_process(void) {
