@@ -961,9 +961,11 @@ fun main(args: Array<String>) {
         exit(1)
     }
 
-    // Handle -v / --version before the CLI parser (runc compatibility)
+    // Handle -v / --version before the CLI parser (runc-style three-line format:
+    // containerd's go-runc reads the "commit:" and "spec:" lines; the first line
+    // names this runtime truthfully rather than impersonating runc).
     if (args.size == 1 && (args[0] == "-v" || args[0] == "--version")) {
-        println("runc version ${BuildConfig.VERSION}")
+        println("kontainer-runtime version ${BuildConfig.VERSION}")
         println("commit: ${BuildConfig.COMMIT}")
         println("spec: ${BuildConfig.OCI_SPEC_VERSION}")
         return

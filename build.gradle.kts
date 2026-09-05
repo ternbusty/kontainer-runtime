@@ -7,7 +7,9 @@ plugins {
 }
 
 group = "com.ternbusty"
-version = "1.2.4"
+// x-release-please-start-version
+version = "0.5.1"
+// x-release-please-end
 
 repositories {
     mavenCentral()

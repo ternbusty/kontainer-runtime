@@ -3,7 +3,10 @@
   "packages": {
     ".": {
       "release-type": "simple",
-      "initial-version": "0.1.0"
+      "initial-version": "0.1.0",
+      "extra-files": [
+        "build.gradle.kts"
+      ]
     }
   },
   "changelog-sections": [
