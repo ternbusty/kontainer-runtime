@@ -69,4 +69,12 @@ interface FileSystem {
      * Returns an empty list if [path] does not exist or is not a directory.
      */
     fun listDirectories(path: String): List<String>
+
+    /**
+     * Remove [path] and everything below it without spawning a shell (rm -rf semantics).
+     * Symbolic links are removed, never followed. A missing [path] is not an error.
+     * @return true if something was removed, false if [path] did not exist
+     * @throws Exception if any entry cannot be removed
+     */
+    fun removeDirectoryRecursively(path: String): Boolean
 }

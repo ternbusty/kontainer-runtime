@@ -452,7 +452,7 @@ private fun cleanupContainer(
     } catch (_: Exception) {
     }
     try {
-        deleteContainerDir(rootPath, containerId)
+        deleteContainerDir(fs, rootPath, containerId)
     } catch (_: Exception) {
     }
 }
@@ -523,7 +523,7 @@ fun runMainProcess(
         } catch (_: Exception) {
         }
         try {
-            deleteContainerDir(rootPath, containerId)
+            deleteContainerDir(fs, rootPath, containerId)
         } catch (_: Exception) {
         }
         _exit(1)

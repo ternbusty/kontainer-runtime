@@ -83,4 +83,14 @@ class FakeFileSystem : FileSystem {
                 if ('/' !in relative && relative.isNotEmpty()) relative else null
             }.sorted()
     }
+
+    override fun removeDirectoryRecursively(path: String): Boolean {
+        calls += "removeDirectoryRecursively($path)"
+        val prefix = if (path.endsWith("/")) path else "$path/"
+        val removedFiles = files.keys.filter { it == path || it.startsWith(prefix) }
+        val removedDirs = directories.filter { it == path || it.startsWith(prefix) }
+        removedFiles.forEach { files.remove(it) }
+        directories.removeAll(removedDirs)
+        return removedFiles.isNotEmpty() || removedDirs.isNotEmpty()
+    }
 }

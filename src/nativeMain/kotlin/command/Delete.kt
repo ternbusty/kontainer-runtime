@@ -193,7 +193,7 @@ fun delete(
 
     // Delete container directory
     try {
-        deleteContainerDir(rootPath, containerId)
+        deleteContainerDir(fs, rootPath, containerId)
         Logger.info("container $containerId deleted successfully")
     } catch (e: Exception) {
         Logger.error("failed to delete container directory: ${e.message ?: "unknown"}")
