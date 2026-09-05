@@ -22,6 +22,18 @@ Full documentation is published at [https://ternbusty.github.io/kontainer-runtim
 ./gradlew linkDebugExecutableLinuxX64
 ```
 
+The default build links `libseccomp` dynamically from the host (`libseccomp-dev` required).
+Two optional Gradle properties change that:
+
+- `-PlibseccompFromSource` builds the pinned libseccomp release from source with the compiler
+  and sysroot bundled in Kotlin/Native and links it statically, so `libseccomp-dev` is not needed.
+- `-Pstatic` produces a fully static executable (no dynamic linker, no shared-library
+  dependencies) that runs on any Linux of the same architecture. It implies `-PlibseccompFromSource`.
+
+```bash
+./gradlew linkReleaseExecutableLinuxX64 -Pstatic
+```
+
 ### Run
 
 To create a container whose name is `test` from a bundle located at `test-bundle`, use the following command
