@@ -271,4 +271,66 @@ class RealFileSystem : FileSystem {
         }
         return result
     }
+
+    override fun removeDirectoryRecursively(path: String): Boolean {
+        val dir = opendir(path)
+        if (dir == null) {
+            val errNum = errno
+            return when (errNum) {
+                ENOENT -> false
+                // Not a directory: remove it as a plain entry (never follows symlinks).
+                ENOTDIR -> unlinkPath(path, isDirectory = false)
+                else -> throw Exception("Failed to open $path for removal: ${describeErrno(errNum)}")
+            }
+        }
+        try {
+            while (true) {
+                val entry = readdir(dir) ?: break
+                val name = entry.pointed.d_name.toKString()
+                if (name == "." || name == "..") continue
+                val child = "$path/$name"
+                if (isDirectoryEntry(child, entry.pointed.d_type.toInt())) {
+                    removeDirectoryRecursively(child)
+                } else {
+                    unlinkPath(child, isDirectory = false)
+                }
+            }
+        } finally {
+            closedir(dir)
+        }
+        unlinkPath(path, isDirectory = true)
+        Logger.debug("removed directory tree: $path")
+        return true
+    }
+
+    /** True if [path] is a directory (symlinks are not followed). */
+    private fun isDirectoryEntry(
+        path: String,
+        dType: Int,
+    ): Boolean {
+        if (dType != DT_UNKNOWN) return dType == DT_DIR
+        return memScoped {
+            val st = alloc<stat>()
+            if (lstat(path, st.ptr) != 0) {
+                throw Exception("Failed to stat $path: ${describeErrno(errno)}")
+            }
+            (st.st_mode.toInt() and S_IFMT) == S_IFDIR
+        }
+    }
+
+    /** unlink(2)/rmdir(2) [path]; ENOENT is treated as already removed. */
+    private fun unlinkPath(
+        path: String,
+        isDirectory: Boolean,
+    ): Boolean {
+        val rc = if (isDirectory) rmdir(path) else unlink(path)
+        if (rc != 0) {
+            val errNum = errno
+            if (errNum == ENOENT) return false
+            throw Exception("Failed to remove $path: ${describeErrno(errNum)}")
+        }
+        return true
+    }
+
+    private fun describeErrno(errNum: Int): String = "${strerror(errNum)?.toKString() ?: "unknown error"} (errno=$errNum)"
 }

@@ -351,14 +351,17 @@ fun deleteNotifySocket(
 /**
  * Delete container directory and all its contents
  *
- * Recursively removes {rootPath}/{container-id}/
+ * Recursively removes {rootPath}/{container-id}/ through [fs] (unlink/rmdir),
+ * never via a shell: the path is derived from user-supplied input and must not
+ * be interpolated into a command line.
  *
+ * @param fs File system used for the removal
  * @param rootPath Root directory for container state
  * @param containerId Container ID
  * @throws Exception if directory deletion fails
  */
-@OptIn(ExperimentalForeignApi::class)
 fun deleteContainerDir(
+    fs: FileSystem,
     rootPath: String,
     containerId: String,
 ) {
@@ -366,27 +369,10 @@ fun deleteContainerDir(
 
     Logger.debug("deleting container directory: $containerDir")
 
-    // Check if directory exists
-    val dir = opendir(containerDir)
-    if (dir == null) {
-        val errNum = errno
-        if (errNum == ENOENT) {
-            // Directory doesn't exist - already deleted
-            Logger.debug("container directory $containerDir does not exist")
-            return
-        }
-        perror("opendir")
-        Logger.error("failed to open container directory $containerDir: errno=$errNum")
-        throw Exception("Failed to open container directory: errno=$errNum")
-    }
-    closedir(dir)
-
-    // Use rm -rf to recursively delete
-    // This is simpler than implementing recursive deletion in Kotlin
-    val result = system("rm -rf $containerDir")
-    if (result != 0) {
-        Logger.error("failed to delete container directory $containerDir: exit code=$result")
-        throw Exception("Failed to delete container directory: exit code=$result")
+    if (!fs.removeDirectoryRecursively(containerDir)) {
+        // Directory doesn't exist - already deleted
+        Logger.debug("container directory $containerDir does not exist")
+        return
     }
 
     Logger.info("deleted container directory: $containerDir")
