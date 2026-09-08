@@ -18,11 +18,20 @@ import utils.JsonCodec
 enum class ContainerStatus(
     val value: String,
 ) {
-    @SerialName("creating") CREATING("creating"),
-    @SerialName("created") CREATED("created"),
-    @SerialName("running") RUNNING("running"),
-    @SerialName("stopped") STOPPED("stopped"),
-    @SerialName("paused") PAUSED("paused"),
+    @SerialName("creating")
+    CREATING("creating"),
+
+    @SerialName("created")
+    CREATED("created"),
+
+    @SerialName("running")
+    RUNNING("running"),
+
+    @SerialName("stopped")
+    STOPPED("stopped"),
+
+    @SerialName("paused")
+    PAUSED("paused"),
     ;
 
     /**
