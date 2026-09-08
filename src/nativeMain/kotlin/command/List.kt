@@ -135,7 +135,6 @@ private data class ListEntry(
     val ociVersion: String,
     val id: String,
     val pid: Int?,
-    @kotlinx.serialization.Serializable(with = state.ContainerStatusSerializer::class)
     val status: state.ContainerStatus,
     val bundle: String,
     val rootfs: String,
