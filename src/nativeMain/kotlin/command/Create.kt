@@ -18,6 +18,7 @@ import platform.posix.*
 import process.runMainProcess
 import rootfs.validateSysctls
 import seccomp.validateSeccompFlags
+import spec.NamespaceType
 import spec.loadSpec
 import state.containerExists
 import state.deleteContainerDir
@@ -319,15 +320,14 @@ fun create(
             if (path.isNullOrEmpty()) return@forEach
             val envKey =
                 when (ns.type) {
-                    "mount" -> "_KONTAINER_NS_PATH_MOUNT"
-                    "network" -> "_KONTAINER_NS_PATH_NETWORK"
-                    "uts" -> "_KONTAINER_NS_PATH_UTS"
-                    "ipc" -> "_KONTAINER_NS_PATH_IPC"
-                    "user" -> "_KONTAINER_NS_PATH_USER"
-                    "cgroup" -> "_KONTAINER_NS_PATH_CGROUP"
-                    "time" -> "_KONTAINER_NS_PATH_TIME"
-                    "pid" -> "_KONTAINER_NS_PATH_PID"
-                    else -> return@forEach
+                    NamespaceType.MOUNT -> "_KONTAINER_NS_PATH_MOUNT"
+                    NamespaceType.NETWORK -> "_KONTAINER_NS_PATH_NETWORK"
+                    NamespaceType.UTS -> "_KONTAINER_NS_PATH_UTS"
+                    NamespaceType.IPC -> "_KONTAINER_NS_PATH_IPC"
+                    NamespaceType.USER -> "_KONTAINER_NS_PATH_USER"
+                    NamespaceType.CGROUP -> "_KONTAINER_NS_PATH_CGROUP"
+                    NamespaceType.TIME -> "_KONTAINER_NS_PATH_TIME"
+                    NamespaceType.PID -> "_KONTAINER_NS_PATH_PID"
                 }
             childEnv += "$envKey=$path"
         }

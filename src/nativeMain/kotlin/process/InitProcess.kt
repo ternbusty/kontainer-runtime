@@ -22,6 +22,7 @@ import rootfs.msMoveRoot
 import rootfs.pivotRoot
 import rootfs.prepareRootfs
 import rootfs.setRootfsReadonly
+import spec.NamespaceType
 import spec.Spec
 import syscall.Syscall
 
@@ -63,7 +64,7 @@ private fun initProcessInternal(
         // Rename network devices that were moved into our namespace by the
         // main process. Must happen before loopback bringup so that any
         // device renamed to "lo" doesn't conflict with the real loopback.
-        if (spec.hasNamespace("network")) {
+        if (spec.hasNamespace(NamespaceType.NETWORK)) {
             spec.linux?.netDevices?.let { netDevices ->
                 if (netDevices.isNotEmpty()) {
                     renameDevices(netDevices)
@@ -131,7 +132,7 @@ private fun initProcessInternal(
         }
 
         // Prepare rootfs
-        if (spec.hasNamespace("mount")) {
+        if (spec.hasNamespace(NamespaceType.MOUNT)) {
             prepareRootfs(syscall, rootfsPath, spec.linux?.rootfsPropagation, spec.mounts)
             // Process spec.mounts BEFORE pivot_root so bind-mount source paths from
             // the host are still reachable. Targets are inside rootfsPath.
@@ -209,7 +210,7 @@ private fun initProcessInternal(
         // prepareRootfs+pivotRoot (so the target paths exist inside the new
         // root) and before dropping caps (mount/remount need CAP_SYS_ADMIN).
         // When there is no mount namespace these would modify the host.
-        if (spec.hasNamespace("mount")) {
+        if (spec.hasNamespace(NamespaceType.MOUNT)) {
             applyMaskedPaths(syscall, spec.linux?.maskedPaths)
             applyReadonlyPaths(syscall, spec.linux?.readonlyPaths)
 
@@ -245,7 +246,7 @@ private fun initProcessInternal(
         setupSessionKeyring(
             containerId = containerId,
             processLabel = spec.process.selinuxLabel,
-            hasUserNamespace = spec.hasNamespace("user"),
+            hasUserNamespace = spec.hasNamespace(NamespaceType.USER),
             isExec = false,
         )
 

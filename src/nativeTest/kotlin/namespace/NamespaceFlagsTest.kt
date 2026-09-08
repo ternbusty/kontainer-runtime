@@ -1,10 +1,10 @@
 package namespace
 
 import io.kotest.core.spec.style.FunSpec
-import io.kotest.datatest.withTests
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import spec.Namespace
+import spec.NamespaceType
 
 class NamespaceFlagsTest :
     FunSpec({
@@ -18,45 +18,42 @@ class NamespaceFlagsTest :
                 calculateCloneFlags(emptyList()) shouldBe 0u
             }
 
-            test("ignores unknown namespace types") {
-                calculateCloneFlags(listOf(Namespace("bogus"))) shouldBe 0u
-            }
-
-            withTests(
-                nameFn = { "produces a non-zero flag for $it" },
-                ts = listOf("mount", "network", "uts", "ipc", "pid", "user"),
-            ) { type ->
-                calculateCloneFlags(listOf(Namespace(type))) shouldNotBe 0u
+            for (type in NamespaceType.entries) {
+                test("produces a non-zero flag for ${type.value}") {
+                    calculateCloneFlags(listOf(Namespace(type))) shouldNotBe 0u
+                }
             }
 
             test("ORs flags together") {
-                val pidOnly = calculateCloneFlags(listOf(Namespace("pid")))
-                val mountOnly = calculateCloneFlags(listOf(Namespace("mount")))
-                val combined = calculateCloneFlags(listOf(Namespace("pid"), Namespace("mount")))
+                val pidOnly = calculateCloneFlags(listOf(Namespace(NamespaceType.PID)))
+                val mountOnly = calculateCloneFlags(listOf(Namespace(NamespaceType.MOUNT)))
+                val combined =
+                    calculateCloneFlags(
+                        listOf(Namespace(NamespaceType.PID), Namespace(NamespaceType.MOUNT)),
+                    )
 
                 (combined and pidOnly) shouldBe pidOnly
                 (combined and mountOnly) shouldBe mountOnly
             }
 
             test("is order-independent") {
-                val a = calculateCloneFlags(listOf(Namespace("pid"), Namespace("mount")))
-                val b = calculateCloneFlags(listOf(Namespace("mount"), Namespace("pid")))
+                val a =
+                    calculateCloneFlags(
+                        listOf(Namespace(NamespaceType.PID), Namespace(NamespaceType.MOUNT)),
+                    )
+                val b =
+                    calculateCloneFlags(
+                        listOf(Namespace(NamespaceType.MOUNT), Namespace(NamespaceType.PID)),
+                    )
                 a shouldBe b
             }
 
-            test("combines all six known namespaces") {
+            test("combines all known namespaces") {
                 val all =
                     calculateCloneFlags(
-                        listOf(
-                            Namespace("mount"),
-                            Namespace("network"),
-                            Namespace("uts"),
-                            Namespace("ipc"),
-                            Namespace("pid"),
-                            Namespace("user"),
-                        ),
+                        NamespaceType.entries.map { Namespace(it) },
                     )
-                val pidOnly = calculateCloneFlags(listOf(Namespace("pid")))
+                val pidOnly = calculateCloneFlags(listOf(Namespace(NamespaceType.PID)))
                 (all and pidOnly) shouldBe pidOnly
                 (all > pidOnly) shouldBe true
             }
@@ -69,45 +66,55 @@ class NamespaceFlagsTest :
             }
 
             test("returns only spec-defined namespaces") {
-                val joins = nsJoinList(listOf(Namespace("mount"), Namespace("pid")))
-                joins.map { it.ociType } shouldBe listOf("mount", "pid")
-            }
-
-            test("ignores unknown namespace types") {
-                nsJoinList(listOf(Namespace("bogus"))) shouldBe emptyList()
+                val joins =
+                    nsJoinList(
+                        listOf(Namespace(NamespaceType.MOUNT), Namespace(NamespaceType.PID)),
+                    )
+                joins.map { it.ociType } shouldBe listOf(NamespaceType.MOUNT, NamespaceType.PID)
             }
 
             test("orders user first and pid last regardless of spec order") {
                 val joins =
                     nsJoinList(
                         listOf(
-                            Namespace("pid"),
-                            Namespace("mount"),
-                            Namespace("user"),
-                            Namespace("network"),
+                            Namespace(NamespaceType.PID),
+                            Namespace(NamespaceType.MOUNT),
+                            Namespace(NamespaceType.USER),
+                            Namespace(NamespaceType.NETWORK),
                         ),
                     )
-                joins.first().ociType shouldBe "user"
-                joins.last().ociType shouldBe "pid"
+                joins.first().ociType shouldBe NamespaceType.USER
+                joins.last().ociType shouldBe NamespaceType.PID
             }
 
             test("maps OCI names to /proc names") {
-                val joins = nsJoinList(listOf(Namespace("mount"), Namespace("network"), Namespace("uts")))
+                val joins =
+                    nsJoinList(
+                        listOf(
+                            Namespace(NamespaceType.MOUNT),
+                            Namespace(NamespaceType.NETWORK),
+                            Namespace(NamespaceType.UTS),
+                        ),
+                    )
                 joins.associate { it.ociType to it.procName } shouldBe
-                    mapOf("mount" to "mnt", "network" to "net", "uts" to "uts")
+                    mapOf(
+                        NamespaceType.MOUNT to "mnt",
+                        NamespaceType.NETWORK to "net",
+                        NamespaceType.UTS to "uts",
+                    )
             }
 
             test("carries a non-zero clone flag for every namespace") {
                 val joins =
                     nsJoinList(
                         listOf(
-                            Namespace("mount"),
-                            Namespace("network"),
-                            Namespace("uts"),
-                            Namespace("ipc"),
-                            Namespace("pid"),
-                            Namespace("user"),
-                            Namespace("cgroup"),
+                            Namespace(NamespaceType.MOUNT),
+                            Namespace(NamespaceType.NETWORK),
+                            Namespace(NamespaceType.UTS),
+                            Namespace(NamespaceType.IPC),
+                            Namespace(NamespaceType.PID),
+                            Namespace(NamespaceType.USER),
+                            Namespace(NamespaceType.CGROUP),
                         ),
                     )
                 joins.size shouldBe 7

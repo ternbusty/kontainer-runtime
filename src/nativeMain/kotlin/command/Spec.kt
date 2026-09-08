@@ -41,7 +41,7 @@ fun spec(bundlePath: String) {
                         ),
                     rlimits =
                         listOf(
-                            spec.POSIXRlimit(type = "RLIMIT_NOFILE", hard = 1024u, soft = 1024u),
+                            spec.POSIXRlimit(type = spec.RlimitType.NOFILE, hard = 1024u, soft = 1024u),
                         ),
                 ),
             hostname = "kontainer",
@@ -112,12 +112,12 @@ fun spec(bundlePath: String) {
                         ),
                     namespaces =
                         listOf(
-                            spec.Namespace(type = "pid"),
-                            spec.Namespace(type = "network"),
-                            spec.Namespace(type = "ipc"),
-                            spec.Namespace(type = "uts"),
-                            spec.Namespace(type = "mount"),
-                            spec.Namespace(type = "cgroup"),
+                            spec.Namespace(type = spec.NamespaceType.PID),
+                            spec.Namespace(type = spec.NamespaceType.NETWORK),
+                            spec.Namespace(type = spec.NamespaceType.IPC),
+                            spec.Namespace(type = spec.NamespaceType.UTS),
+                            spec.Namespace(type = spec.NamespaceType.MOUNT),
+                            spec.Namespace(type = spec.NamespaceType.CGROUP),
                         ),
                     maskedPaths =
                         listOf(

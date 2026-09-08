@@ -5,6 +5,7 @@ import logger.Logger
 import platform.linux.*
 import platform.posix.*
 import spec.LinuxMemoryPolicy
+import spec.MemoryPolicyMode
 
 /**
  * NUMA memory policy modes (linux/mempolicy.h).
@@ -80,15 +81,14 @@ fun applyMemoryPolicy(policy: LinuxMemoryPolicy?) {
     }
 }
 
-private fun parseMode(mode: String?): Int {
-    if (mode.isNullOrEmpty()) throw Exception("invalid memory policy mode: (empty)")
+private fun parseMode(mode: MemoryPolicyMode?): Int {
+    if (mode == null) throw Exception("invalid memory policy mode: (empty)")
     return when (mode) {
-        "MPOL_DEFAULT" -> MPOL_DEFAULT
-        "MPOL_PREFERRED" -> MPOL_PREFERRED
-        "MPOL_BIND" -> MPOL_BIND
-        "MPOL_INTERLEAVE" -> MPOL_INTERLEAVE
-        "MPOL_LOCAL" -> MPOL_LOCAL
-        else -> throw Exception("invalid memory policy mode: $mode")
+        MemoryPolicyMode.DEFAULT -> MPOL_DEFAULT
+        MemoryPolicyMode.PREFERRED -> MPOL_PREFERRED
+        MemoryPolicyMode.BIND -> MPOL_BIND
+        MemoryPolicyMode.INTERLEAVE -> MPOL_INTERLEAVE
+        MemoryPolicyMode.LOCAL -> MPOL_LOCAL
     }
 }
 

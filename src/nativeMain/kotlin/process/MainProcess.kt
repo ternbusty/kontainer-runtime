@@ -19,6 +19,7 @@ import seccomp.seccompUsesNotify
 import seccomp.sendToSeccompListener
 import seccomp.validateSeccompFlags
 import spec.LinuxIdMapping
+import spec.NamespaceType
 import spec.Spec
 import state.ContainerStatus
 import state.State
@@ -81,7 +82,7 @@ private fun runMainProcessInternal(
         // Handle UID/GID mapping only when CREATING a new user namespace.
         // When joining an existing user namespace (path is set), the bootstrap
         // doesn't send SYNC_USERMAP_PLS — the mapping already exists.
-        val hasUserNamespace = spec.createsNamespace("user")
+        val hasUserNamespace = spec.createsNamespace(NamespaceType.USER)
         if (hasUserNamespace) {
             Logger.debug("user namespace configured, handling UID/GID mapping")
 
@@ -141,7 +142,7 @@ private fun runMainProcessInternal(
         // Handle timens_offsets only when CREATING a new time namespace.
         // When joining (path is set), bootstrap doesn't unshare CLONE_NEWTIME
         // and doesn't send SYNC_TIMEOFFSETS_PLS.
-        val hasTimeNamespace = spec.createsNamespace("time")
+        val hasTimeNamespace = spec.createsNamespace(NamespaceType.TIME)
         val timeOffsets = spec.linux?.timeOffsets
         if (hasTimeNamespace && !timeOffsets.isNullOrEmpty()) {
             val request = readInt32(syncFd, "Failed to read timens request from Stage-1")
@@ -198,7 +199,7 @@ private fun runMainProcessInternal(
         // Move host network devices into the container's network namespace.
         // Done from the host (main process) via RTM_SETLINK + IFLA_NET_NS_PID.
         // The init process renames them later from inside the namespace.
-        if (spec.hasNamespace("network")) {
+        if (spec.hasNamespace(NamespaceType.NETWORK)) {
             spec.linux?.netDevices?.let { netDevices ->
                 if (netDevices.isNotEmpty()) {
                     network.moveDevices(netDevices, stage2Pid)
