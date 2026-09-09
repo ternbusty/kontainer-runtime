@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.6.0](https://github.com/ternbusty/kontainer-runtime/compare/v0.5.1...v0.6.0) (2026-09-09)
+
+
+### Features
+
+* supervise foreground containers with coroutines (signal forwarding + tty resize) ([#105](https://github.com/ternbusty/kontainer-runtime/issues/105)) ([7dfb91e](https://github.com/ternbusty/kontainer-runtime/commit/7dfb91e584adc38d3b91e1186a15245757529cc4))
+
+
+### Bug Fixes
+
+* **cli:** report the real runtime name, version and OCI spec version ([#111](https://github.com/ternbusty/kontainer-runtime/issues/111)) ([8c0030d](https://github.com/ternbusty/kontainer-runtime/commit/8c0030df973dfb384f481c4a7f24c69d0a8e07cd))
+* **state:** remove container directory without a shell and validate container ids ([#110](https://github.com/ternbusty/kontainer-runtime/issues/110)) ([c80b67c](https://github.com/ternbusty/kontainer-runtime/commit/c80b67cdf15cdc4a7998b39901ae9dd2486a594c))
+
+
+### Performance Improvements
+
+* **build:** disable the paged Kotlin/Native allocator ([#114](https://github.com/ternbusty/kontainer-runtime/issues/114)) ([2ccde10](https://github.com/ternbusty/kontainer-runtime/commit/2ccde103dada213b3071462eaefcce0c8c91baad))
+* **cli:** re-exec from the sealed binary only for exec ([#113](https://github.com/ternbusty/kontainer-runtime/issues/113)) ([afcbe3d](https://github.com/ternbusty/kontainer-runtime/commit/afcbe3d261975c0d7c0a2979bc61bdc280d3d959))
+* **create:** spawn Stage-1 inside the container cgroup with clone3(CLONE_INTO_CGROUP) ([#115](https://github.com/ternbusty/kontainer-runtime/issues/115)) ([23edcdd](https://github.com/ternbusty/kontainer-runtime/commit/23edcdd724114c99aec5fb4eb9ab55fd043e285d))
+* **exec:** create the exec'd process inside the container cgroup with clone3(CLONE_INTO_CGROUP) ([#116](https://github.com/ternbusty/kontainer-runtime/issues/116)) ([19c9351](https://github.com/ternbusty/kontainer-runtime/commit/19c9351e68d477b5abf62f4de90ef1857f4f58a6))
+
+
+### Code Refactoring
+
+* replace imperative patterns with idiomatic Kotlin stdlib ([#119](https://github.com/ternbusty/kontainer-runtime/issues/119)) ([ec7ec63](https://github.com/ternbusty/kontainer-runtime/commit/ec7ec63a435a6bf44af2aa6577e7c0454503c355))
+* **seccomp:** model OCI actions as a sealed SeccompAction type ([#109](https://github.com/ternbusty/kontainer-runtime/issues/109)) ([15b5acf](https://github.com/ternbusty/kontainer-runtime/commit/15b5acf67ed5cd2ff5855501c2bd63b6ada06054))
+* **spec:** replace String fields with enum types for type safety ([#118](https://github.com/ternbusty/kontainer-runtime/issues/118)) ([5d102ea](https://github.com/ternbusty/kontainer-runtime/commit/5d102eac3de29135da416496c40123428ddfefbf))
+* **state:** replace ContainerStatusSerializer with @SerialName ([#117](https://github.com/ternbusty/kontainer-runtime/issues/117)) ([74fe68d](https://github.com/ternbusty/kontainer-runtime/commit/74fe68d9816a1e6b1493b7ebcdea038dbf8aa8b8))
+* switch bats test management from file-level include to per-test-name whitelist ([#106](https://github.com/ternbusty/kontainer-runtime/issues/106)) ([4834c2b](https://github.com/ternbusty/kontainer-runtime/commit/4834c2ba8931e7c2c4640c581e9f9f08d9fad60a))
+
 ## [0.5.1](https://github.com/ternbusty/kontainer-runtime/compare/v0.5.0...v0.5.1) (2026-08-23)
 
 
