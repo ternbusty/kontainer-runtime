@@ -1,14 +1,8 @@
 package state
 
 import kotlinx.cinterop.*
-import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.descriptors.PrimitiveKind
-import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
-import kotlinx.serialization.descriptors.SerialDescriptor
-import kotlinx.serialization.encoding.Decoder
-import kotlinx.serialization.encoding.Encoder
 import logger.Logger
 import platform.posix.*
 import utils.FileSystem
@@ -20,13 +14,23 @@ import utils.JsonCodec
  * Represents the runtime status of a container.
  * Compatible with OCI Runtime Specification.
  */
+@Serializable
 enum class ContainerStatus(
     val value: String,
 ) {
+    @SerialName("creating")
     CREATING("creating"),
+
+    @SerialName("created")
     CREATED("created"),
+
+    @SerialName("running")
     RUNNING("running"),
+
+    @SerialName("stopped")
     STOPPED("stopped"),
+
+    @SerialName("paused")
     PAUSED("paused"),
     ;
 
@@ -77,28 +81,6 @@ enum class ContainerStatus(
 }
 
 /**
- * Custom serializer for ContainerStatus enum
- *
- * Serializes enum as its string value for JSON compatibility
- */
-object ContainerStatusSerializer : KSerializer<ContainerStatus> {
-    override val descriptor: SerialDescriptor =
-        PrimitiveSerialDescriptor("ContainerStatus", PrimitiveKind.STRING)
-
-    override fun serialize(
-        encoder: Encoder,
-        value: ContainerStatus,
-    ) {
-        encoder.encodeString(value.value)
-    }
-
-    override fun deserialize(decoder: Decoder): ContainerStatus {
-        val str = decoder.decodeString()
-        return ContainerStatus.fromString(str)
-    }
-}
-
-/**
  * Container state information
  *
  * Represents the runtime state of a container, saved to disk for
@@ -116,7 +98,6 @@ data class State(
     @SerialName("id")
     val id: String,
     @SerialName("status")
-    @Serializable(with = ContainerStatusSerializer::class)
     val status: ContainerStatus,
     @SerialName("pid")
     val pid: Int? = null, // Required on Linux when status is "created" or "running"
