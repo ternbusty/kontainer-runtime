@@ -69,8 +69,8 @@ fun start(
             } catch (e: Exception) {
                 null
             }
-        if (spec?.hooks?.poststart != null) {
-            if (!runHooks(spec.hooks.poststart, updatedState, phase = "poststart")) {
+        spec?.hooks?.poststart?.let { hooks ->
+            if (!runHooks(hooks, updatedState, phase = "poststart")) {
                 exit(1)
             }
         }

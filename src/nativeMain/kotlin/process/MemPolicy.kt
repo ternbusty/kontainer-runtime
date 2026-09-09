@@ -35,13 +35,7 @@ fun applyMemoryPolicy(policy: LinuxMemoryPolicy?) {
 
     // Parse node bitmask
     val nodeMask = if (!policy.nodes.isNullOrEmpty()) parseNodeMask(policy.nodes) else null
-    val maxNode: Long
-
-    if (nodeMask != null) {
-        maxNode = nodeMask.size.toLong() * 64L
-    } else {
-        maxNode = 0L
-    }
+    val maxNode = nodeMask?.let { it.size.toLong() * 64L } ?: 0L
 
     // Validate: MPOL_DEFAULT must not specify nodes
     if (mode == MPOL_DEFAULT && nodeMask != null && maxNode > 0) {
@@ -94,16 +88,14 @@ private fun parseMode(mode: MemoryPolicyMode?): Int {
 
 private fun parseFlags(flags: List<String>?): Int {
     if (flags.isNullOrEmpty()) return 0
-    var result = 0
-    for (f in flags) {
-        result = result or
+    return flags.fold(0) { result, f ->
+        result or
             when (f) {
                 "MPOL_F_STATIC_NODES" -> MPOL_F_STATIC_NODES
                 "MPOL_F_RELATIVE_NODES" -> MPOL_F_RELATIVE_NODES
                 else -> throw Exception("invalid memory policy flag: $f")
             }
     }
-    return result
 }
 
 /**

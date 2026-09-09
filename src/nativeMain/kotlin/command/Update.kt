@@ -309,27 +309,8 @@ internal fun applyCgroupResources(
                 writeCgroup(fs, "$cgroupDir/io.weight", w.toString(), "io.weight")
             }
         }
-        // Merge throttle device entries into per-device io.max lines
-        val deviceMap = mutableMapOf<String, MutableMap<String, String>>()
-        bio.throttleReadBpsDevice?.forEach { d ->
-            val key = "${d.major}:${d.minor}"
-            deviceMap.getOrPut(key) { mutableMapOf() }["rbps"] = d.rate.toString()
-        }
-        bio.throttleWriteBpsDevice?.forEach { d ->
-            val key = "${d.major}:${d.minor}"
-            deviceMap.getOrPut(key) { mutableMapOf() }["wbps"] = d.rate.toString()
-        }
-        bio.throttleReadIOPSDevice?.forEach { d ->
-            val key = "${d.major}:${d.minor}"
-            deviceMap.getOrPut(key) { mutableMapOf() }["riops"] = d.rate.toString()
-        }
-        bio.throttleWriteIOPSDevice?.forEach { d ->
-            val key = "${d.major}:${d.minor}"
-            deviceMap.getOrPut(key) { mutableMapOf() }["wiops"] = d.rate.toString()
-        }
-        for ((dev, limits) in deviceMap) {
-            val parts = limits.entries.sortedBy { it.key }.joinToString(" ") { "${it.key}=${it.value}" }
-            writeCgroup(fs, "$cgroupDir/io.max", "$dev $parts", "io.max")
+        for (line in cgroup.CgroupV2.buildBlockIOLines(bio)) {
+            writeCgroup(fs, "$cgroupDir/io.max", line, "io.max")
         }
     }
 }

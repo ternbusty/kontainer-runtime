@@ -327,26 +327,8 @@ class CgroupV2(
                     writeCgroupFile("$cgroupPath/io.weight", w.toString(), "io.weight")
                 }
             }
-            val deviceMap = mutableMapOf<String, MutableMap<String, String>>()
-            bio.throttleReadBpsDevice?.forEach { d ->
-                val k = "${d.major}:${d.minor}"
-                deviceMap.getOrPut(k) { mutableMapOf() }["rbps"] = d.rate.toString()
-            }
-            bio.throttleWriteBpsDevice?.forEach { d ->
-                val k = "${d.major}:${d.minor}"
-                deviceMap.getOrPut(k) { mutableMapOf() }["wbps"] = d.rate.toString()
-            }
-            bio.throttleReadIOPSDevice?.forEach { d ->
-                val k = "${d.major}:${d.minor}"
-                deviceMap.getOrPut(k) { mutableMapOf() }["riops"] = d.rate.toString()
-            }
-            bio.throttleWriteIOPSDevice?.forEach { d ->
-                val k = "${d.major}:${d.minor}"
-                deviceMap.getOrPut(k) { mutableMapOf() }["wiops"] = d.rate.toString()
-            }
-            for ((dev, limits) in deviceMap) {
-                val parts = limits.entries.sortedBy { it.key }.joinToString(" ") { "${it.key}=${it.value}" }
-                writeCgroupFile("$cgroupPath/io.max", "$dev $parts", "io.max")
+            for (line in buildBlockIOLines(bio)) {
+                writeCgroupFile("$cgroupPath/io.max", line, "io.max")
             }
         }
     }
@@ -509,15 +491,44 @@ class CgroupV2(
         if (resources == null) {
             return emptyList()
         }
-        val controllers = mutableListOf<String>()
-        if (resources.memory != null) controllers.add("memory")
-        if (resources.cpu != null) controllers.add("cpu")
-        if (resources.pids != null) controllers.add("pids")
-        if (!resources.hugepageLimits.isNullOrEmpty()) controllers.add("hugetlb")
-        return controllers
+        return buildList {
+            if (resources.memory != null) add("memory")
+            if (resources.cpu != null) add("cpu")
+            if (resources.pids != null) add("pids")
+            if (!resources.hugepageLimits.isNullOrEmpty()) add("hugetlb")
+        }
     }
 
     companion object {
+        /**
+         * Merge blockIO throttle device entries into per-device `io.max` lines.
+         * Each returned string is a single write for cgroupfs, e.g.
+         * `"8:0 rbps=1048576 wbps=524288"`.
+         */
+        fun buildBlockIOLines(bio: spec.LinuxBlockIO): List<String> {
+            val deviceMap = mutableMapOf<String, MutableMap<String, String>>()
+            bio.throttleReadBpsDevice?.forEach { d ->
+                val key = "${d.major}:${d.minor}"
+                deviceMap.getOrPut(key) { mutableMapOf() }["rbps"] = d.rate.toString()
+            }
+            bio.throttleWriteBpsDevice?.forEach { d ->
+                val key = "${d.major}:${d.minor}"
+                deviceMap.getOrPut(key) { mutableMapOf() }["wbps"] = d.rate.toString()
+            }
+            bio.throttleReadIOPSDevice?.forEach { d ->
+                val key = "${d.major}:${d.minor}"
+                deviceMap.getOrPut(key) { mutableMapOf() }["riops"] = d.rate.toString()
+            }
+            bio.throttleWriteIOPSDevice?.forEach { d ->
+                val key = "${d.major}:${d.minor}"
+                deviceMap.getOrPut(key) { mutableMapOf() }["wiops"] = d.rate.toString()
+            }
+            return deviceMap.map { (dev, limits) ->
+                val parts = limits.entries.sortedBy { it.key }.joinToString(" ") { "${it.key}=${it.value}" }
+                "$dev $parts"
+            }
+        }
+
         /** Subtree under /sys/fs/cgroup where this runtime nests its containers. */
         const val RUNTIME_CGROUP_PREFIX = "kontainer-runtime"
 

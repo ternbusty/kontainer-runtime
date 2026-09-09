@@ -381,8 +381,8 @@ private fun runMainProcessInternal(
         // hook to read) and BEFORE start. The hook's stdin sees the State JSON
         // with status="created". Older runtime-tools tests still use this hook
         // point; createRuntime/createContainer are the modern equivalents.
-        if (spec.hooks?.prestart != null) {
-            if (!runHooks(spec.hooks.prestart, state, phase = "prestart")) {
+        spec.hooks?.prestart?.let { hooks ->
+            if (!runHooks(hooks, state, phase = "prestart")) {
                 Logger.error("prestart hook failed; aborting container creation")
                 cleanupContainer(syscall, fs, cgroup, rootPath, containerId, stage2Pid, resolvedCgroupPath)
                 exit(1)
@@ -392,8 +392,8 @@ private fun runMainProcessInternal(
         // same point in the lifecycle (after create, before start) from the
         // runtime's namespace. Many specs include both pointing at different
         // programs, so we run both lists in order.
-        if (spec.hooks?.createRuntime != null) {
-            if (!runHooks(spec.hooks.createRuntime, state, phase = "createRuntime")) {
+        spec.hooks?.createRuntime?.let { hooks ->
+            if (!runHooks(hooks, state, phase = "createRuntime")) {
                 Logger.error("createRuntime hook failed; aborting container creation")
                 cleanupContainer(syscall, fs, cgroup, rootPath, containerId, stage2Pid, resolvedCgroupPath)
                 exit(1)

@@ -60,20 +60,17 @@ internal fun formatContainerList(
     format: String,
     quiet: Boolean,
 ): String {
-    val dirs = fs.listDirectories(rootPath)
-    val states = mutableListOf<State>()
-
-    for (dir in dirs) {
-        try {
-            val state = loadState(fs, rootPath, dir).refreshStatus()
-            states.add(state)
-        } catch (e: Exception) {
-            Logger.warn("list: skipping $dir: ${e.message}")
-        }
-    }
-
-    // Sort by container ID (runc uses alphabetical order).
-    states.sortBy { it.id }
+    val states =
+        fs
+            .listDirectories(rootPath)
+            .mapNotNull { dir ->
+                try {
+                    loadState(fs, rootPath, dir).refreshStatus()
+                } catch (e: Exception) {
+                    Logger.warn("list: skipping $dir: ${e.message}")
+                    null
+                }
+            }.sortedBy { it.id }
 
     return when {
         quiet -> states.joinToString("") { "${it.id}\n" }

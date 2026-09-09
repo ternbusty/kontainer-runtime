@@ -564,15 +564,17 @@ fun msMoveRoot(
                 Logger.warn("msMoveRoot: cannot read /proc/self/mountinfo")
                 return@memScoped ""
             }
-            val buf = StringBuilder()
             val chunk = allocArray<ByteVar>(4096)
-            while (true) {
-                val n = read(fd, chunk, 4096u).toInt()
-                if (n <= 0) break
-                buf.append(chunk.toKString().take(n))
-            }
+            val result =
+                buildString {
+                    while (true) {
+                        val n = read(fd, chunk, 4096u).toInt()
+                        if (n <= 0) break
+                        append(chunk.toKString().take(n))
+                    }
+                }
             close(fd)
-            buf.toString()
+            result
         }
     for (line in mountinfo.lines()) {
         if (line.isBlank()) continue

@@ -179,8 +179,8 @@ fun delete(
         } catch (e: Exception) {
             null
         }
-    if (poststopSpec?.hooks?.poststop != null) {
-        runHooks(poststopSpec.hooks.poststop, state.withStatus(ContainerStatus.STOPPED), phase = "poststop")
+    poststopSpec?.hooks?.poststop?.let { hooks ->
+        runHooks(hooks, state.withStatus(ContainerStatus.STOPPED), phase = "poststop")
     }
 
     // Delete notify socket

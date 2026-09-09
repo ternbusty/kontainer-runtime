@@ -184,7 +184,7 @@ fun initializeSeccomp(seccomp: LinuxSeccomp): Int? {
         Logger.debug("seccomp filter flags: $flagsValue")
 
         // Handle architecture specification and Add specified architectures
-        if (seccomp.architectures != null && seccomp.architectures.isNotEmpty()) {
+        if (!seccomp.architectures.isNullOrEmpty()) {
             Logger.debug("processing ${seccomp.architectures.size} architecture(s)")
 
             // Remove native architecture (added by default)
@@ -431,22 +431,16 @@ private fun applySeccompFlag(
  * if the kernel supports it.
  */
 private fun computeSeccompFlagsValue(flags: List<String>?): Int {
-    if (flags == null) {
-        // No flags field: runc defaults to SPEC_ALLOW
-        return 4 // SECCOMP_FILTER_FLAG_SPEC_ALLOW
+    if (flags == null) return 4 // No flags field: runc defaults to SPEC_ALLOW
+    return flags.sumOf { flag ->
+        when (flag) {
+            "SECCOMP_FILTER_FLAG_TSYNC" -> 0
+            "SECCOMP_FILTER_FLAG_LOG" -> 2
+            "SECCOMP_FILTER_FLAG_SPEC_ALLOW" -> 4
+            "SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV" -> 32
+            else -> 0
+        }
     }
-    var sum = 0
-    for (flag in flags) {
-        sum +=
-            when (flag) {
-                "SECCOMP_FILTER_FLAG_TSYNC" -> 0
-                "SECCOMP_FILTER_FLAG_LOG" -> 2
-                "SECCOMP_FILTER_FLAG_SPEC_ALLOW" -> 4
-                "SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV" -> 32
-                else -> 0
-            }
-    }
-    return sum
 }
 
 /**

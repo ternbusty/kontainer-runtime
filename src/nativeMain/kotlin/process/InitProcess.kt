@@ -149,8 +149,8 @@ private fun initProcessInternal(
             // is established but BEFORE pivot_root — they can still see the
             // host paths via the new rootfs's parent. This is the standard
             // spec timing (post-1.0.2).
-            if (spec.hooks?.createContainer != null) {
-                val hookErr = hook.runHooksGetError(spec.hooks.createContainer, createdState, phase = "createContainer")
+            spec.hooks?.createContainer?.let { hooks ->
+                val hookErr = hook.runHooksGetError(hooks, createdState, phase = "createContainer")
                 if (hookErr != null) {
                     throw RuntimeException(hookErr)
                 }
@@ -411,9 +411,9 @@ private fun initProcessInternal(
         // execve. Status is "running" at this point. Per the OCI spec,
         // startContainer hooks that do not declare their own env inherit the
         // container process's environment.
-        if (spec.hooks?.startContainer != null) {
+        spec.hooks?.startContainer?.let { hooks ->
             val runningState = createdState.copy(status = state.ContainerStatus.RUNNING)
-            val hookErr = hook.runHooksGetError(spec.hooks.startContainer, runningState, phase = "startContainer", processEnv = processEnv)
+            val hookErr = hook.runHooksGetError(hooks, runningState, phase = "startContainer", processEnv = processEnv)
             if (hookErr != null) {
                 throw RuntimeException(hookErr)
             }
