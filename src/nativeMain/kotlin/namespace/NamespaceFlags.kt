@@ -64,31 +64,25 @@ fun nsJoinList(namespaces: List<Namespace>?): List<NsJoin> {
  */
 @OptIn(ExperimentalForeignApi::class)
 fun calculateCloneFlags(namespaces: List<Namespace>?): UInt {
-    if (namespaces == null) {
-        return 0u
-    }
+    if (namespaces == null) return 0u
 
-    var flags = 0u
-
-    for (ns in namespaces) {
-        // A namespace entry with a non-empty `path` means "join an existing
-        // namespace at this path", not "create a new one" — don't add it to
-        // the unshare set.  An empty string is treated the same as absent
-        // (OCI: path must be a valid filesystem path to join).
-        if (!ns.path.isNullOrEmpty()) continue
-        val flag: UInt =
-            when (ns.type) {
-                NamespaceType.MOUNT -> _CLONE_NEWNS().toUInt()
-                NamespaceType.NETWORK -> _CLONE_NEWNET().toUInt()
-                NamespaceType.UTS -> _CLONE_NEWUTS().toUInt()
-                NamespaceType.IPC -> _CLONE_NEWIPC().toUInt()
-                NamespaceType.PID -> _CLONE_NEWPID().toUInt()
-                NamespaceType.USER -> _CLONE_NEWUSER().toUInt()
-                NamespaceType.CGROUP -> CLONE_NEWCGROUP.toUInt()
-                NamespaceType.TIME -> CLONE_NEWTIME.toUInt()
-            }
-        flags = flags or flag
-    }
-
-    return flags
+    // A namespace entry with a non-empty `path` means "join an existing
+    // namespace at this path", not "create a new one" — don't add it to
+    // the unshare set.  An empty string is treated the same as absent
+    // (OCI: path must be a valid filesystem path to join).
+    return namespaces
+        .filter { it.path.isNullOrEmpty() }
+        .fold(0u) { flags, ns ->
+            flags or
+                when (ns.type) {
+                    NamespaceType.MOUNT -> _CLONE_NEWNS().toUInt()
+                    NamespaceType.NETWORK -> _CLONE_NEWNET().toUInt()
+                    NamespaceType.UTS -> _CLONE_NEWUTS().toUInt()
+                    NamespaceType.IPC -> _CLONE_NEWIPC().toUInt()
+                    NamespaceType.PID -> _CLONE_NEWPID().toUInt()
+                    NamespaceType.USER -> _CLONE_NEWUSER().toUInt()
+                    NamespaceType.CGROUP -> CLONE_NEWCGROUP.toUInt()
+                    NamespaceType.TIME -> CLONE_NEWTIME.toUInt()
+                }
+        }
 }

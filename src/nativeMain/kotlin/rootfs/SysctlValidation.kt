@@ -40,14 +40,7 @@ fun validateSysctls(
             ?.map { it.type }
             ?.toSet() ?: emptySet()
 
-    val errors = mutableListOf<String>()
-
-    for (key in sysctls.keys) {
-        val err = validateSysctlKey(key, newNsTypes)
-        if (err != null) errors.add(err)
-    }
-
-    return errors
+    return sysctls.keys.mapNotNull { validateSysctlKey(it, newNsTypes) }
 }
 
 /**

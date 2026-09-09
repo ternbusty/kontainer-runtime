@@ -75,13 +75,7 @@ enum class Capability(
 /**
  * Convert capability set to bitmask
  */
-private fun capabilitiesToMask(caps: Set<Capability>): ULong {
-    var mask = 0UL
-    for (cap in caps) {
-        mask = mask or (1UL shl cap.value)
-    }
-    return mask
-}
+private fun capabilitiesToMask(caps: Set<Capability>): ULong = caps.fold(0UL) { mask, cap -> mask or (1UL shl cap.value) }
 
 /**
  * Convert OCI capability name list to Capability set
@@ -89,16 +83,13 @@ private fun capabilitiesToMask(caps: Set<Capability>): ULong {
 fun parseCapabilities(capNames: List<String>?): Set<Capability> {
     if (capNames == null) return emptySet()
 
-    val caps = mutableSetOf<Capability>()
-    for (name in capNames) {
-        val cap = Capability.fromString(name)
-        if (cap != null) {
-            caps.add(cap)
-        } else {
-            Logger.warn("Unknown capability: $name")
-        }
-    }
-    return caps
+    return capNames
+        .mapNotNull { name ->
+            Capability.fromString(name) ?: run {
+                Logger.warn("Unknown capability: $name")
+                null
+            }
+        }.toSet()
 }
 
 /**
