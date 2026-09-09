@@ -7,6 +7,7 @@ import platform.posix.*
 import spec.LinuxSeccomp
 import spec.LinuxSyscall
 import spec.SeccompArg
+import spec.SeccompOp
 
 /**
  * Seccomp implementation using libseccomp
@@ -66,19 +67,15 @@ private fun SeccompAction.toLibseccomp(): UInt =
  * Translate OCI spec operator string to libseccomp operator constant
  */
 @OptIn(ExperimentalForeignApi::class)
-private fun translateOp(op: String): scmp_compare =
+private fun translateOp(op: SeccompOp): scmp_compare =
     when (op) {
-        "SCMP_CMP_NE" -> SCMP_CMP_NE
-        "SCMP_CMP_LT" -> SCMP_CMP_LT
-        "SCMP_CMP_LE" -> SCMP_CMP_LE
-        "SCMP_CMP_EQ" -> SCMP_CMP_EQ
-        "SCMP_CMP_GE" -> SCMP_CMP_GE
-        "SCMP_CMP_GT" -> SCMP_CMP_GT
-        "SCMP_CMP_MASKED_EQ" -> SCMP_CMP_MASKED_EQ
-        else -> {
-            Logger.error("Unknown seccomp operator: $op")
-            throw Exception("Unknown seccomp operator: $op")
-        }
+        SeccompOp.NE -> SCMP_CMP_NE
+        SeccompOp.LT -> SCMP_CMP_LT
+        SeccompOp.LE -> SCMP_CMP_LE
+        SeccompOp.EQ -> SCMP_CMP_EQ
+        SeccompOp.GE -> SCMP_CMP_GE
+        SeccompOp.GT -> SCMP_CMP_GT
+        SeccompOp.MASKED_EQ -> SCMP_CMP_MASKED_EQ
     }
 
 /**

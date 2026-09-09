@@ -26,13 +26,13 @@ data class Spec(
     /**
      * Check if a namespace type exists in the spec (either creating or joining).
      */
-    fun hasNamespace(type: String): Boolean = linux?.namespaces?.any { it.type == type } ?: false
+    fun hasNamespace(type: NamespaceType): Boolean = linux?.namespaces?.any { it.type == type } ?: false
 
     /**
      * Check if the spec creates (unshares) a new namespace of the given type.
      * Returns false when the namespace is being *joined* (has a path).
      */
-    fun createsNamespace(type: String): Boolean = linux?.namespaces?.any { it.type == type && it.path.isNullOrEmpty() } ?: false
+    fun createsNamespace(type: NamespaceType): Boolean = linux?.namespaces?.any { it.type == type && it.path.isNullOrEmpty() } ?: false
 }
 
 /**
@@ -121,8 +121,59 @@ data class User(
  * See https://man7.org/linux/man-pages/man2/getrlimit.2.html
  */
 @Serializable
+enum class RlimitType {
+    @SerialName("RLIMIT_AS")
+    AS,
+
+    @SerialName("RLIMIT_CORE")
+    CORE,
+
+    @SerialName("RLIMIT_CPU")
+    CPU,
+
+    @SerialName("RLIMIT_DATA")
+    DATA,
+
+    @SerialName("RLIMIT_FSIZE")
+    FSIZE,
+
+    @SerialName("RLIMIT_LOCKS")
+    LOCKS,
+
+    @SerialName("RLIMIT_MEMLOCK")
+    MEMLOCK,
+
+    @SerialName("RLIMIT_MSGQUEUE")
+    MSGQUEUE,
+
+    @SerialName("RLIMIT_NICE")
+    NICE,
+
+    @SerialName("RLIMIT_NOFILE")
+    NOFILE,
+
+    @SerialName("RLIMIT_NPROC")
+    NPROC,
+
+    @SerialName("RLIMIT_RSS")
+    RSS,
+
+    @SerialName("RLIMIT_RTPRIO")
+    RTPRIO,
+
+    @SerialName("RLIMIT_RTTIME")
+    RTTIME,
+
+    @SerialName("RLIMIT_SIGPENDING")
+    SIGPENDING,
+
+    @SerialName("RLIMIT_STACK")
+    STACK,
+}
+
+@Serializable
 data class POSIXRlimit(
-    val type: String, // e.g., "RLIMIT_NOFILE", "RLIMIT_NPROC"
+    val type: RlimitType,
     val hard: ULong,
     val soft: ULong,
 )
@@ -141,8 +192,37 @@ data class LinuxCapabilities(
 )
 
 @Serializable
+enum class NamespaceType(
+    val value: String,
+) {
+    @SerialName("mount")
+    MOUNT("mount"),
+
+    @SerialName("network")
+    NETWORK("network"),
+
+    @SerialName("uts")
+    UTS("uts"),
+
+    @SerialName("ipc")
+    IPC("ipc"),
+
+    @SerialName("pid")
+    PID("pid"),
+
+    @SerialName("user")
+    USER("user"),
+
+    @SerialName("cgroup")
+    CGROUP("cgroup"),
+
+    @SerialName("time")
+    TIME("time"),
+}
+
+@Serializable
 data class Namespace(
-    val type: String,
+    val type: NamespaceType,
     val path: String? = null,
 )
 
@@ -239,11 +319,35 @@ data class LinuxResources(
  * Seccomp argument comparison
  */
 @Serializable
+enum class SeccompOp {
+    @SerialName("SCMP_CMP_NE")
+    NE,
+
+    @SerialName("SCMP_CMP_LT")
+    LT,
+
+    @SerialName("SCMP_CMP_LE")
+    LE,
+
+    @SerialName("SCMP_CMP_EQ")
+    EQ,
+
+    @SerialName("SCMP_CMP_GE")
+    GE,
+
+    @SerialName("SCMP_CMP_GT")
+    GT,
+
+    @SerialName("SCMP_CMP_MASKED_EQ")
+    MASKED_EQ,
+}
+
+@Serializable
 data class SeccompArg(
     val index: UInt,
     val value: ULong,
     val valueTwo: ULong? = null,
-    val op: String,
+    val op: SeccompOp,
 )
 
 /**
@@ -344,18 +448,25 @@ data class LinuxDevice(
  * https://github.com/opencontainers/runtime-spec/blob/main/config.md#io-priority
  */
 @Serializable
+enum class IOPriorityClass(
+    val kernelValue: Int,
+) {
+    @SerialName("IOPRIO_CLASS_RT")
+    RT(1),
+
+    @SerialName("IOPRIO_CLASS_BE")
+    BE(2),
+
+    @SerialName("IOPRIO_CLASS_IDLE")
+    IDLE(3),
+}
+
+@Serializable
 data class LinuxIOPriority(
-    @SerialName("class") val clazz: String? = null,
+    @SerialName("class") val clazz: IOPriorityClass? = null,
     val priority: Int = 0,
 ) {
-    /** Map the OCI class string to the kernel IOPRIO_CLASS_* value. */
-    fun classValue(): Int =
-        when (clazz) {
-            "IOPRIO_CLASS_RT" -> 1
-            "IOPRIO_CLASS_BE" -> 2
-            "IOPRIO_CLASS_IDLE" -> 3
-            else -> 2 // default: best-effort
-        }
+    fun classValue(): Int = clazz?.kernelValue ?: 2
 }
 
 /**
@@ -363,8 +474,34 @@ data class LinuxIOPriority(
  * https://github.com/opencontainers/runtime-spec/blob/main/config.md#scheduler
  */
 @Serializable
+enum class SchedulerPolicy(
+    val kernelValue: Int,
+) {
+    @SerialName("SCHED_OTHER")
+    OTHER(0),
+
+    @SerialName("SCHED_FIFO")
+    FIFO(1),
+
+    @SerialName("SCHED_RR")
+    RR(2),
+
+    @SerialName("SCHED_BATCH")
+    BATCH(3),
+
+    @SerialName("SCHED_ISO")
+    ISO(4),
+
+    @SerialName("SCHED_IDLE")
+    IDLE(5),
+
+    @SerialName("SCHED_DEADLINE")
+    DEADLINE(6),
+}
+
+@Serializable
 data class LinuxScheduler(
-    val policy: String? = null,
+    val policy: SchedulerPolicy? = null,
     val nice: Int? = null,
     val priority: Int? = null,
     val flags: List<String>? = null,
@@ -372,17 +509,7 @@ data class LinuxScheduler(
     val deadline: Long? = null,
     val period: Long? = null,
 ) {
-    fun policyValue(): Int =
-        when (policy) {
-            "SCHED_OTHER" -> 0
-            "SCHED_FIFO" -> 1
-            "SCHED_RR" -> 2
-            "SCHED_BATCH" -> 3
-            "SCHED_ISO" -> 4
-            "SCHED_IDLE" -> 5
-            "SCHED_DEADLINE" -> 6
-            else -> 0
-        }
+    fun policyValue(): Int = policy?.kernelValue ?: 0
 
     fun flagBits(): Long {
         if (flags.isNullOrEmpty()) return 0
@@ -419,8 +546,26 @@ data class ExecCPUAffinity(
  * https://github.com/opencontainers/runtime-spec/blob/main/config-linux.md#memory-policy
  */
 @Serializable
+enum class MemoryPolicyMode {
+    @SerialName("MPOL_DEFAULT")
+    DEFAULT,
+
+    @SerialName("MPOL_PREFERRED")
+    PREFERRED,
+
+    @SerialName("MPOL_BIND")
+    BIND,
+
+    @SerialName("MPOL_INTERLEAVE")
+    INTERLEAVE,
+
+    @SerialName("MPOL_LOCAL")
+    LOCAL,
+}
+
+@Serializable
 data class LinuxMemoryPolicy(
-    val mode: String? = null,
+    val mode: MemoryPolicyMode? = null,
     val nodes: String? = null,
     val flags: List<String>? = null,
 )

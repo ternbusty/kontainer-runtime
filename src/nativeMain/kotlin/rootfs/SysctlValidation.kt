@@ -1,6 +1,7 @@
 package rootfs
 
 import spec.Namespace
+import spec.NamespaceType
 
 /**
  * Validate that every sysctl key in the spec is on the OCI/runc allowlist.
@@ -68,11 +69,11 @@ private val IPC_KERNEL_SYSCTLS =
 
 private fun validateSysctlKey(
     key: String,
-    newNsTypes: Set<String>,
+    newNsTypes: Set<NamespaceType>,
 ): String? =
     when {
         key.startsWith("net.") -> {
-            if ("network" !in newNsTypes) {
+            if (NamespaceType.NETWORK !in newNsTypes) {
                 "sysctl \"$key\" requires a new network namespace"
             } else {
                 null
@@ -80,7 +81,7 @@ private fun validateSysctlKey(
         }
 
         key.startsWith("fs.mqueue.") -> {
-            if ("ipc" !in newNsTypes) {
+            if (NamespaceType.IPC !in newNsTypes) {
                 "sysctl \"$key\" requires a new IPC namespace"
             } else {
                 null
@@ -88,7 +89,7 @@ private fun validateSysctlKey(
         }
 
         key in IPC_KERNEL_SYSCTLS -> {
-            if ("ipc" !in newNsTypes) {
+            if (NamespaceType.IPC !in newNsTypes) {
                 "sysctl \"$key\" requires a new IPC namespace"
             } else {
                 null
@@ -96,7 +97,7 @@ private fun validateSysctlKey(
         }
 
         key == "kernel.domainname" -> {
-            if ("uts" !in newNsTypes) {
+            if (NamespaceType.UTS !in newNsTypes) {
                 "sysctl \"$key\" requires a new UTS namespace"
             } else {
                 null

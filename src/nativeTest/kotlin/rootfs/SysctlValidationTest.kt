@@ -6,23 +6,24 @@ import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import spec.Namespace
+import spec.NamespaceType
 
 class SysctlValidationTest :
     FunSpec({
 
         // Helper to build a namespace list with "new" namespaces (no path)
-        fun newNs(vararg types: String) = types.map { Namespace(type = it) }
+        fun newNs(vararg types: NamespaceType) = types.map { Namespace(type = it) }
 
         // Helper to build a namespace that joins an existing one (has path)
-        fun joinedNs(type: String) = Namespace(type = type, path = "/proc/1/ns/$type")
+        fun joinedNs(type: NamespaceType) = Namespace(type = type, path = "/proc/1/ns/${type.value}")
 
         test("null sysctls pass validation") {
-            validateSysctls(null, newNs("network", "ipc"))
+            validateSysctls(null, newNs(NamespaceType.NETWORK, NamespaceType.IPC))
                 .shouldBeEmpty()
         }
 
         test("empty sysctls pass validation") {
-            validateSysctls(emptyMap(), newNs("network"))
+            validateSysctls(emptyMap(), newNs(NamespaceType.NETWORK))
                 .shouldBeEmpty()
         }
 
@@ -30,7 +31,7 @@ class SysctlValidationTest :
             val errors =
                 validateSysctls(
                     mapOf("net.ipv4.ip_forward" to "1", "net.core.somaxconn" to "128"),
-                    newNs("network"),
+                    newNs(NamespaceType.NETWORK),
                 )
             errors.shouldBeEmpty()
         }
@@ -46,7 +47,7 @@ class SysctlValidationTest :
             val errors =
                 validateSysctls(
                     mapOf("net.ipv4.ip_forward" to "1"),
-                    listOf(joinedNs("network")),
+                    listOf(joinedNs(NamespaceType.NETWORK)),
                 )
             errors shouldHaveSize 1
             errors[0] shouldContain "network namespace"
@@ -56,7 +57,7 @@ class SysctlValidationTest :
             val errors =
                 validateSysctls(
                     mapOf("fs.mqueue.msg_max" to "10"),
-                    newNs("ipc"),
+                    newNs(NamespaceType.IPC),
                 )
             errors.shouldBeEmpty()
         }
@@ -65,7 +66,7 @@ class SysctlValidationTest :
             val errors =
                 validateSysctls(
                     mapOf("fs.mqueue.msg_max" to "10"),
-                    newNs("network"),
+                    newNs(NamespaceType.NETWORK),
                 )
             errors shouldHaveSize 1
             errors[0] shouldContain "IPC namespace"
@@ -83,7 +84,7 @@ class SysctlValidationTest :
                     "kernel.shmmni" to "4096",
                     "kernel.shm_rmid_forced" to "1",
                 )
-            val errors = validateSysctls(ipcSysctls, newNs("ipc"))
+            val errors = validateSysctls(ipcSysctls, newNs(NamespaceType.IPC))
             errors.shouldBeEmpty()
         }
 
@@ -91,7 +92,7 @@ class SysctlValidationTest :
             val errors =
                 validateSysctls(
                     mapOf("kernel.shmmax" to "33554432"),
-                    newNs("network"),
+                    newNs(NamespaceType.NETWORK),
                 )
             errors shouldHaveSize 1
             errors[0] shouldContain "kernel.shmmax"
@@ -102,7 +103,7 @@ class SysctlValidationTest :
             val errors =
                 validateSysctls(
                     mapOf("kernel.domainname" to "example.com"),
-                    newNs("uts"),
+                    newNs(NamespaceType.UTS),
                 )
             errors.shouldBeEmpty()
         }
@@ -111,7 +112,7 @@ class SysctlValidationTest :
             val errors =
                 validateSysctls(
                     mapOf("kernel.domainname" to "example.com"),
-                    newNs("network"),
+                    newNs(NamespaceType.NETWORK),
                 )
             errors shouldHaveSize 1
             errors[0] shouldContain "UTS namespace"
@@ -121,7 +122,7 @@ class SysctlValidationTest :
             val errors =
                 validateSysctls(
                     mapOf("kernel.hostname" to "foo"),
-                    newNs("uts"),
+                    newNs(NamespaceType.UTS),
                 )
             errors shouldHaveSize 1
             errors[0] shouldContain "not in the allowed list"
@@ -131,7 +132,7 @@ class SysctlValidationTest :
             val errors =
                 validateSysctls(
                     mapOf("vm.swappiness" to "60"),
-                    newNs("network", "ipc", "uts"),
+                    newNs(NamespaceType.NETWORK, NamespaceType.IPC, NamespaceType.UTS),
                 )
             errors shouldHaveSize 1
             errors[0] shouldContain "vm.swappiness"
@@ -160,7 +161,7 @@ class SysctlValidationTest :
                         "kernel.shmmax" to "33554432",
                         "vm.swappiness" to "60",
                     ),
-                    newNs("network", "ipc"),
+                    newNs(NamespaceType.NETWORK, NamespaceType.IPC),
                 )
             // Only vm.swappiness should fail
             errors shouldHaveSize 1

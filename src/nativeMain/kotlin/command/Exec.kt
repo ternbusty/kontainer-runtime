@@ -34,6 +34,7 @@ import seccomp.seccompUsesNotify
 import seccomp.sendToSeccompListener
 import spec.ExecCPUAffinity
 import spec.LinuxCapabilities
+import spec.NamespaceType
 import spec.Process
 import spec.Spec
 import spec.User
@@ -681,12 +682,12 @@ private fun runExecChild(
     // After pivot_root by the container's init process, the mount
     // namespace root IS the container's rootfs, so no explicit chroot is
     // needed — unlike the init path which uses pivot_root.
-    val userNs = joins.find { it.ociType == "user" }
+    val userNs = joins.find { it.ociType == NamespaceType.USER }
     // The cgroup namespace is joined by the grandchild, after it has been
     // created inside the container's cgroup (see runExecGrandchild).
-    val cgroupNsJoin = joins.find { it.ociType == "cgroup" }
+    val cgroupNsJoin = joins.find { it.ociType == NamespaceType.CGROUP }
     val cgroupNsFd = cgroupNsJoin?.let { nsFds[it.procName] } ?: -1
-    val nonUserJoins = joins.filter { it.ociType != "user" && it.ociType != "cgroup" }
+    val nonUserJoins = joins.filter { it.ociType != NamespaceType.USER && it.ociType != NamespaceType.CGROUP }
 
     // Pass 1: try non-userns namespaces (non-fatal)
     val deferredJoins = mutableListOf<NsJoin>()
@@ -702,7 +703,7 @@ private fun runExecChild(
         val fd = nsFds[userNs.procName]
         if (fd != null) {
             if (syscall.setns(fd, userNs.cloneFlag) != 0) {
-                fprintf(stderr, "exec: setns(%s) failed: %s\n", userNs.ociType, strerror(errno))
+                fprintf(stderr, "exec: setns(%s) failed: %s\n", userNs.ociType.value, strerror(errno))
                 _exit(1)
             }
         }
@@ -712,7 +713,7 @@ private fun runExecChild(
     for (nsj in deferredJoins) {
         val fd = nsFds[nsj.procName] ?: continue
         if (syscall.setns(fd, nsj.cloneFlag) != 0) {
-            fprintf(stderr, "exec: setns(%s) failed: %s\n", nsj.ociType, strerror(errno))
+            fprintf(stderr, "exec: setns(%s) failed: %s\n", nsj.ociType.value, strerror(errno))
             _exit(1)
         }
     }
@@ -912,7 +913,7 @@ private fun runExecGrandchild(
     setupSessionKeyring(
         containerId = containerId,
         processLabel = spec.process.selinuxLabel,
-        hasUserNamespace = spec.hasNamespace("user"),
+        hasUserNamespace = spec.hasNamespace(NamespaceType.USER),
         isExec = true,
     )
 

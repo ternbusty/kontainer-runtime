@@ -3,6 +3,7 @@ package namespace
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.linux.*
 import spec.Namespace
+import spec.NamespaceType
 
 /**
  * One namespace the exec command must join via setns(2).
@@ -19,7 +20,7 @@ const val CLONE_NEWTIME = 0x00000080
 const val CLONE_NEWCGROUP = 0x02000000
 
 data class NsJoin(
-    val ociType: String,
+    val ociType: NamespaceType,
     val procName: String,
     val cloneFlag: Int,
 )
@@ -41,14 +42,14 @@ fun nsJoinList(namespaces: List<Namespace>?): List<NsJoin> {
     if (namespaces == null) return emptyList()
     val specTypes = namespaces.map { it.type }.toSet()
     return listOf(
-        NsJoin("user", "user", _CLONE_NEWUSER()),
-        NsJoin("ipc", "ipc", _CLONE_NEWIPC()),
-        NsJoin("uts", "uts", _CLONE_NEWUTS()),
-        NsJoin("network", "net", _CLONE_NEWNET()),
-        NsJoin("mount", "mnt", _CLONE_NEWNS()),
-        NsJoin("cgroup", "cgroup", CLONE_NEWCGROUP),
-        NsJoin("time", "time", CLONE_NEWTIME),
-        NsJoin("pid", "pid", _CLONE_NEWPID()),
+        NsJoin(NamespaceType.USER, "user", _CLONE_NEWUSER()),
+        NsJoin(NamespaceType.IPC, "ipc", _CLONE_NEWIPC()),
+        NsJoin(NamespaceType.UTS, "uts", _CLONE_NEWUTS()),
+        NsJoin(NamespaceType.NETWORK, "net", _CLONE_NEWNET()),
+        NsJoin(NamespaceType.MOUNT, "mnt", _CLONE_NEWNS()),
+        NsJoin(NamespaceType.CGROUP, "cgroup", CLONE_NEWCGROUP),
+        NsJoin(NamespaceType.TIME, "time", CLONE_NEWTIME),
+        NsJoin(NamespaceType.PID, "pid", _CLONE_NEWPID()),
     ).filter { it.ociType in specTypes }
 }
 
@@ -77,18 +78,14 @@ fun calculateCloneFlags(namespaces: List<Namespace>?): UInt {
         if (!ns.path.isNullOrEmpty()) continue
         val flag: UInt =
             when (ns.type) {
-                "mount" -> _CLONE_NEWNS().toUInt()
-                "network" -> _CLONE_NEWNET().toUInt()
-                "uts" -> _CLONE_NEWUTS().toUInt()
-                "ipc" -> _CLONE_NEWIPC().toUInt()
-                "pid" -> _CLONE_NEWPID().toUInt()
-                "user" -> _CLONE_NEWUSER().toUInt()
-                "cgroup" -> CLONE_NEWCGROUP.toUInt()
-                "time" -> CLONE_NEWTIME.toUInt()
-                else -> {
-                    // Skip unknown namespace types (for forward compatibility)
-                    0u
-                }
+                NamespaceType.MOUNT -> _CLONE_NEWNS().toUInt()
+                NamespaceType.NETWORK -> _CLONE_NEWNET().toUInt()
+                NamespaceType.UTS -> _CLONE_NEWUTS().toUInt()
+                NamespaceType.IPC -> _CLONE_NEWIPC().toUInt()
+                NamespaceType.PID -> _CLONE_NEWPID().toUInt()
+                NamespaceType.USER -> _CLONE_NEWUSER().toUInt()
+                NamespaceType.CGROUP -> CLONE_NEWCGROUP.toUInt()
+                NamespaceType.TIME -> CLONE_NEWTIME.toUInt()
             }
         flags = flags or flag
     }
