@@ -871,6 +871,27 @@ internal fun peekRootPath(args: Array<String>): String {
     return "/run/kontainer"
 }
 
+/**
+ * Extract the value of a flag from raw CLI args.  Supports both
+ * `--flag value` and `--flag=value` forms, and multiple flag names
+ * (e.g. `"--log", "-l"`).  Returns null if not found.
+ */
+private fun peekFlagValue(
+    args: Array<String>,
+    vararg names: String,
+): String? {
+    var i = 0
+    while (i < args.size) {
+        val arg = args[i]
+        for (name in names) {
+            if (arg == name && i + 1 < args.size) return args[i + 1]
+            if (arg.startsWith("$name=")) return arg.substringAfter("=")
+        }
+        i++
+    }
+    return null
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -920,6 +941,16 @@ fun main(args: Array<String>) {
                 }
             }
         }
+
+        // Early logger setup: sealBinary() runs before Clikt parses and
+        // calls KontainerRuntime.run(), which is where the full logger
+        // configuration normally happens.  Peek --debug and --log so that
+        // exeseal debug messages are captured.
+        if (args.contains("--debug")) {
+            Logger.setLogLevel(Logger.Level.DEBUG)
+        }
+        peekFlagValue(args, "--log", "-l")?.let { Logger.setLogFile(it) }
+        peekFlagValue(args, "--log-format")?.let { Logger.setLogFormat(it) }
 
         val rootPath = peekRootPath(args)
         when (peekSubcommand(args)) {
