@@ -848,6 +848,29 @@ private fun peekSubcommand(args: Array<String>): String? {
     return null
 }
 
+/**
+ * Peek at the CLI args to extract the `--root` value without full parsing.
+ *
+ * Returns the explicit `--root` value if present, otherwise the default
+ * state root (`/run/kontainer`).  Used before Clikt runs to pass the
+ * state root to exeseal, which needs a directory under it for the
+ * overlayfs dummy lowerdir.
+ */
+private fun peekRootPath(args: Array<String>): String {
+    var i = 0
+    while (i < args.size) {
+        val arg = args[i]
+        if (arg == "--root" && i + 1 < args.size) {
+            return args[i + 1]
+        }
+        if (arg.startsWith("--root=")) {
+            return arg.substringAfter("=")
+        }
+        i++
+    }
+    return "/run/kontainer"
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -898,9 +921,10 @@ fun main(args: Array<String>) {
             }
         }
 
+        val rootPath = peekRootPath(args)
         when (peekSubcommand(args)) {
-            "create", "run" -> sealBinary()
-            "exec" -> ensureSelfCloned(args)
+            "create", "run" -> sealBinary(rootPath)
+            "exec" -> ensureSelfCloned(args, rootPath)
             else -> Unit
         }
     }
