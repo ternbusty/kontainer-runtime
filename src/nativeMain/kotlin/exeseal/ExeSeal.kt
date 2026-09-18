@@ -57,16 +57,19 @@ var sealedBinaryFd: Int = -1
  * can exec from `/proc/self/fd/<fd>` so its `/proc/self/exe` points to the
  * sealed copy — protecting against CVE-2019-5736 in a single exec.
  *
+ * @param rootPath  Runtime state root (e.g. "/run/kontainer").  Used to
+ *                  derive a dummy lowerdir for the overlayfs seal strategy.
+ *
  * Returns the sealed fd on success, -1 on failure (logs a warning).
  */
-fun sealBinary(): Int {
+fun sealBinary(rootPath: String): Int {
     // Already sealed (e.g. outer layer or prior call).
     if (getenv(CLONED_ENV) != null || isMemfd()) {
         Logger.debug("exeseal: binary already sealed, sealBinary() no-op")
         return -1
     }
 
-    val fd = cloneBinary()
+    val fd = cloneBinary(rootPath)
     if (fd < 0) {
         Logger.warn("exeseal: failed to seal binary — CVE-2019-5736 mitigation inactive")
         return -1
@@ -89,7 +92,10 @@ fun sealBinary(): Int {
  * unprotected — matching runc's behavior of not hard-failing when the
  * kernel is too old or no tmp space is available.
  */
-fun ensureSelfCloned(args: Array<String>) {
+fun ensureSelfCloned(
+    args: Array<String>,
+    rootPath: String,
+) {
     // Already cloned — nothing to do.
     if (getenv(CLONED_ENV) != null) {
         Logger.debug("exeseal: already running from cloned binary")
@@ -103,7 +109,7 @@ fun ensureSelfCloned(args: Array<String>) {
         return
     }
 
-    val clonedFd = cloneBinary()
+    val clonedFd = cloneBinary(rootPath)
     if (clonedFd < 0) {
         Logger.warn("exeseal: failed to clone binary — CVE-2019-5736 mitigation inactive")
         return
@@ -132,13 +138,16 @@ private fun isMemfd(): Boolean =
         target.startsWith("/memfd:") || target.contains("memfd:")
     }
 
+/** Subdirectory name under the state root used as the overlayfs dummy lowerdir. */
+private const val EXESEAL_DUMMY_DIR = ".exeseal"
+
 /**
  * Obtain a sealed fd for the current binary.  Returns the fd (>= 0) on
  * success or -1 on failure.
  */
-private fun cloneBinary(): Int {
+private fun cloneBinary(rootPath: String): Int {
     // Strategy 1: overlayfs (zero-copy, Linux 5.2+, requires root)
-    val overlayFd = tryOverlayfs()
+    val overlayFd = tryOverlayfs(rootPath)
     if (overlayFd >= 0) return overlayFd
 
     // Strategy 2: memfd_create (copies binary, Linux 3.17+)
@@ -158,20 +167,39 @@ private fun cloneBinary(): Int {
  * directory containing the binary, then open the binary through it.
  *
  * This is a zero-copy technique — no data is read or written.  The
- * overlayfs mount has two lowerdirs (the binary's directory and a dummy)
- * which puts it in "lower-only" mode where writes are completely blocked.
- * Unlike a bind-mount, overlayfs cannot be "unwrapped" by the container
- * to reach the underlying file.
+ * overlayfs mount has two lowerdirs (the binary's directory and a
+ * caller-provided dummy) which puts it in "lower-only" mode where writes
+ * are completely blocked.  Unlike a bind-mount, overlayfs cannot be
+ * "unwrapped" by the container to reach the underlying file.
+ *
+ * The dummy lowerdir is created as an empty subdirectory under the runtime
+ * state root (e.g. `/run/kontainer/.exeseal`).  Using a directory under
+ * the state root instead of a hardcoded `/tmp` avoids ELOOP when the
+ * binary itself lives under `/tmp` (the two lowerdirs must not overlap).
  *
  * Requires: root, Linux 5.2+ (fsopen/fsconfig/fsmount), overlayfs support.
  * Returns fd >= 0 on success, -1 on failure.
  */
-private fun tryOverlayfs(): Int {
-    val fd = _try_sealed_overlayfs()
+private fun tryOverlayfs(rootPath: String): Int {
+    // Create the dummy lowerdir if it does not already exist.
+    val dummyDir = "$rootPath/$EXESEAL_DUMMY_DIR"
+    if (mkdir(dummyDir, S_IRWXU.toUInt()) != 0 && errno != EEXIST) {
+        // The state root itself may not exist yet; try creating it first.
+        if (mkdir(rootPath, "0755".toUInt(8)) != 0 && errno != EEXIST) {
+            Logger.debug("exeseal: failed to create state root $rootPath: ${strerror(errno)?.toKString()}")
+            return -1
+        }
+        if (mkdir(dummyDir, S_IRWXU.toUInt()) != 0 && errno != EEXIST) {
+            Logger.debug("exeseal: failed to create dummy dir $dummyDir: ${strerror(errno)?.toKString()}")
+            return -1
+        }
+    }
+
+    val fd = _try_sealed_overlayfs(dummyDir)
     if (fd >= 0) {
-        Logger.debug("exeseal: sealed binary via overlayfs (fd=$fd)")
+        Logger.debug("exeseal: sealed binary via overlayfs (fd=$fd, dummyDir=$dummyDir)")
     } else {
-        Logger.debug("exeseal: overlayfs failed: ${strerror(errno)?.toKString()}")
+        Logger.debug("exeseal: overlayfs failed (dummyDir=$dummyDir): ${strerror(errno)?.toKString()}")
     }
     return fd
 }

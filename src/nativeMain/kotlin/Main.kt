@@ -848,6 +848,50 @@ private fun peekSubcommand(args: Array<String>): String? {
     return null
 }
 
+/**
+ * Peek at the CLI args to extract the `--root` value without full parsing.
+ *
+ * Returns the explicit `--root` value if present, otherwise the default
+ * state root (`/run/kontainer`).  Used before Clikt runs to pass the
+ * state root to exeseal, which needs a directory under it for the
+ * overlayfs dummy lowerdir.
+ */
+internal fun peekRootPath(args: Array<String>): String {
+    var i = 0
+    while (i < args.size) {
+        val arg = args[i]
+        if (arg == "--root" && i + 1 < args.size) {
+            return args[i + 1]
+        }
+        if (arg.startsWith("--root=")) {
+            return arg.substringAfter("=")
+        }
+        i++
+    }
+    return "/run/kontainer"
+}
+
+/**
+ * Extract the value of a flag from raw CLI args.  Supports both
+ * `--flag value` and `--flag=value` forms, and multiple flag names
+ * (e.g. `"--log", "-l"`).  Returns null if not found.
+ */
+private fun peekFlagValue(
+    args: Array<String>,
+    vararg names: String,
+): String? {
+    var i = 0
+    while (i < args.size) {
+        val arg = args[i]
+        for (name in names) {
+            if (arg == name && i + 1 < args.size) return args[i + 1]
+            if (arg.startsWith("$name=")) return arg.substringAfter("=")
+        }
+        i++
+    }
+    return null
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -898,9 +942,20 @@ fun main(args: Array<String>) {
             }
         }
 
+        // Early logger setup: sealBinary() runs before Clikt parses and
+        // calls KontainerRuntime.run(), which is where the full logger
+        // configuration normally happens.  Peek --debug and --log so that
+        // exeseal debug messages are captured.
+        if (args.contains("--debug")) {
+            Logger.setLogLevel(Logger.Level.DEBUG)
+        }
+        peekFlagValue(args, "--log", "-l")?.let { Logger.setLogFile(it) }
+        peekFlagValue(args, "--log-format")?.let { Logger.setLogFormat(it) }
+
+        val rootPath = peekRootPath(args)
         when (peekSubcommand(args)) {
-            "create", "run" -> sealBinary()
-            "exec" -> ensureSelfCloned(args)
+            "create", "run" -> sealBinary(rootPath)
+            "exec" -> ensureSelfCloned(args, rootPath)
             else -> Unit
         }
     }

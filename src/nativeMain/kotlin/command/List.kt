@@ -63,6 +63,7 @@ internal fun formatContainerList(
     val states =
         fs
             .listDirectories(rootPath)
+            .filter { !it.startsWith(".") } // skip internal dirs (e.g. .exeseal)
             .mapNotNull { dir ->
                 try {
                     loadState(fs, rootPath, dir).refreshStatus()

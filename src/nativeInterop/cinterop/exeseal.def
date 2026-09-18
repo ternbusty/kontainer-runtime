@@ -195,13 +195,25 @@ static inline int _resolve_exe_path(char *dir_buf, size_t dir_len,
  * cloning — the binary contents are never read or written.
  *
  * The overlayfs is created with two lowerdirs (the binary's directory and
- * a dummy) which puts it in "lower-only" mode — no upperdir/workdir —
- * making writes completely impossible.  Unlike bind-mount + MS_RDONLY,
- * overlayfs cannot be "unwrapped" by a container process.
+ * a caller-provided dummy) which puts it in "lower-only" mode — no
+ * upperdir/workdir — making writes completely impossible.  Unlike
+ * bind-mount + MS_RDONLY, overlayfs cannot be "unwrapped" by a container
+ * process.
+ *
+ * @param dummy_dir  An empty directory to use as the second lowerdir.
+ *                   Must not be an ancestor or descendant of the binary's
+ *                   directory; otherwise overlayfs returns ELOOP.
+ *                   Typically a dedicated subdirectory under the runtime's
+ *                   state root (e.g. /run/kontainer/.exeseal).
  *
  * Requires: root, Linux 5.2+ (new mount API), overlayfs module.
  */
-static inline int _try_sealed_overlayfs(void) {
+static inline int _try_sealed_overlayfs(const char *dummy_dir) {
+    if (dummy_dir == NULL || dummy_dir[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+
     /* Resolve the real path of /proc/self/exe. */
     char dir_buf[4096], name_buf[4096];
     if (_resolve_exe_path(dir_buf, sizeof(dir_buf),
@@ -224,10 +236,20 @@ static inline int _try_sealed_overlayfs(void) {
     }
     escaped[j] = '\0';
 
+    /* Escape the dummy directory path as well. */
+    char escaped_dummy[8192];
+    size_t k = 0;
+    for (size_t i = 0; dummy_dir[i] && k < sizeof(escaped_dummy) - 2; i++) {
+        if (dummy_dir[i] == '\\' || dummy_dir[i] == ':')
+            escaped_dummy[k++] = '\\';
+        escaped_dummy[k++] = dummy_dir[i];
+    }
+    escaped_dummy[k] = '\0';
+
     /* Two lowerdirs = "lower-only" mode (fully read-only).
      * The binary's directory comes first so it takes priority. */
     char lowerdir[16384];
-    snprintf(lowerdir, sizeof(lowerdir), "%s:/tmp", escaped);
+    snprintf(lowerdir, sizeof(lowerdir), "%s:%s", escaped, escaped_dummy);
     if (_fsconfig(ctx_fd, FSCONFIG_SET_STRING, "lowerdir", lowerdir, 0) < 0) {
         close(ctx_fd);
         return -1;
