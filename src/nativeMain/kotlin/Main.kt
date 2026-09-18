@@ -856,7 +856,7 @@ private fun peekSubcommand(args: Array<String>): String? {
  * state root to exeseal, which needs a directory under it for the
  * overlayfs dummy lowerdir.
  */
-private fun peekRootPath(args: Array<String>): String {
+internal fun peekRootPath(args: Array<String>): String {
     var i = 0
     while (i < args.size) {
         val arg = args[i]
