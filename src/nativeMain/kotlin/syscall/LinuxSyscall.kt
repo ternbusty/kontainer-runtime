@@ -266,20 +266,20 @@ class LinuxSyscall : Syscall {
         // /proc/self/setgroups may contain "deny" in unprivileged user namespace (Linux 3.19+)
         val setgroupsPath = "/proc/self/setgroups"
         memScoped {
-            val fp = fopen(setgroupsPath, "r")
-            if (fp == null) {
-                Logger.debug("/proc/self/setgroups does not exist, proceeding with setgroups")
-            } else {
-                val buffer = allocArray<ByteVar>(32)
-                val result = fgets(buffer, 32, fp)
-                fclose(fp)
+            val fp =
+                fopen(setgroupsPath, "r") ?: run {
+                    Logger.debug("/proc/self/setgroups does not exist, proceeding with setgroups")
+                    return@memScoped
+                }
+            val buffer = allocArray<ByteVar>(32)
+            val result = fgets(buffer, 32, fp)
+            fclose(fp)
 
-                if (result != null) {
-                    val content = result.toKString().trim()
-                    if (content == "deny") {
-                        Logger.warn("setgroups is denied in this user namespace, skipping")
-                        return
-                    }
+            result?.let {
+                val content = it.toKString().trim()
+                if (content == "deny") {
+                    Logger.warn("setgroups is denied in this user namespace, skipping")
+                    return
                 }
             }
         }
@@ -363,11 +363,11 @@ class LinuxSyscall : Syscall {
         val procFdPath = "/proc/self/fd"
         val fds = mutableListOf<Int>()
 
-        val dir = opendir(procFdPath)
-        if (dir == null) {
-            Logger.warn("failed to open $procFdPath for FD enumeration")
-            return emptyList()
-        }
+        val dir =
+            opendir(procFdPath) ?: run {
+                Logger.warn("failed to open $procFdPath for FD enumeration")
+                return emptyList()
+            }
 
         try {
             while (true) {

@@ -1015,11 +1015,11 @@ fun applySysctls(sysctls: Map<String, String>?) {
     if (sysctls.isNullOrEmpty()) return
     for ((key, value) in sysctls) {
         val sysctlPath = "/proc/sys/" + key.replace('.', '/')
-        val fd = fopen(sysctlPath, "w")
-        if (fd == null) {
-            Logger.warn("failed to open $sysctlPath for sysctl $key (errno=$errno)")
-            continue
-        }
+        val fd =
+            fopen(sysctlPath, "w") ?: run {
+                Logger.warn("failed to open $sysctlPath for sysctl $key (errno=$errno)")
+                continue
+            }
         try {
             if (fputs(value, fd) < 0) {
                 Logger.warn("failed to write sysctl $key=$value to $sysctlPath (errno=$errno)")
@@ -1297,14 +1297,12 @@ private fun resolveComponents(
                     val n = readlink(next, buf, 4095u)
                     if (n <= 0) null else buf.toKString().substring(0, n.toInt())
                 }
-            if (linkTarget != null) {
-                val base = if (linkTarget.startsWith("/")) rootfs else cur
-                val linkParts = linkTarget.trimStart('/').split("/").filter { it.isNotEmpty() }
-                // Concatenate remaining original components after the link parts.
+            linkTarget?.let { target ->
+                val base = if (target.startsWith("/")) rootfs else cur
+                val linkParts = target.trimStart('/').split("/").filter { it.isNotEmpty() }
                 val remaining = components.subList(i + 1, components.size)
                 val merged = linkParts + remaining
                 val resolved = resolveComponents(rootfs, merged, 0, base, depth + 1)
-                // Security: ensure we're still under rootfs.
                 return if (resolved.startsWith(rootfs)) resolved else rootfs
             }
         }
@@ -1998,11 +1996,11 @@ private fun buildMappingString(mappings: List<LinuxIdMapping>?): String {
  */
 @OptIn(ExperimentalForeignApi::class)
 fun getContainerCgroupPath(): String? {
-    val fd = fopen("/proc/self/cgroup", "r")
-    if (fd == null) {
-        Logger.warn("failed to open /proc/self/cgroup")
-        return null
-    }
+    val fd =
+        fopen("/proc/self/cgroup", "r") ?: run {
+            Logger.warn("failed to open /proc/self/cgroup")
+            return null
+        }
 
     try {
         memScoped {

@@ -51,12 +51,12 @@ fun update(
             return
         }
 
-    val cgroupPath = config.cgroupPath
-    if (cgroupPath == null) {
-        Logger.error("container $containerId has no cgroupsPath, cannot update")
-        exit(1)
-        return
-    }
+    val cgroupPath =
+        config.cgroupPath ?: run {
+            Logger.error("container $containerId has no cgroupsPath, cannot update")
+            exit(1)
+            return
+        }
 
     // Start with the resources file (if provided), then overlay CLI flags.
     var resources =
@@ -117,9 +117,7 @@ fun update(
                     ),
             )
     }
-    if (pidsLimit != null) {
-        resources = resources.copy(pids = (resources.pids ?: LinuxPids()).copy(limit = pidsLimit))
-    }
+    pidsLimit?.let { resources = resources.copy(pids = (resources.pids ?: LinuxPids()).copy(limit = it)) }
 
     // Validate cpu.idle (must be 0 or 1)
     resources.cpu?.idle?.let { idle ->

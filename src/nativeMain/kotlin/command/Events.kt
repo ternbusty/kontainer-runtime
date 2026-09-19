@@ -48,12 +48,12 @@ fun events(
             return
         }
 
-    val cgroupPath = config.cgroupPath
-    if (cgroupPath == null) {
-        Logger.error("container $containerId has no cgroupsPath, cannot read events")
-        exit(1)
-        return
-    }
+    val cgroupPath =
+        config.cgroupPath ?: run {
+            Logger.error("container $containerId has no cgroupsPath, cannot read events")
+            exit(1)
+            return
+        }
 
     val cgDir = "/sys/fs/cgroup/${cgroupPath.removePrefix("/")}"
 
@@ -289,7 +289,7 @@ private fun discoverHugepageSizes(): List<String> {
             // "hugepages-2048kB" → "2048kB" → convert to "2MB"
             val sizeStr = name.removePrefix("hugepages-")
             val cgroupSize = convertHugepageSize(sizeStr)
-            if (cgroupSize != null) sizes.add(cgroupSize)
+            cgroupSize?.let { sizes.add(it) }
         }
     } finally {
         closedir(dir)

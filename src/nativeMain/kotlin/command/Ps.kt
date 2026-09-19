@@ -56,13 +56,13 @@ fun ps(
             return
         }
 
-    val cgroupPath = config.cgroupPath
-    if (cgroupPath == null) {
-        Logger.error("no cgroup path found in container config")
-        Logger.error("container may have been created without cgroup support")
-        exit(1)
-        return
-    }
+    val cgroupPath =
+        config.cgroupPath ?: run {
+            Logger.error("no cgroup path found in container config")
+            Logger.error("container may have been created without cgroup support")
+            exit(1)
+            return
+        }
 
     Logger.debug("cgroup path: $cgroupPath")
 

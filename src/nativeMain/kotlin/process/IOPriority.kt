@@ -19,7 +19,7 @@ private const val IOPRIO_WHO_PROCESS = 1
  */
 @OptIn(ExperimentalForeignApi::class)
 fun applyIOPriority(ioPriority: LinuxIOPriority?) {
-    if (ioPriority == null) return
+    ioPriority ?: return
 
     val value = (ioPriority.classValue() shl 13) or ioPriority.priority
     val rc = syscall(_NR_ioprio_set(), IOPRIO_WHO_PROCESS.toLong(), 0L, value.toLong())

@@ -319,9 +319,7 @@ private fun runMainProcessInternal(
                     close(fd)
                     initSender.seccompNotifyDone()
                     Logger.debug("sent seccomp notify done signal")
-                    if (seccompError != null) {
-                        throw seccompError!!
-                    }
+                    seccompError?.let { throw it }
                 }
                 is Message.InitReady -> {
                     Logger.debug("init process is ready")
@@ -368,10 +366,10 @@ private fun runMainProcessInternal(
         saveKontainerConfig(fs, kontainerConfig, rootPath, containerId)
 
         // Write PID to file if --pid-file was specified
-        if (pidFile != null) {
-            Logger.debug("writing PID to file: $pidFile")
-            fs.writeTextFile(pidFile, "$stage2Pid")
-            Logger.debug("successfully wrote PID $stage2Pid to $pidFile")
+        pidFile?.let {
+            Logger.debug("writing PID to file: $it")
+            fs.writeTextFile(it, "$stage2Pid")
+            Logger.debug("successfully wrote PID $stage2Pid to $it")
         }
 
         Logger.info("container $containerId created with init PID $stage2Pid")

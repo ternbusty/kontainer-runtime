@@ -53,14 +53,14 @@ internal fun superviseForeground(
             val exitCode = awaitProcessExit(io, targetPid)
 
             sigJob?.cancel()
-            if (relayJob != null) {
+            relayJob?.let { job ->
                 // Let the relay drain buffered output: once the container's
                 // pty slave closes, the master read hits EOF and the relay
                 // ends on its own. If something inside the container still
                 // holds the slave open, don't hang — cancel after a grace
                 // period (runc equivalently force-closes the master).
-                withTimeoutOrNull(200) { relayJob.join() }
-                relayJob.cancel()
+                withTimeoutOrNull(200) { job.join() }
+                job.cancel()
             }
             exitCode
         }

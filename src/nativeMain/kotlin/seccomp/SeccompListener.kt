@@ -160,16 +160,11 @@ private fun sendJsonWithFd(
         msg.msg_flags = 0
 
         // Set up control message header for FD transfer
-        val cmsg = _CMSG_FIRSTHDR(msg.ptr)
-        if (cmsg != null) {
+        _CMSG_FIRSTHDR(msg.ptr)?.let { cmsg ->
             cmsg.pointed.cmsg_level = SOL_SOCKET
             cmsg.pointed.cmsg_type = SCM_RIGHTS
             cmsg.pointed.cmsg_len = _CMSG_LEN(sizeOf<IntVar>().toULong())
-
-            val dataPtr = _CMSG_DATA(cmsg)
-            if (dataPtr != null) {
-                dataPtr.reinterpret<IntVar>().pointed.value = fd
-            }
+            _CMSG_DATA(cmsg)?.reinterpret<IntVar>()?.let { it.pointed.value = fd }
         }
 
         val sent = sendmsg(sock, msg.ptr, 0)

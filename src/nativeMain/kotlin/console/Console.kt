@@ -377,16 +377,15 @@ private fun receiveFdFromSocket(sock: Int): Int =
             return -1
         }
 
-        val cmsg = _CMSG_FIRSTHDR(msg.ptr)
-        if (cmsg == null ||
-            cmsg.pointed.cmsg_level != SOL_SOCKET ||
-            cmsg.pointed.cmsg_type != SCM_RIGHTS
-        ) {
-            Logger.warn("receiveFdFromSocket: unexpected cmsg (no SCM_RIGHTS)")
-            return -1
-        }
+        val cmsg =
+            _CMSG_FIRSTHDR(msg.ptr)
+                ?.takeIf { it.pointed.cmsg_level == SOL_SOCKET && it.pointed.cmsg_type == SCM_RIGHTS }
+                ?: run {
+                    Logger.warn("receiveFdFromSocket: unexpected cmsg (no SCM_RIGHTS)")
+                    return -1
+                }
 
-        val fdPtr = _CMSG_DATA(cmsg)!!.reinterpret<IntVar>()
+        val fdPtr = (_CMSG_DATA(cmsg) ?: return -1).reinterpret<IntVar>()
         val fd = fdPtr.pointed.value
         Logger.debug("received fd $fd via SCM_RIGHTS")
         fd

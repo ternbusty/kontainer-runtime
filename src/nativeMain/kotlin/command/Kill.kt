@@ -88,12 +88,12 @@ fun kill(
     Logger.debug("parsed signal: $signalStr -> $signal")
 
     // Get PID from state
-    val pid = state.pid
-    if (pid == null) {
-        Logger.error("container has no PID in state")
-        exit(1)
-        return
-    }
+    val pid =
+        state.pid ?: run {
+            Logger.error("container has no PID in state")
+            exit(1)
+            return
+        }
 
     // Try to send the signal to ALL processes in the container's cgroup.
     // This handles the host-pidns case where killing just init doesn't
