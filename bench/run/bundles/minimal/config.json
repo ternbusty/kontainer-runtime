@@ -1,0 +1,23 @@
+{
+  "ociVersion": "1.0.2",
+  "process": {
+    "terminal": false,
+    "user": { "uid": 0, "gid": 0 },
+    "args": [ "/bin/true" ],
+    "env": [ "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" ],
+    "cwd": "/",
+    "noNewPrivileges": true
+  },
+  "root": { "path": "../rootfs", "readonly": true },
+  "hostname": "bench",
+  "mounts": [
+    { "destination": "/proc", "type": "proc", "source": "proc" },
+    { "destination": "/dev", "type": "tmpfs", "source": "tmpfs",
+      "options": [ "nosuid", "strictatime", "mode=755", "size=65536k" ] }
+  ],
+  "linux": {
+    "namespaces": [
+      { "type": "pid" }, { "type": "mount" }, { "type": "uts" }, { "type": "ipc" }
+    ]
+  }
+}
