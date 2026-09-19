@@ -11,8 +11,9 @@ Most operations require `CAP_SYS_ADMIN` to unshare namespaces, install seccomp f
 Grab the latest release binary from GitHub and drop it on `PATH`.
 
 ```bash
-curl -sSL -o /usr/local/bin/kontainer-runtime \
-  https://github.com/ternbusty/kontainer-runtime/releases/latest/download/kontainer-runtime_$(curl -sSL https://api.github.com/repos/ternbusty/kontainer-runtime/releases/latest | grep -oE '"tag_name":\s*"v[^"]+"' | sed -E 's/.*"v([^"]+)".*/\1/')_linux_amd64
+VERSION=$(curl -sSL https://api.github.com/repos/ternbusty/kontainer-runtime/releases/latest | grep -oP '"tag_name": "v\K[^"]+')
+sudo curl -sSL -o /usr/local/bin/kontainer-runtime \
+  "https://github.com/ternbusty/kontainer-runtime/releases/latest/download/kontainer-runtime_${VERSION}_linux_amd64"
 sudo chmod +x /usr/local/bin/kontainer-runtime
 kontainer-runtime --help
 ```
@@ -21,7 +22,7 @@ Or fetch a specific version.
 
 ```bash
 VERSION=0.2.1
-curl -sSL -o /usr/local/bin/kontainer-runtime \
+sudo curl -sSL -o /usr/local/bin/kontainer-runtime \
   "https://github.com/ternbusty/kontainer-runtime/releases/download/v${VERSION}/kontainer-runtime_${VERSION}_linux_amd64"
 sudo chmod +x /usr/local/bin/kontainer-runtime
 ```
