@@ -151,9 +151,7 @@ private fun initProcessInternal(
             // spec timing (post-1.0.2).
             spec.hooks?.createContainer?.let { hooks ->
                 val hookErr = hook.runHooksGetError(hooks, createdState, phase = "createContainer")
-                if (hookErr != null) {
-                    throw RuntimeException(hookErr)
-                }
+                hookErr?.let { throw RuntimeException(it) }
             }
             val noPivot = getenv("_KONTAINER_NO_PIVOT")?.toKString() == "1"
             if (noPivot) {
@@ -253,11 +251,14 @@ private fun initProcessInternal(
         // Send a pidfd for ourselves over the pre-connected pidfd socket.
         // Done after namespace setup (so the pidfd refers to a process
         // inside the container namespaces) and before execve.
-        val pidfdSocketFd = getenv("_KONTAINER_PIDFD_SOCKET_FD")?.toKString()?.toIntOrNull()
-        if (pidfdSocketFd != null && pidfdSocketFd >= 0) {
-            Logger.debug("sending pidfd over pre-connected socket fd=$pidfdSocketFd")
-            sendPidfd(pidfdSocketFd, "standard")
-        }
+        getenv("_KONTAINER_PIDFD_SOCKET_FD")
+            ?.toKString()
+            ?.toIntOrNull()
+            ?.takeIf { it >= 0 }
+            ?.let { pidfdSocketFd ->
+                Logger.debug("sending pidfd over pre-connected socket fd=$pidfdSocketFd")
+                sendPidfd(pidfdSocketFd, "standard")
+            }
 
         // I/O priority, scheduler, and memory policy must be applied before
         // privilege drop — they may require CAP_SYS_ADMIN / CAP_SYS_NICE.
@@ -377,17 +378,17 @@ private fun initProcessInternal(
         // everything except stdio (0-2) and the notify listener socket.
         val keepFd = notifyListener.fd()
         val dir = opendir("/proc/self/fd")
-        if (dir != null) {
+        dir?.let { d ->
             val leaked = mutableListOf<Int>()
             while (true) {
-                val entry = readdir(dir) ?: break
+                val entry = readdir(d) ?: break
                 val fd =
                     entry.pointed.d_name
                         .toKString()
                         .toIntOrNull() ?: continue
                 if (fd >= 3 && fd != keepFd) leaked.add(fd)
             }
-            closedir(dir) // closes its own internal fd
+            closedir(d) // closes its own internal fd
             for (fd in leaked) close(fd) // EBADF on dir-fd is harmless
         }
 
@@ -414,9 +415,7 @@ private fun initProcessInternal(
         spec.hooks?.startContainer?.let { hooks ->
             val runningState = createdState.copy(status = state.ContainerStatus.RUNNING)
             val hookErr = hook.runHooksGetError(hooks, runningState, phase = "startContainer", processEnv = processEnv)
-            if (hookErr != null) {
-                throw RuntimeException(hookErr)
-            }
+            hookErr?.let { throw RuntimeException(it) }
         }
 
         // An empty args list means the spec omitted spec.process entirely. The

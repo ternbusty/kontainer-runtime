@@ -39,12 +39,12 @@ fun resume(
             return
         }
 
-    val cgroupPath = config.cgroupPath
-    if (cgroupPath == null) {
-        Logger.error("container $containerId has no cgroupsPath, cannot resume")
-        exit(1)
-        return
-    }
+    val cgroupPath =
+        config.cgroupPath ?: run {
+            Logger.error("container $containerId has no cgroupsPath, cannot resume")
+            exit(1)
+            return
+        }
 
     val normalizedPath = cgroupPath.removePrefix("/")
     val freezePath = "/sys/fs/cgroup/$normalizedPath/cgroup.freeze"

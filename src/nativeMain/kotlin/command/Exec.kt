@@ -125,10 +125,10 @@ fun exec(
     }
 
     // Validate --pid-file path early (runc exits 255 for invalid path)
-    if (pidFilePath != null) {
-        val parentDir = pidFilePath.substringBeforeLast('/', "")
+    pidFilePath?.let { path ->
+        val parentDir = path.substringBeforeLast('/', "")
         if (parentDir.isNotEmpty() && access(parentDir, F_OK) != 0) {
-            Logger.error("exec: failed to create pid file: open $pidFilePath: no such file or directory")
+            Logger.error("exec: failed to create pid file: open $path: no such file or directory")
             _exit(255)
         }
     }
@@ -211,16 +211,14 @@ fun exec(
         }
 
     // Apply CLI overrides to the exec process spec
-    if (cwdOverride != null) {
-        execProcess = execProcess.copy(cwd = cwdOverride)
-    }
+    cwdOverride?.let { execProcess = execProcess.copy(cwd = it) }
     if (envOverrides.isNotEmpty()) {
         val existingEnv = execProcess.env?.toMutableList() ?: mutableListOf()
         existingEnv.addAll(envOverrides)
         execProcess = execProcess.copy(env = existingEnv)
     }
-    if (userOverride != null) {
-        val parts = userOverride.split(":")
+    userOverride?.let { override ->
+        val parts = override.split(":")
         val uid = parts[0].toUIntOrNull() ?: 0u
         val gid = if (parts.size > 1) parts[1].toUIntOrNull() ?: 0u else uid
         val existingAdditionalGids = execProcess.user.additionalGids
@@ -290,12 +288,11 @@ fun exec(
             Logger.error("exec: failed to load kontainer config: ${e.message}")
             exit(1)
             return
+        } ?: run {
+            Logger.error("exec: no cgroup path recorded for container $containerId")
+            exit(1)
+            return
         }
-    if (baseCgroupPath == null) {
-        Logger.error("exec: no cgroup path recorded for container $containerId")
-        exit(1)
-        return
-    }
 
     // Append the --cgroup subcgroup path (if given). A leading "/" means
     // "relative to the container's cgroup root", not an absolute host path.
@@ -426,10 +423,10 @@ fun exec(
     // the container's namespaces). The grandchild will open a pidfd for
     // itself and send it over this pre-connected fd via SCM_RIGHTS.
     var pidfdSocketFd = -1
-    if (pidfdSocket != null) {
-        pidfdSocketFd = connectConsoleSocket(pidfdSocket)
+    pidfdSocket?.let { socket ->
+        pidfdSocketFd = connectConsoleSocket(socket)
         if (pidfdSocketFd < 0) {
-            Logger.error("exec: failed to connect to pidfd socket: $pidfdSocket")
+            Logger.error("exec: failed to connect to pidfd socket: $socket")
             nsFds.values.forEach { close(it) }
             if (consoleSocketFd >= 0) close(consoleSocketFd)
             exit(1)
@@ -699,11 +696,10 @@ private fun runExecChild(
     }
 
     // Pass 2: join user namespace
-    if (userNs != null) {
-        val fd = nsFds[userNs.procName]
-        if (fd != null) {
-            if (syscall.setns(fd, userNs.cloneFlag) != 0) {
-                fprintf(stderr, "exec: setns(%s) failed: %s\n", userNs.ociType.value, strerror(errno))
+    userNs?.let { ns ->
+        nsFds[ns.procName]?.let { fd ->
+            if (syscall.setns(fd, ns.cloneFlag) != 0) {
+                fprintf(stderr, "exec: setns(%s) failed: %s\n", ns.ociType.value, strerror(errno))
                 _exit(1)
             }
         }

@@ -48,18 +48,18 @@ fun sendPidfd(
         msg.msg_control = cmsgBuf
         msg.msg_controllen = cmsgSpace
 
-        val cmsg = _CMSG_FIRSTHDR(msg.ptr)
-        if (cmsg == null) {
-            Logger.warn("sendPidfd: _CMSG_FIRSTHDR returned null")
-            close(pidfd)
-            close(sockFd)
-            return
-        }
+        val cmsg =
+            _CMSG_FIRSTHDR(msg.ptr) ?: run {
+                Logger.warn("sendPidfd: _CMSG_FIRSTHDR returned null")
+                close(pidfd)
+                close(sockFd)
+                return
+            }
         cmsg.pointed.cmsg_level = SOL_SOCKET
         cmsg.pointed.cmsg_type = SCM_RIGHTS
         cmsg.pointed.cmsg_len = _CMSG_LEN(sizeOf<IntVar>().toULong())
 
-        val fdPtr = _CMSG_DATA(cmsg)!!.reinterpret<IntVar>()
+        val fdPtr = (_CMSG_DATA(cmsg) ?: return).reinterpret<IntVar>()
         fdPtr.pointed.value = pidfd
 
         val sent = sendmsg(sockFd, msg.ptr, 0)

@@ -39,7 +39,7 @@ data class NsJoin(
  */
 @OptIn(ExperimentalForeignApi::class)
 fun nsJoinList(namespaces: List<Namespace>?): List<NsJoin> {
-    if (namespaces == null) return emptyList()
+    namespaces ?: return emptyList()
     val specTypes = namespaces.map { it.type }.toSet()
     return listOf(
         NsJoin(NamespaceType.USER, "user", _CLONE_NEWUSER()),
@@ -64,7 +64,7 @@ fun nsJoinList(namespaces: List<Namespace>?): List<NsJoin> {
  */
 @OptIn(ExperimentalForeignApi::class)
 fun calculateCloneFlags(namespaces: List<Namespace>?): UInt {
-    if (namespaces == null) return 0u
+    namespaces ?: return 0u
 
     // A namespace entry with a non-empty `path` means "join an existing
     // namespace at this path", not "create a new one" — don't add it to

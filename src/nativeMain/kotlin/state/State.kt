@@ -420,12 +420,11 @@ internal fun parseProcStat(content: String): ProcStat? {
 private fun readProcStat(pid: Int): ProcStat? {
     val statPath = "/proc/$pid/stat"
 
-    val file = fopen(statPath, "r")
-    if (file == null) {
-        // Process doesn't exist
-        Logger.debug("process $pid does not exist (/proc/$pid/stat not found)")
-        return null
-    }
+    val file =
+        fopen(statPath, "r") ?: run {
+            Logger.debug("process $pid does not exist (/proc/$pid/stat not found)")
+            return null
+        }
 
     try {
         memScoped {
@@ -437,11 +436,10 @@ private fun readProcStat(pid: Int): ProcStat? {
             }
 
             buffer[bytesRead.toInt()] = 0 // Null terminate
-            val parsed = parseProcStat(buffer.toKString())
-            if (parsed == null) {
+            return parseProcStat(buffer.toKString()) ?: run {
                 Logger.warn("failed to parse /proc/$pid/stat")
+                return null
             }
-            return parsed
         }
     } finally {
         fclose(file)

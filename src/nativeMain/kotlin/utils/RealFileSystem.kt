@@ -13,13 +13,13 @@ class RealFileSystem : FileSystem {
         path: String,
         content: String,
     ) {
-        val fp = fopen(path, "w")
-        if (fp == null) {
-            val errNum = errno
-            val errMsg = strerror(errNum)?.toKString()?.lowercase() ?: "unknown error"
-            Logger.error("failed to open $path for writing ($errMsg)")
-            throw Exception("Failed to open $path for writing: $errMsg")
-        }
+        val fp =
+            fopen(path, "w") ?: run {
+                val errNum = errno
+                val errMsg = strerror(errNum)?.toKString()?.lowercase() ?: "unknown error"
+                Logger.error("failed to open $path for writing ($errMsg)")
+                throw Exception("Failed to open $path for writing: $errMsg")
+            }
 
         try {
             memScoped {
@@ -63,12 +63,12 @@ class RealFileSystem : FileSystem {
     }
 
     override fun readTextFile(path: String): String {
-        val fp = fopen(path, "r")
-        if (fp == null) {
-            val errNum = errno
-            Logger.error("failed to open $path for reading (errno=$errNum)")
-            throw Exception("Failed to open $path for reading: errno=$errNum")
-        }
+        val fp =
+            fopen(path, "r") ?: run {
+                val errNum = errno
+                Logger.error("failed to open $path for reading (errno=$errNum)")
+                throw Exception("Failed to open $path for reading: errno=$errNum")
+            }
 
         try {
             // Try seek-based reading first (works for regular files).
@@ -152,11 +152,11 @@ class RealFileSystem : FileSystem {
         }
 
     override fun readProcFile(path: String): String {
-        val fp = fopen(path, "r")
-        if (fp == null) {
-            val errNum = errno
-            throw Exception("Failed to open $path for reading: errno=$errNum")
-        }
+        val fp =
+            fopen(path, "r") ?: run {
+                val errNum = errno
+                throw Exception("Failed to open $path for reading: errno=$errNum")
+            }
 
         try {
             memScoped {
@@ -210,15 +210,14 @@ class RealFileSystem : FileSystem {
     }
 
     override fun fileExists(path: String): Boolean {
-        val fp = fopen(path, "r")
-        if (fp != null) {
-            fclose(fp)
-            Logger.debug("file exists: $path")
-            return true
-        }
-
-        Logger.debug("file does not exist: $path")
-        return false
+        val fp =
+            fopen(path, "r") ?: run {
+                Logger.debug("file does not exist: $path")
+                return false
+            }
+        fclose(fp)
+        Logger.debug("file exists: $path")
+        return true
     }
 
     override fun renameFile(
@@ -273,16 +272,15 @@ class RealFileSystem : FileSystem {
     }
 
     override fun removeDirectoryRecursively(path: String): Boolean {
-        val dir = opendir(path)
-        if (dir == null) {
-            val errNum = errno
-            return when (errNum) {
-                ENOENT -> false
-                // Not a directory: remove it as a plain entry (never follows symlinks).
-                ENOTDIR -> unlinkPath(path, isDirectory = false)
-                else -> throw Exception("Failed to open $path for removal: ${describeErrno(errNum)}")
+        val dir =
+            opendir(path) ?: run {
+                val errNum = errno
+                return when (errNum) {
+                    ENOENT -> false
+                    ENOTDIR -> unlinkPath(path, isDirectory = false)
+                    else -> throw Exception("Failed to open $path for removal: ${describeErrno(errNum)}")
+                }
             }
-        }
         try {
             while (true) {
                 val entry = readdir(dir) ?: break

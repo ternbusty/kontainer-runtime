@@ -119,7 +119,7 @@ class CgroupV2(
                 // cgroup.freeze may not exist (no freezer controller) — OK.
             }
 
-            if (pid != null) {
+            pid?.let { pid ->
                 val procsPath = "$fullPath/$CGROUP_PROCS"
                 try {
                     fs.writeTextFile(procsPath, pid.toString())
@@ -130,9 +130,7 @@ class CgroupV2(
                 }
             }
 
-            if (resources != null) {
-                applyResources(fullPath, resources, deferPids = deferPids)
-            }
+            resources?.let { applyResources(fullPath, it, deferPids = deferPids) }
         }
     }
 
@@ -172,7 +170,7 @@ class CgroupV2(
     }
 
     override fun cleanup(cgroupPath: String?) {
-        if (cgroupPath == null) {
+        cgroupPath ?: run {
             Logger.debug("no cgroup path specified, skipping cleanup")
             return
         }
@@ -337,7 +335,7 @@ class CgroupV2(
         cgroupPath: String,
         limit: Long?,
     ) {
-        if (limit == null) return
+        limit ?: return
         val value =
             when {
                 limit < 0 -> "max" // -1 = unlimited
@@ -488,13 +486,11 @@ class CgroupV2(
     }
 
     private fun getRequiredControllers(resources: LinuxResources?): List<String> {
-        if (resources == null) {
-            return emptyList()
-        }
+        resources ?: return emptyList()
         return buildList {
-            if (resources.memory != null) add("memory")
-            if (resources.cpu != null) add("cpu")
-            if (resources.pids != null) add("pids")
+            resources.memory?.let { add("memory") }
+            resources.cpu?.let { add("cpu") }
+            resources.pids?.let { add("pids") }
             if (!resources.hugepageLimits.isNullOrEmpty()) add("hugetlb")
         }
     }

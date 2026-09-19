@@ -84,16 +84,11 @@ private fun sendMessageWithFd(
         msg.msg_controllen = cmsgSpace
         msg.msg_flags = 0
 
-        val cmsg = _CMSG_FIRSTHDR(msg.ptr)
-        if (cmsg != null) {
+        _CMSG_FIRSTHDR(msg.ptr)?.let { cmsg ->
             cmsg.pointed.cmsg_level = SOL_SOCKET
             cmsg.pointed.cmsg_type = SCM_RIGHTS
             cmsg.pointed.cmsg_len = _CMSG_LEN(sizeOf<IntVar>().toULong())
-
-            val dataPtr = _CMSG_DATA(cmsg)
-            if (dataPtr != null) {
-                dataPtr.reinterpret<IntVar>().pointed.value = fd
-            }
+            _CMSG_DATA(cmsg)?.reinterpret<IntVar>()?.let { it.pointed.value = fd }
         }
 
         val sent = sendmsg(socket, msg.ptr, 0)
@@ -137,15 +132,11 @@ private fun receiveMessageWithFd(socket: Int): Pair<Message, Int> {
         val json = buffer.toKString()
         val message = JsonCodec.decode<Message>(json)
 
-        var receivedFd = -1
-        val cmsg = _CMSG_FIRSTHDR(msg.ptr)
-
-        if (cmsg != null && cmsg.pointed.cmsg_level == SOL_SOCKET && cmsg.pointed.cmsg_type == SCM_RIGHTS) {
-            val dataPtr = _CMSG_DATA(cmsg)
-            if (dataPtr != null) {
-                receivedFd = dataPtr.reinterpret<IntVar>().pointed.value
-            }
-        }
+        val receivedFd =
+            _CMSG_FIRSTHDR(msg.ptr)
+                ?.takeIf { it.pointed.cmsg_level == SOL_SOCKET && it.pointed.cmsg_type == SCM_RIGHTS }
+                ?.let { _CMSG_DATA(it)?.reinterpret<IntVar>()?.pointed?.value }
+                ?: -1
 
         if (receivedFd == -1) {
             // Error messages from the init process don't carry an FD.
@@ -200,14 +191,11 @@ private fun receiveMessageOptionalFd(socket: Int): Pair<Message, Int> {
         val json = buffer.toKString()
         val message = JsonCodec.decode<Message>(json)
 
-        var receivedFd = -1
-        val cmsg = _CMSG_FIRSTHDR(msg.ptr)
-        if (cmsg != null && cmsg.pointed.cmsg_level == SOL_SOCKET && cmsg.pointed.cmsg_type == SCM_RIGHTS) {
-            val dataPtr = _CMSG_DATA(cmsg)
-            if (dataPtr != null) {
-                receivedFd = dataPtr.reinterpret<IntVar>().pointed.value
-            }
-        }
+        val receivedFd =
+            _CMSG_FIRSTHDR(msg.ptr)
+                ?.takeIf { it.pointed.cmsg_level == SOL_SOCKET && it.pointed.cmsg_type == SCM_RIGHTS }
+                ?.let { _CMSG_DATA(it)?.reinterpret<IntVar>()?.pointed?.value }
+                ?: -1
 
         // Error messages are always propagated, regardless of fd presence.
         when (message) {

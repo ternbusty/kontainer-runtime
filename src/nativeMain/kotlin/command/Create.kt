@@ -60,7 +60,7 @@ fun create(
         // consumers (hooks, /proc/<pid>/root lookups, debuggers) rely on it.
         val absBundle =
             allocArray<ByteVar>(4096).let { buf ->
-                if (realpath(bundlePath, buf) == null) {
+                realpath(bundlePath, buf) ?: run {
                     Logger.error("failed to resolve bundle path '$bundlePath' (errno=$errno)")
                     exit(1)
                     return@memScoped
@@ -334,8 +334,7 @@ fun create(
         // envp = our environment + the child-specific entries (which win on key clash)
         val childKeys = childEnv.map { it.substringBefore('=') }.toSet()
         val inheritedEnv = mutableListOf<String>()
-        val environ = kontainer_environ()
-        if (environ != null) {
+        kontainer_environ()?.let { environ ->
             var i = 0
             while (true) {
                 val entry = environ[i] ?: break

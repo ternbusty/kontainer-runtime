@@ -74,11 +74,10 @@ fun run(
                     val result = mkdtemp(buf)
                     result?.toKString()
                 }
-            if (tmpDir != null) {
-                val pair = createConsoleSocketListener(tmpDir)
-                if (pair != null) {
-                    internalSocketPath = pair.first
-                    internalConsoleFd = pair.second
+            tmpDir?.let { dir ->
+                createConsoleSocketListener(dir)?.let { (socketPath, fd) ->
+                    internalSocketPath = socketPath
+                    internalConsoleFd = fd
                     effectiveConsoleSocket = internalSocketPath
                     Logger.debug("created internal console socket at $internalSocketPath")
                 }
@@ -96,10 +95,9 @@ fun run(
         masterFd = acceptConsoleMaster(internalConsoleFd)
         close(internalConsoleFd)
         internalConsoleFd = -1
-        if (internalSocketPath != null) {
-            unlink(internalSocketPath)
-            // Try to rmdir the parent temp directory
-            val parentDir = internalSocketPath.substringBeforeLast('/')
+        internalSocketPath?.let { path ->
+            unlink(path)
+            val parentDir = path.substringBeforeLast('/')
             rmdir(parentDir)
         }
         if (masterFd < 0) {

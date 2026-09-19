@@ -24,7 +24,7 @@ private const val SCHED_ATTR_SIZE = 48
 
 @OptIn(ExperimentalForeignApi::class)
 fun applyScheduler(scheduler: LinuxScheduler?) {
-    if (scheduler == null) return
+    scheduler ?: return
 
     memScoped {
         val attr = allocArray<ByteVar>(SCHED_ATTR_SIZE)

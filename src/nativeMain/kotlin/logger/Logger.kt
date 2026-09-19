@@ -87,13 +87,11 @@ object Logger {
     private fun detectLogLevel(): Level {
         val envVar = getenv("KONTAINER_LOG_LEVEL")?.toKString()
 
-        if (envVar != null) {
-            Level.fromString(envVar)?.let { level ->
-                if (level <= Level.DEBUG) {
-                    stderrEnabled = true
-                }
-                return level
+        envVar?.let { Level.fromString(it) }?.let { level ->
+            if (level <= Level.DEBUG) {
+                stderrEnabled = true
             }
+            return level
         }
 
         // Default log level from build configuration
@@ -114,10 +112,7 @@ object Logger {
      * wireStdio replaces fd 2 with the PTY slave.
      */
     fun redirectToFd(fd: Int) {
-        val f = fdopen(fd, "w")
-        if (f != null) {
-            stderrOverride = f
-        }
+        fdopen(fd, "w")?.let { stderrOverride = it }
     }
 
     /**
@@ -178,13 +173,13 @@ object Logger {
         // O_CLOEXEC: don't leak the host log fd into the container process
         // across execve.
         val fd = open(path, O_WRONLY or O_CREAT or O_APPEND or O_NOFOLLOW or O_CLOEXEC, 0x1A4u) // 0644
-        val file = if (fd >= 0) fdopen(fd, "a") else null
-        if (file == null) {
-            fprintf(stderr, "[ERROR] Failed to open log file: %s\n", path)
-            perror("open")
-            if (fd >= 0) close(fd)
-            return
-        }
+        val file =
+            (if (fd >= 0) fdopen(fd, "a") else null) ?: run {
+                fprintf(stderr, "[ERROR] Failed to open log file: %s\n", path)
+                perror("open")
+                if (fd >= 0) close(fd)
+                return
+            }
 
         logFile = file
         // Don't log to stderr - it pollutes stdout when used with containerd

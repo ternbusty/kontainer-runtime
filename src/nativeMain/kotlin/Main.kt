@@ -529,7 +529,7 @@ private fun parseDurationMs(input: String): Long {
     }
     if (s.endsWith("us") || s.endsWith("µs")) {
         val v = s.removeSuffix("us").removeSuffix("µs").toLongOrNull()
-        if (v != null) return maxOf(v / 1000, 1)
+        v?.let { return maxOf(it / 1000, 1) }
     }
     if (s.endsWith("ns")) {
         s.removeSuffix("ns").toLongOrNull()?.let { return maxOf(it / 1_000_000, 1) }

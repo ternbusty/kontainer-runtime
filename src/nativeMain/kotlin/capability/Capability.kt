@@ -81,7 +81,7 @@ private fun capabilitiesToMask(caps: Set<Capability>): ULong = caps.fold(0UL) { 
  * Convert OCI capability name list to Capability set
  */
 fun parseCapabilities(capNames: List<String>?): Set<Capability> {
-    if (capNames == null) return emptySet()
+    capNames ?: return emptySet()
 
     return capNames
         .mapNotNull { name ->
@@ -237,7 +237,7 @@ fun applyCapabilities(
         ),
     )
 
-    if (capabilities.ambient != null) {
+    capabilities.ambient?.let {
         Logger.debug("setting ambient capabilities: ${ambientCaps.map { it.capName }}")
         setAmbientCapabilities(syscall, ambientCaps)
     }

@@ -81,10 +81,7 @@ fun applyProcessSecurity(
     }
 
     seccomp?.let { profile ->
-        val notifyFd = applySeccomp(profile)
-        if (notifyFd != null) {
-            onSeccompNotifyFd(notifyFd)
-        }
+        applySeccomp(profile)?.let { onSeccompNotifyFd(it) }
     }
 
     // Capability ordering:

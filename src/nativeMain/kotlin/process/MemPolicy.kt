@@ -28,7 +28,7 @@ private const val MPOL_F_RELATIVE_NODES = 1 shl 14 // 0x4000
  */
 @OptIn(ExperimentalForeignApi::class)
 fun applyMemoryPolicy(policy: LinuxMemoryPolicy?) {
-    if (policy == null) return
+    policy ?: return
 
     val mode = parseMode(policy.mode)
     val flags = parseFlags(policy.flags)
@@ -76,7 +76,7 @@ fun applyMemoryPolicy(policy: LinuxMemoryPolicy?) {
 }
 
 private fun parseMode(mode: MemoryPolicyMode?): Int {
-    if (mode == null) throw Exception("invalid memory policy mode: (empty)")
+    mode ?: throw Exception("invalid memory policy mode: (empty)")
     return when (mode) {
         MemoryPolicyMode.DEFAULT -> MPOL_DEFAULT
         MemoryPolicyMode.PREFERRED -> MPOL_PREFERRED

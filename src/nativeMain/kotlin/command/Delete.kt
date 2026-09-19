@@ -65,13 +65,11 @@ fun delete(
             // In host-pidns scenarios the init process may be gone but child
             // processes remain in the cgroup — kill them before cleanup.
             Logger.debug("container is stopped, proceeding with deletion")
-            val cgPath =
-                try {
-                    loadKontainerConfig(fs, rootPath, containerId).cgroupPath
-                } catch (_: Exception) {
-                    null
-                }
-            if (cgPath != null) {
+            try {
+                loadKontainerConfig(fs, rootPath, containerId).cgroupPath
+            } catch (_: Exception) {
+                null
+            }?.let { cgPath ->
                 try {
                     val pids = cgroup.getPids(cgPath)
                     for (p in pids) {
@@ -114,9 +112,9 @@ fun delete(
                 }
             }
 
-            if (cgPath != null) {
+            cgPath?.let { path ->
                 try {
-                    val pids = cgroup.getPids(cgPath)
+                    val pids = cgroup.getPids(path)
                     for (p in pids) {
                         try {
                             syscall.killProcess(p, SIGKILL)
