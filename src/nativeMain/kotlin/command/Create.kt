@@ -20,6 +20,7 @@ import rootfs.validateSysctls
 import seccomp.validateSeccompFlags
 import spec.NamespaceType
 import spec.loadSpec
+import spec.writeSpecToPipe
 import state.containerExists
 import state.deleteContainerDir
 import state.deleteNotifySocket
@@ -242,6 +243,23 @@ fun create(
             }
 
         // ------------------------------------------------------------------
+        // Serialize the parsed spec and write it into a pipe so the init
+        // process can read it without re-opening config.json. After
+        // unshare(CLONE_NEWUSER) the child's effective UID changes and it
+        // may lack permission to traverse the bundle path (e.g. a 750
+        // home directory). Passing the spec via fd avoids this entirely.
+        // ------------------------------------------------------------------
+        val specPipeFds = IntArray(2)
+        specPipeFds.usePinned { pinned ->
+            if (pipe(pinned.addressOf(0)) < 0) {
+                Logger.error("failed to create spec pipe (errno=$errno)")
+                exit(1)
+            }
+        }
+        writeSpecToPipe(spec, specPipeFds[1])
+        close(specPipeFds[1])
+
+        // ------------------------------------------------------------------
         // Build the child's argv/envp HERE, in the parent. The child (whether
         // created by clone3 or fork) only closes fds and calls execve. A raw
         // clone3 does not run pthread_atfork handlers and this process is
@@ -266,6 +284,7 @@ fun create(
         childEnv += "_KONTAINER_NOTIFY_LISTENER_FD=${notifyListener.fd()}"
         childEnv += "_KONTAINER_BUNDLE_PATH=$absBundle"
         childEnv += "_KONTAINER_ROOTFS_PATH=$rootfsPath"
+        childEnv += "_KONTAINER_SPEC_FD=${specPipeFds[0]}"
         childEnv += "_KONTAINER_NOTIFY_SOCKET=$notifySocketPath"
         childEnv += "_KONTAINER_CONTAINER_ID=$containerId"
         // Log env vars (_KONTAINER_LOG_FILE, _KONTAINER_LOG_FORMAT) are already

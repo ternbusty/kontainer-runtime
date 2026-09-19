@@ -4,6 +4,8 @@ import config.BuildConfig
 import kotlinx.cinterop.*
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import logger.Logger
+import platform.posix.*
 import utils.FileSystem
 import utils.JsonCodec
 
@@ -606,4 +608,51 @@ fun loadSpec(
     }
 
     return spec
+}
+
+@OptIn(ExperimentalForeignApi::class)
+fun writeSpecToPipe(
+    spec: Spec,
+    writeFd: Int,
+) {
+    val json = JsonCodec.encode(spec)
+    val bytes = json.encodeToByteArray()
+    var offset = 0
+    while (offset < bytes.size) {
+        val n =
+            bytes.usePinned { pinned ->
+                write(writeFd, pinned.addressOf(offset), (bytes.size - offset).toULong())
+            }
+        if (n < 0) {
+            Logger.error("failed to write spec to pipe (errno=$errno)")
+            _exit(1)
+        }
+        offset += n.toInt()
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+fun readSpecFromFd(fd: Int): Spec {
+    val chunks = mutableListOf<ByteArray>()
+    val buf = ByteArray(4096)
+    while (true) {
+        val n =
+            buf.usePinned { pinned ->
+                read(fd, pinned.addressOf(0), buf.size.toULong())
+            }
+        if (n < 0) {
+            throw Exception("failed to read spec from fd $fd (errno=$errno)")
+        }
+        if (n == 0L) break
+        chunks.add(buf.copyOfRange(0, n.toInt()))
+    }
+    close(fd)
+    val total = chunks.sumOf { it.size }
+    val result = ByteArray(total)
+    var offset = 0
+    for (chunk in chunks) {
+        chunk.copyInto(result, offset)
+        offset += chunk.size
+    }
+    return JsonCodec.decode(result.decodeToString())
 }

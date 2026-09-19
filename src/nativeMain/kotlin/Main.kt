@@ -30,6 +30,7 @@ import logger.Logger
 import platform.posix.*
 import process.runInitProcess
 import spec.loadSpec
+import spec.readSpecFromFd
 import state.isValidContainerId
 import syscall.LinuxSyscall
 import utils.RealFileSystem
@@ -977,9 +978,10 @@ fun main(args: Array<String>) {
         val notifyListenerFdStr = getenv("_KONTAINER_NOTIFY_LISTENER_FD")?.toKString()
         val bundlePath = getenv("_KONTAINER_BUNDLE_PATH")?.toKString()
         val rootfsPath = getenv("_KONTAINER_ROOTFS_PATH")?.toKString()
+        val specFdStr = getenv("_KONTAINER_SPEC_FD")?.toKString()
 
         if (mainSenderFdStr == null || initReceiverFdStr == null || notifyListenerFdStr == null ||
-            bundlePath == null || rootfsPath == null
+            bundlePath == null || rootfsPath == null || specFdStr == null
         ) {
             Logger.error("missing required environment variables for init process")
             exit(1)
@@ -989,20 +991,20 @@ fun main(args: Array<String>) {
         val mainSenderFd = mainSenderFdStr.toIntOrNull()
         val initReceiverFd = initReceiverFdStr.toIntOrNull()
         val notifyListenerFd = notifyListenerFdStr.toIntOrNull()
+        val specFd = specFdStr.toIntOrNull()
 
-        if (mainSenderFd == null || initReceiverFd == null || notifyListenerFd == null) {
+        if (mainSenderFd == null || initReceiverFd == null || notifyListenerFd == null || specFd == null) {
             Logger.error("invalid FD values in environment variables")
             exit(1)
             return
         }
 
-        // Load spec from bundle
-        Logger.debug("loading spec from $bundlePath/config.json")
+        Logger.debug("reading spec from fd $specFd")
         val spec =
             try {
-                loadSpec(fs, "$bundlePath/config.json")
+                readSpecFromFd(specFd)
             } catch (e: Exception) {
-                Logger.error("failed to load spec: ${e.message ?: "unknown error"}")
+                Logger.error("failed to read spec from pipe: ${e.message ?: "unknown error"}")
                 exit(1)
                 return
             }
