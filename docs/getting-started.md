@@ -11,22 +11,13 @@ Most operations require `CAP_SYS_ADMIN` to unshare namespaces, install seccomp f
 Grab the latest release binary from GitHub and drop it on `PATH`.
 
 ```bash
-VERSION=$(curl -sSL https://api.github.com/repos/ternbusty/kontainer-runtime/releases/latest | grep -oP '"tag_name": "v\K[^"]+')
-ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-sudo curl -sSL -o /usr/local/bin/kontainer-runtime \
-  "https://github.com/ternbusty/kontainer-runtime/releases/latest/download/kontainer-runtime_${VERSION}_linux_${ARCH}"
-sudo chmod +x /usr/local/bin/kontainer-runtime
-kontainer-runtime --help
+curl -fsSL https://raw.githubusercontent.com/ternbusty/kontainer-runtime/main/scripts/install.sh | sudo bash
 ```
 
 Or fetch a specific version.
 
 ```bash
-VERSION=0.2.1
-ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-sudo curl -sSL -o /usr/local/bin/kontainer-runtime \
-  "https://github.com/ternbusty/kontainer-runtime/releases/download/v${VERSION}/kontainer-runtime_${VERSION}_linux_${ARCH}"
-sudo chmod +x /usr/local/bin/kontainer-runtime
+curl -fsSL https://raw.githubusercontent.com/ternbusty/kontainer-runtime/main/scripts/install.sh | sudo bash -s -- --version v0.6.0
 ```
 
 All releases with their assets live at [https://github.com/ternbusty/kontainer-runtime/releases](https://github.com/ternbusty/kontainer-runtime/releases).
