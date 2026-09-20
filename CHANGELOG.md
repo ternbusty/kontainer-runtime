@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.1](https://github.com/ternbusty/kontainer-runtime/compare/v0.6.0...v0.6.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **docs:** add missing sudo to install commands in getting-started.md ([#127](https://github.com/ternbusty/kontainer-runtime/issues/127)) ([4dd4be2](https://github.com/ternbusty/kontainer-runtime/commit/4dd4be2f2f151e9874934e6f41126a55ab9aeb12))
+* pass spec to init process via pipe instead of re-reading config.json ([#126](https://github.com/ternbusty/kontainer-runtime/issues/126)) ([926b132](https://github.com/ternbusty/kontainer-runtime/commit/926b132296736a674e50a4c6788284049bc1dc77))
+
 ## [0.6.0](https://github.com/ternbusty/kontainer-runtime/compare/v0.5.1...v0.6.0) (2026-09-19)
 
 
