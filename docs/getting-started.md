@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-The runtime needs a Linux x86_64 host. Only `linuxX64` builds are wired up right now.
+The runtime needs a Linux host (x86_64 or aarch64).
 
 Most operations require `CAP_SYS_ADMIN` to unshare namespaces, install seccomp filters, and mount inside the container. Every command below assumes `sudo`.
 
@@ -12,8 +12,9 @@ Grab the latest release binary from GitHub and drop it on `PATH`.
 
 ```bash
 VERSION=$(curl -sSL https://api.github.com/repos/ternbusty/kontainer-runtime/releases/latest | grep -oP '"tag_name": "v\K[^"]+')
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 sudo curl -sSL -o /usr/local/bin/kontainer-runtime \
-  "https://github.com/ternbusty/kontainer-runtime/releases/latest/download/kontainer-runtime_${VERSION}_linux_amd64"
+  "https://github.com/ternbusty/kontainer-runtime/releases/latest/download/kontainer-runtime_${VERSION}_linux_${ARCH}"
 sudo chmod +x /usr/local/bin/kontainer-runtime
 kontainer-runtime --help
 ```
@@ -22,8 +23,9 @@ Or fetch a specific version.
 
 ```bash
 VERSION=0.2.1
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 sudo curl -sSL -o /usr/local/bin/kontainer-runtime \
-  "https://github.com/ternbusty/kontainer-runtime/releases/download/v${VERSION}/kontainer-runtime_${VERSION}_linux_amd64"
+  "https://github.com/ternbusty/kontainer-runtime/releases/download/v${VERSION}/kontainer-runtime_${VERSION}_linux_${ARCH}"
 sudo chmod +x /usr/local/bin/kontainer-runtime
 ```
 
