@@ -18,7 +18,7 @@ The runtime passes the [opencontainers/runtime-tools](https://github.com/opencon
 - Cgroups v2 controllers (memory, cpu, pids, hugetlb)
 - Security features (seccomp, capability sets, no_new_privileges, AppArmor / SELinux exec labels)
 - Hooks in both legacy (prestart, poststart, poststop) and modern (createRuntime, createContainer, startContainer) forms
-- Lifecycle commands (create, start, run, state, kill, delete, exec, ps, list, pause, resume, checkpoint, restore, events, update, features, spec)
+- Lifecycle commands (create, start, run, state, kill, delete, exec, ps, list, pause, resume, events, update, features, spec)
 
 ## Getting started
 

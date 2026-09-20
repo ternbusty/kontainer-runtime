@@ -65,9 +65,9 @@ Paths that the runtime creates or reads at runtime.
 - `/run/kontainer/<id>/state.json` holds the container state (id, status, pid, bundle, annotations)
 - `/run/kontainer/<id>/config.json` holds internal runtime config such as the resolved cgroup path
 - `/run/kontainer/<id>/.lock` is an advisory lock guarding state.json for concurrent CLI calls
-- `/tmp/kontainer-<id>.sock` is the notify socket the create process listens on for `start`
+- `/run/kontainer/<id>/notify.sock` is the notify socket the create process listens on for `start`
 - `/sys/fs/cgroup/kontainer-runtime/<id>/` is the default cgroup location. A relative `cgroupsPath` in the spec gets nested here. An absolute path is used verbatim.
 
 ## Build from source
 
-Building the runtime yourself needs a JDK 17, `gcc`, and `libseccomp-dev`. See [Contributing → Build](contributing.md#build) for the Gradle commands.
+Building the runtime yourself needs a JDK 21+, `gcc`, and `libseccomp-dev`. See [Contributing → Build](contributing.md#build) for the Gradle commands.
