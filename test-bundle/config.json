@@ -1,5 +1,5 @@
 {
-  "ociVersion": "1.0.0",
+  "ociVersion": "1.2.0",
   "root": {
     "path": "rootfs",
     "readonly": false
