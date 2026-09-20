@@ -7,9 +7,8 @@
   "process": {
     "args": [
       "/bin/busybox",
-      "sh",
-      "-c",
-      "echo 'Hello from container!' && echo \"PID: $$\" && ls -la / && sleep 3"
+      "sleep",
+      "30"
     ],
     "env": [
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -17,8 +16,8 @@
     ],
     "cwd": "/",
     "user": {
-      "uid": 1000,
-      "gid": 1000
+      "uid": 0,
+      "gid": 0
     },
     "noNewPrivileges": true
   },
@@ -39,23 +38,6 @@
       },
       {
         "type": "ipc"
-      },
-      {
-        "type": "user"
-      }
-    ],
-    "uidMappings": [
-      {
-        "containerID": 0,
-        "hostID": 100000,
-        "size": 65536
-      }
-    ],
-    "gidMappings": [
-      {
-        "containerID": 0,
-        "hostID": 100000,
-        "size": 65536
       }
     ],
     "cgroupsPath": "kontainer-test",
