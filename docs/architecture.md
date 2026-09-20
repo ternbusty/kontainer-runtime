@@ -85,13 +85,13 @@ sequenceDiagram
     end
     Main--)User: exit 0
     S2->>S2: closeRange (fallback via /proc/self/fd if seccomp blocks it)
-    S2->>S2: listen on /tmp/kontainer-#lt;id#gt;.sock
+    S2->>S2: listen on /run/kontainer/#lt;id#gt;/notify.sock
 
     Note over User,S2: A separate process runs kontainer-runtime start #lt;id#gt; below.
 
     User->>Main: kontainer-runtime start #lt;id#gt;
     Main->>Main: loadState, check status == created
-    Main->>S2: notifyContainerStart via /tmp/kontainer-#lt;id#gt;.sock
+    Main->>S2: notifyContainerStart via /run/kontainer/#lt;id#gt;/notify.sock
     Main->>Main: save state.json (status=running)
     opt spec.hooks.poststart
         Main->>Main: exec each hook with state JSON on stdin

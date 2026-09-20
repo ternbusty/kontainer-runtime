@@ -28,14 +28,14 @@ Integration tests need `sudo` and `containerd`.
 sudo test-scripts/verify-from-host.sh <container-id>
 ```
 
-OCI runtime-tools validation is the biggest test surface but is expensive to run locally (Linux x86_64 only, needs a GraalVM-scale toolchain). CI runs it on every push. The workflow lives at [`.github/workflows/oci-validation.yml`](https://github.com/ternbusty/kontainer-runtime/blob/main/.github/workflows/oci-validation.yml).
+OCI runtime-tools validation is the biggest test surface but is expensive to run locally. CI runs it on every push. The workflow lives at [`.github/workflows/oci-validation.yml`](https://github.com/ternbusty/kontainer-runtime/blob/main/.github/workflows/oci-validation.yml).
 
 ## Repo layout
 
 ```
 src/nativeMain/kotlin/
 ├── Main.kt                     # CLI entry point, subcommand wiring
-├── command/                    # create / start / state / kill / delete / exec / ps
+├── command/                    # lifecycle commands (create, start, run, kill, delete, ...)
 ├── process/                    # MainProcess (parent), InitProcess (PID 1)
 ├── spec/                       # OCI spec data classes + JSON loader
 ├── state/                      # state.json I/O with per-container flock
@@ -49,7 +49,12 @@ src/nativeMain/kotlin/
 ├── syscall/                    # thin wrappers, injectable via Syscall interface
 ├── config/                     # per-container internal config (cgroupPath cache)
 ├── logger/                     # stderr / file / JSON logging
-└── utils/                      # FileSystem interface, JsonCodec
+├── utils/                      # FileSystem interface, JsonCodec
+├── exeseal/                    # CVE-2019-5736 binary sealing (overlayfs / memfd)
+├── console/                    # PTY allocation for terminal-attached containers
+├── ioloop/                     # epoll-based I/O multiplexing (events, exec tty relay)
+├── network/                    # loopback setup, network namespace helpers
+└── signals/                    # signal forwarding and reaping
 
 src/nativeTest/kotlin/          # Kotest specs mirroring the above tree
 src/nativeInterop/cinterop/
