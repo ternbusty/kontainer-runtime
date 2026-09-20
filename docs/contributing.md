@@ -35,7 +35,7 @@ OCI runtime-tools validation is the biggest test surface but is expensive to run
 ```
 src/nativeMain/kotlin/
 ├── Main.kt                     # CLI entry point, subcommand wiring
-├── command/                    # create / start / state / kill / delete / exec / ps
+├── command/                    # lifecycle commands (create, start, run, kill, delete, ...)
 ├── process/                    # MainProcess (parent), InitProcess (PID 1)
 ├── spec/                       # OCI spec data classes + JSON loader
 ├── state/                      # state.json I/O with per-container flock
