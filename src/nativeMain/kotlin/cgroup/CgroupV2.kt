@@ -77,8 +77,21 @@ class CgroupV2(
                 }
 
                 for (ancestorPath in ancestorPaths) {
-                    val controllersToEnable = getAvailableControllers(ancestorPath, requiredControllers)
                     val subtreeControlPath = "$ancestorPath/$CGROUP_SUBTREE_CONTROL"
+                    // Skip controllers that are already enabled: a rootless
+                    // runtime with a delegated cgroup may not write to the
+                    // subtree_control of the ancestors above the delegation.
+                    val enabled =
+                        try {
+                            fs
+                                .readProcFile(subtreeControlPath)
+                                .split(" ", "\n")
+                                .filter { it.isNotBlank() }
+                                .toSet()
+                        } catch (_: Exception) {
+                            emptySet()
+                        }
+                    val controllersToEnable = getAvailableControllers(ancestorPath, requiredControllers).filter { it !in enabled }
                     for (controller in controllersToEnable) {
                         try {
                             fs.writeTextFile(subtreeControlPath, "+$controller")
