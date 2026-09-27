@@ -8,10 +8,20 @@ import channel.Message
 import config.KontainerConfig
 import config.saveKontainerConfig
 import hook.runHooks
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.cstr
 import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.set
+import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
+import kotlinx.cinterop.value
 import logger.Logger
 import platform.posix.*
 import rootfs.handleMountFdRequest
@@ -117,19 +127,22 @@ private fun runMainProcessInternal(
             val isPrivileged = syscall.geteuid() == 0u
             Logger.debug("privileged mode: $isPrivileged (euid=${syscall.geteuid()})")
 
-            if (!isPrivileged) {
-                // Disable setgroups for unprivileged user namespaces (CVE-2014-8989)
+            // An unprivileged process may only map its own gid, and only after
+            // denying setgroups(2) (CVE-2014-8989). Any other gid mapping goes
+            // through newgidmap, which must not find setgroups denied. Same
+            // rule as runc (requiresRootOrMappingTool).
+            if (!isPrivileged && gidMap == "0 ${syscall.getegid()} 1\n") {
                 Logger.debug("disabling setgroups for pid $bootstrapPid")
                 fs.writeTextFile("/proc/$bootstrapPid/setgroups", "deny\n")
             } else {
-                Logger.debug("skipping setgroups write (running as root)")
+                Logger.debug("skipping setgroups write")
             }
 
             Logger.debug("writing uid_map for pid $bootstrapPid")
-            fs.writeTextFile("/proc/$bootstrapPid/uid_map", uidMap)
+            writeIdMap(fs, bootstrapPid, "uid", uidMap, isPrivileged)
 
             Logger.debug("writing gid_map for pid $bootstrapPid")
-            fs.writeTextFile("/proc/$bootstrapPid/gid_map", gidMap)
+            writeIdMap(fs, bootstrapPid, "gid", gidMap, isPrivileged)
 
             Logger.debug("successfully wrote UID/GID mappings")
 
@@ -605,6 +618,70 @@ fun writeInt32(
  * @param fallbackId Fallback ID to use if mappings is null/empty
  * @return Formatted mapping string for uid_map/gid_map
  */
+
+/**
+ * Write [map] to /proc/[pid]/<[kind]>_map, where [kind] is "uid" or "gid".
+ *
+ * An unprivileged runtime may only map its own id this way. For any other
+ * mapping the kernel refuses the write and, like runc (nsexec.c
+ * try_mapping_tool), we fall back to the setuid newuidmap/newgidmap helper,
+ * which checks the mapping against /etc/subuid and /etc/subgid.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun writeIdMap(
+    fs: FileSystem,
+    pid: Int,
+    kind: String,
+    map: String,
+    privileged: Boolean,
+) {
+    val writeError =
+        try {
+            fs.writeTextFile("/proc/$pid/${kind}_map", map)
+            return
+        } catch (e: Exception) {
+            e
+        }
+    if (privileged) throw writeError
+    val tool =
+        lookPath("new${kind}map")
+            ?: throw Exception("failed to update /proc/$pid/${kind}_map (${writeError.message}) and new${kind}map was not found")
+    Logger.debug("writing /proc/$pid/${kind}_map failed; trying $tool")
+    // Build argv before fork(): this process is multi-threaded.
+    val args = listOf(tool, pid.toString()) + map.split(Regex("\\s+")).filter { it.isNotEmpty() }
+    memScoped {
+        val argv = allocArray<CPointerVar<ByteVar>>(args.size + 1)
+        args.forEachIndexed { i, a -> argv[i] = a.cstr.ptr }
+        argv[args.size] = null
+        val child = fork()
+        if (child == 0) {
+            execv(tool, argv)
+            _exit(127)
+        }
+        if (child < 0) throw Exception("failed to fork for $tool (errno=$errno)")
+        val status = alloc<IntVar>()
+        while (waitpid(child, status.ptr, 0) < 0 && errno == EINTR) {
+            // retry
+        }
+        val exited = (status.value and 0x7f) == 0
+        val code = (status.value shr 8) and 0xff
+        if (!exited || code != 0) {
+            throw Exception("failed to use new${kind}map on $pid (status ${status.value})")
+        }
+    }
+}
+
+/** Find [name] in \$PATH like Go's exec.LookPath, or null. */
+@OptIn(ExperimentalForeignApi::class)
+private fun lookPath(name: String): String? {
+    val path = getenv("PATH")?.toKString() ?: return null
+    return path
+        .split(':')
+        .filter { it.isNotEmpty() }
+        .map { "$it/$name" }
+        .firstOrNull { access(it, X_OK) == 0 }
+}
+
 fun buildIdMapping(
     mappings: List<LinuxIdMapping>?,
     fallbackId: UInt,
