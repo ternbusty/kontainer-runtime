@@ -48,20 +48,15 @@ fun events(
             return
         }
 
-    val cgroupPath =
-        config.cgroupPath ?: run {
-            Logger.error("container $containerId has no cgroupsPath, cannot read events")
-            exit(1)
-            return
-        }
-
-    val cgDir = "/sys/fs/cgroup/${cgroupPath.removePrefix("/")}"
+    // A rootless container may run without a cgroup (see Create.kt). Like
+    // runc, report empty stats for it instead of failing.
+    val cgDir = config.cgroupPath?.let { "/sys/fs/cgroup/${it.removePrefix("/")}" }
+    if (cgDir == null) Logger.debug("container $containerId has no cgroup; reporting empty stats")
 
     // Set up inotify to watch:
     //   1. Container state file for deletion → exit cleanly
     //   2. memory.events for modification → real-time OOM detection
     val statePath = "${getContainerDir(rootPath, containerId)}/state.json"
-    val memEventsPath = "$cgDir/memory.events"
     val ifd = inotify_init1(IN_CLOEXEC)
     var stateWd = -1
     if (ifd >= 0) {
@@ -69,7 +64,7 @@ fun events(
         // The memory.events watch needs no wd bookkeeping: any modification
         // wakes the loop through the inotify fd, and OOM detection re-reads
         // the oom_kill counter on every iteration.
-        inotify_add_watch(ifd, memEventsPath, IN_MODIFY.toUInt())
+        if (cgDir != null) inotify_add_watch(ifd, "$cgDir/memory.events", IN_MODIFY.toUInt())
     }
 
     try {
@@ -84,7 +79,7 @@ private fun eventsLoop(
     fs: FileSystem,
     rootPath: String,
     containerId: String,
-    cgDir: String,
+    cgDir: String?,
     stats: Boolean,
     intervalMs: Long,
     ifd: Int,
@@ -103,7 +98,7 @@ private fun eventsLoopCoroutine(
     fs: FileSystem,
     rootPath: String,
     containerId: String,
-    cgDir: String,
+    cgDir: String?,
     stats: Boolean,
     intervalMs: Long,
     ifd: Int,
@@ -123,7 +118,7 @@ private fun eventsLoopCoroutine(
         }
         lastOomCount = currentOomCount
 
-        val snapshot = buildSnapshot(fs, cgDir, containerId)
+        val snapshot = if (cgDir != null) buildSnapshot(fs, cgDir, containerId) else emptySnapshot(containerId)
         println(JsonCodec.encode(snapshot))
         fflush(stdout)
 
@@ -198,6 +193,19 @@ internal fun buildSnapshot(
             ),
     )
 }
+
+/** Stats for a container without a cgroup: every value unknown. */
+internal fun emptySnapshot(containerId: String): EventSnapshot =
+    EventSnapshot(
+        id = containerId,
+        type = "stats",
+        data =
+            EventData(
+                memory = MemoryStats(usage = null, limit = null),
+                cpu = CpuStats(stat = null),
+                pids = PidsStats(current = null, limit = null),
+            ),
+    )
 
 // ---- Data model ----
 
@@ -320,8 +328,8 @@ private fun convertHugepageSize(sizeStr: String): String? {
  */
 private fun readOomCount(
     fs: FileSystem,
-    cgroupDir: String,
-): Long? = readKvFile(fs, "$cgroupDir/memory.events")?.get("oom_kill")
+    cgroupDir: String?,
+): Long? = cgroupDir?.let { readKvFile(fs, "$it/memory.events")?.get("oom_kill") }
 
 // ---- Cgroup file readers ----
 
