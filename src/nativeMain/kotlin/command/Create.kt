@@ -226,6 +226,18 @@ fun create(
                     else -> {
                         Logger.debug("rootless: no permission for a cgroup ($denied); running without one")
                         resolvedCgroupPath = null
+                        if (spec.linux
+                                ?.namespaces
+                                .orEmpty()
+                                .none { it.type == NamespaceType.PID }
+                        ) {
+                            // Same wording as runc, which tests check for.
+                            Logger.warn(
+                                "Creating a rootless container with no cgroup and no private pid namespace. " +
+                                    "Such configuration is strongly discouraged (as it is impossible to properly " +
+                                    "kill all container's processes) and will result in an error in a future runc version.",
+                            )
+                        }
                     }
                 }
             }

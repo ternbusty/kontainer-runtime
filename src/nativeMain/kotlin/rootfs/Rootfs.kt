@@ -102,7 +102,13 @@ fun prepareRootfs(
             }
         }
     }
-    if (syscall.mount(
+    // The spec may replace /proc with something other than procfs (e.g. a bind
+    // of the host's /proc for a rootless container sharing the host pid
+    // namespace, where procfs cannot be mounted); applySpecMounts() does that.
+    val specProcMount = specMounts?.find { it.destination == "/proc" }
+    if (specProcMount != null && specProcMount.type != "proc") {
+        Logger.debug("skipping procfs mount for /proc (spec type=${specProcMount.type})")
+    } else if (syscall.mount(
             source = "proc",
             target = procPath,
             fstype = "proc",
@@ -113,8 +119,9 @@ fun prepareRootfs(
         perror("mount /proc")
         Logger.error("failed to mount /proc (errno=$errNum)")
         throw Exception("Failed to mount /proc (errno=$errNum)")
+    } else {
+        Logger.debug("mounted /proc")
     }
-    Logger.debug("mounted /proc")
 
     // Mount /dev — create the mount point if missing (e.g. busybox rootfs).
     // Always mount read-write initially so device nodes can be created,
@@ -186,16 +193,33 @@ fun prepareRootfs(
         Logger.debug("skipping hardcoded sysfs mount for /sys (spec type=${specSysMount?.type})")
     }
 
-    // Mount /sys/fs/cgroup if cgroup v2 is available.
-    // Like runc (mountCgroupV2), first try mounting a fresh cgroup2 filesystem.
-    // With CLONE_NEWCGROUP (unshared by Stage-2 after cgroup assignment), the
-    // cgroup2 mount automatically shows only the container's cgroup subtree,
-    // giving the container full subcgroup management (mkdir, subtree_control).
-    // If that fails (EPERM in user namespace without cgroupns), fall back to a
-    // bind mount of the container's specific cgroup path.
-    // Skip when /sys is not sysfs — there's no sysfs to put cgroup under.
+    // Mount /sys/fs/cgroup here only when /sys is sysfs; when the spec
+    // bind-mounts /sys instead (e.g. rootless), applySpecMounts() does it
+    // right after that bind mount.
+    if (sysIsSysfs) {
+        mountCgroupFs(syscall, rootfsPath, specMounts?.find { it.destination == "/sys/fs/cgroup" })
+    }
+}
+
+/**
+ * Mount /sys/fs/cgroup if cgroup v2 is available.
+ * Like runc (mountCgroupV2), first try mounting a fresh cgroup2 filesystem.
+ * With CLONE_NEWCGROUP (unshared by Stage-2 after cgroup assignment), the
+ * cgroup2 mount automatically shows only the container's cgroup subtree,
+ * giving the container full subcgroup management (mkdir, subtree_control).
+ * If that fails (EPERM in user namespace without cgroupns), fall back to a
+ * bind mount of the container's specific cgroup path.
+ * [cgroupMount] is the spec's /sys/fs/cgroup mount, if any. /sys must already
+ * be mounted (sysfs, or a bind of the host's /sys).
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun mountCgroupFs(
+    syscall: Syscall,
+    rootfsPath: String,
+    cgroupMount: spec.Mount?,
+) {
     val cgroupMountPath = "$rootfsPath/sys/fs/cgroup"
-    if (sysIsSysfs && access("/sys/fs/cgroup/cgroup.controllers", F_OK) == 0) {
+    if (access("/sys/fs/cgroup/cgroup.controllers", F_OK) == 0) {
         Logger.debug("setting up /sys/fs/cgroup (cgroup v2)")
 
         if (access(cgroupMountPath, F_OK) != 0) {
@@ -209,7 +233,6 @@ fun prepareRootfs(
         // Options like nosuid/nodev/noexec/ro are mount flags; anything else
         // becomes the data string passed to mount(2) (e.g. nsdelegate).
         // runc passes m.Data verbatim — we mirror that behavior.
-        val cgroupMount = specMounts?.find { it.destination == "/sys/fs/cgroup" }
         val flagNames =
             setOf("nosuid", "nodev", "noexec", "relatime", "ro", "rw", "sync", "async", "dirsync", "noatime", "nodiratime", "strictatime")
         val cgroupReadonly = cgroupMount?.options?.contains("ro") ?: true
@@ -1340,9 +1363,13 @@ fun applySpecMounts(
     // scenarios), applySpecMounts must process it.
     val sysMount = mounts.find { it.destination == "/sys" }
     val sysHandled = sysMount == null || sysMount.type == "sysfs"
+    val procMount = mounts.find { it.destination == "/proc" }
     val handledByPrepareRootfs =
         buildSet {
-            add("/proc")
+            // prepareRootfs() mounts procfs unless the spec replaces /proc
+            // with something else (e.g. a bind of the host's /proc for a
+            // rootless container sharing the host pid namespace).
+            if (procMount == null || procMount.type == "proc") add("/proc")
             add("/dev")
             if (sysHandled) {
                 add("/sys")
@@ -1352,6 +1379,12 @@ fun applySpecMounts(
     for (m in mounts) {
         if (m.destination in handledByPrepareRootfs) {
             Logger.debug("skipping spec.mount ${m.destination} (already handled by prepareRootfs)")
+            continue
+        }
+        if (m.destination == "/sys/fs/cgroup" && m.type == "cgroup") {
+            // /sys was bind-mounted above instead of mounting sysfs; set up
+            // cgroupfs on top of it the same way prepareRootfs() does for sysfs.
+            mountCgroupFs(syscall, rootfsPath, m)
             continue
         }
         val parsed = parseMountOptions(m.options)

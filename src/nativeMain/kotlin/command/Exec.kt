@@ -279,8 +279,10 @@ fun exec(
         }
     }
 
-    // The resolved cgroup path was persisted at create time; without it we
-    // cannot place the exec'd process under the container's resource limits.
+    // The resolved cgroup path was persisted at create time so the exec'd
+    // process can be placed under the container's resource limits. It is null
+    // for a rootless container that runs without a cgroup (see Create.kt);
+    // the exec'd process then simply stays in our own cgroup.
     val baseCgroupPath =
         try {
             loadKontainerConfig(fs, rootPath, containerId).cgroupPath
@@ -288,16 +290,17 @@ fun exec(
             Logger.error("exec: failed to load kontainer config: ${e.message}")
             exit(1)
             return
-        } ?: run {
-            Logger.error("exec: no cgroup path recorded for container $containerId")
-            exit(1)
-            return
         }
+    if (baseCgroupPath == null && cgroupOverride.isNotEmpty()) {
+        Logger.error("exec: --cgroup is not supported: container $containerId has no cgroup")
+        exit(1)
+        return
+    }
 
     // Append the --cgroup subcgroup path (if given). A leading "/" means
     // "relative to the container's cgroup root", not an absolute host path.
     var cgroupPath =
-        if (cgroupOverride.isNotEmpty()) {
+        if (baseCgroupPath != null && cgroupOverride.isNotEmpty()) {
             val sub = cgroupOverride.first().removePrefix("/")
             if (sub.isEmpty()) baseCgroupPath else "$baseCgroupPath/$sub"
         } else {
@@ -308,7 +311,7 @@ fun exec(
     // cgroup is an internal node (cgroup.subtree_control is non-empty) or
     // no longer exists. Internal nodes cannot hold processes, so fall back
     // to the init process's current cgroup (runc compat: getExecCgroupPath).
-    if (cgroupOverride.isEmpty()) {
+    if (cgroupPath != null && cgroupOverride.isEmpty()) {
         val normalizedCgroupPath = cgroupPath.removePrefix("/")
         val cgroupDir = "/sys/fs/cgroup/$normalizedCgroupPath"
         val needsFallback =
@@ -369,8 +372,13 @@ fun exec(
     // directly inside it with clone3(CLONE_INTO_CGROUP). -1 (e.g. a --cgroup
     // sub-cgroup that does not exist yet) means the parent migrates the
     // grandchild through cgroup.procs as before.
-    val cgroupDirFd = open("/sys/fs/cgroup/${cgroupPath.removePrefix("/")}", O_RDONLY or O_DIRECTORY or O_CLOEXEC)
-    if (cgroupDirFd < 0) {
+    val cgroupDirFd =
+        if (cgroupPath != null) {
+            open("/sys/fs/cgroup/${cgroupPath.removePrefix("/")}", O_RDONLY or O_DIRECTORY or O_CLOEXEC)
+        } else {
+            -1
+        }
+    if (cgroupPath != null && cgroupDirFd < 0) {
         Logger.debug("exec: cannot open cgroup dir for $cgroupPath (errno=$errno); will attach via cgroup.procs")
     }
     val setupPipe = IntArray(2)
@@ -511,7 +519,9 @@ fun exec(
     val setupOk =
         if (grandchildPid > 0) {
             try {
-                if (grandchildInCgroup) {
+                if (cgroupPath == null) {
+                    Logger.debug("exec: container has no cgroup; grandchild $grandchildPid stays in ours")
+                } else if (grandchildInCgroup) {
                     Logger.debug("exec: grandchild $grandchildPid was born in cgroup $cgroupPath (CLONE_INTO_CGROUP)")
                 } else {
                     cgroup.addProcess(grandchildPid, cgroupPath)

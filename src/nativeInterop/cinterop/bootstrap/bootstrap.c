@@ -474,6 +474,13 @@ void kontainer_bootstrap(void) {
     // timens_offsets BEFORE we fork Stage-2 (which will enter the new
     // time namespace). After clone_parent(), it's too late.
     if (clone_flags & CLONE_NEWTIME) {
+        // As for the uid/gid maps above: while we are non-dumpable our
+        // /proc/<pid> files belong to the global root, so a rootless Main
+        // Process could not open timens_offsets. Be dumpable meanwhile.
+        if (prctl(PR_SET_DUMPABLE, 1, 0, 0, 0) < 0) {
+            fprintf(stderr, "[stage-1] Failed to set dumpable for timens: %s\n", strerror(errno));
+            exit(1);
+        }
         debug_log("[stage-1] Requesting timens_offsets write from Main Process\n");
         s = SYNC_TIMEOFFSETS_PLS;
         if (write(sync_fd, &s, sizeof(s)) != sizeof(s)) {
@@ -498,6 +505,10 @@ void kontainer_bootstrap(void) {
             exit(1);
         }
         debug_log("[stage-1] Received timens_offsets ack from Main Process\n");
+        if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) < 0) {
+            fprintf(stderr, "[stage-1] Failed to restore non-dumpable after timens: %s\n", strerror(errno));
+            exit(1);
+        }
     }
 
     // Clone Stage-2 (init process) with CLONE_PARENT
