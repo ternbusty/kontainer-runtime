@@ -1,0 +1,6 @@
+# runc bats tests skipped only when running rootless
+# (scripts/runc-compat-test.sh --rootless), on top of runc_test_pattern.
+#
+# runc_test_pattern is shared with takoyaki and must stay identical to it,
+# so rootless-only skips live here. Each line is "[skip]<test name> # <reason>".
+# Blank lines and lines starting with # are ignored.

@@ -4,7 +4,7 @@
 #
 # Usage:
 #   sudo ./scripts/runc-compat-test.sh [--runc-dir DIR] [--binary PATH] \
-#                                      [--pattern FILE] [--selinux]
+#                                      [--pattern FILE] [--selinux] [--rootless]
 #
 # Options:
 #   --runc-dir DIR     Path to an existing runc checkout (skips clone)
@@ -12,6 +12,11 @@
 #   --pattern FILE     Path to the test pattern file
 #                      (default: scripts/runc_test_pattern)
 #   --selinux          Run only SELinux-specific tests (selinux.bats)
+#   --rootless         Run bats as the unprivileged user $ROOTLESS_USER, like
+#                      runc's tests/rootless.sh. Tests listed in
+#                      scripts/runc_test_pattern_rootless are skipped as well.
+#                      Prepare the user and ROOTLESS_FEATURES with
+#                      scripts/rootless-setup.sh first.
 #
 # Environment variables (all optional):
 #   RUNC_REPO_DIR  — path to an existing runc checkout (same as --runc-dir)
@@ -20,6 +25,10 @@
 #                    file is written against)
 #   SUMMARY_FILE   — file to append a Markdown summary to
 #   TAP_OUTPUT     — file to write raw TAP output to
+#   ROOTLESS_USER  — user to run bats as with --rootless (default: rootless)
+#   ROOTLESS_FEATURES, ROOTLESS_UIDMAP_START, ROOTLESS_UIDMAP_LENGTH,
+#   ROOTLESS_GIDMAP_START, ROOTLESS_GIDMAP_LENGTH — passed to bats as-is
+#                    (see runc's tests/integration/helpers.bash)
 
 set -euo pipefail
 
@@ -38,7 +47,10 @@ KONTAINER_BIN="${KONTAINER_BIN:-${PROJECT_ROOT}/build/bin/linuxX64/releaseExecut
 SUMMARY_FILE="${SUMMARY_FILE:-}"
 TAP_OUTPUT="${TAP_OUTPUT:-}"
 PATTERN_FILE="${PROJECT_ROOT}/scripts/runc_test_pattern"
+ROOTLESS_PATTERN_FILE="${PROJECT_ROOT}/scripts/runc_test_pattern_rootless"
 SELINUX_MODE=false
+ROOTLESS_MODE=false
+ROOTLESS_USER="${ROOTLESS_USER:-rootless}"
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -49,6 +61,7 @@ while [[ $# -gt 0 ]]; do
     --binary)    KONTAINER_BIN="$2"; shift 2 ;;
     --pattern)   PATTERN_FILE="$2"; shift 2 ;;
     --selinux)   SELINUX_MODE=true; shift ;;
+    --rootless)  ROOTLESS_MODE=true; shift ;;
     *)           echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -318,12 +331,29 @@ declare -A FILE_FILTER
 declare -A FILE_TEST_COUNT
 declare -A FILE_NAMES
 declare -A SEEN_NAMES
+declare -A ROOTLESS_SKIP
 PATTERN_SKIP=0
+
+# With --rootless, tests listed as "[skip]<name> # <reason>" in the rootless
+# pattern file are skipped on top of the shared pattern file (which must stay
+# identical to takoyaki's).
+if [[ "$ROOTLESS_MODE" == "true" && -f "$ROOTLESS_PATTERN_FILE" ]]; then
+  while IFS= read -r line; do
+    [[ $line =~ ^\[skip\](.*)$ ]] || continue
+    rname="${BASH_REMATCH[1]% \#*}"
+    ROOTLESS_SKIP["${rname%"${rname##*[! ]}"}"]=1
+  done < "$ROOTLESS_PATTERN_FILE"
+fi
 
 while IFS= read -r name; do
   [[ -z "$name" || "$name" == \#* ]] && continue
 
   if [[ $name =~ ^\[skip\] ]]; then
+    PATTERN_SKIP=$((PATTERN_SKIP + 1))
+    continue
+  fi
+
+  if [[ -n "${ROOTLESS_SKIP[$name]:-}" ]]; then
     PATTERN_SKIP=$((PATTERN_SKIP + 1))
     continue
   fi
@@ -363,6 +393,14 @@ done
 
 echo ">>> Running ${TOTAL_ENABLED} tests from ${#FILE_FILTER[@]} bats files (${PATTERN_SKIP} skipped in pattern)"
 echo "    Binary: $KONTAINER_BIN"
+
+# Extra sudo arguments for running bats: as root by default, or as the
+# rootless user (with its own HOME, like runc's tests/rootless.sh).
+BATS_SUDO_ARGS=()
+if [[ "$ROOTLESS_MODE" == "true" ]]; then
+  BATS_SUDO_ARGS=(-H -u "$ROOTLESS_USER")
+  echo "    Rootless: user=$ROOTLESS_USER features=${ROOTLESS_FEATURES:-none}"
+fi
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -400,7 +438,7 @@ for file in $(printf '%s\n' "${!FILE_FILTER[@]}" | sort); do
   # Pass the filter via an environment variable to avoid quoting
   # issues with apostrophes, $, and | in test names and regex.
   run_bats() {
-    sudo -E PATH="$PATH" RUNC="$PWD/runc" _BATS_FILTER="$filter" \
+    sudo -E "${BATS_SUDO_ARGS[@]}" PATH="$PATH" RUNC="$PWD/runc" _BATS_FILTER="$filter" \
         timeout "$timeout_secs" script -q -e -c \
         'exec bats -f "$_BATS_FILTER" -t '"$file" /dev/null > "$TMPOUT" 2>&1
   }
@@ -518,6 +556,9 @@ write_summary() {
     echo "Runtime: \`$(basename "$KONTAINER_BIN")\`"
     echo "runc ref: \`${RUNC_COMMIT}\`"
     echo "Pattern: \`$(basename "$PATTERN_FILE")\`"
+    if [[ "$ROOTLESS_MODE" == "true" ]]; then
+      echo "Rootless: user \`$ROOTLESS_USER\`, features \`${ROOTLESS_FEATURES:-none}\`"
+    fi
     echo ""
     echo "| Metric | Count |"
     echo "|--------|------:|"
