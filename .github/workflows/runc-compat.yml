@@ -8,6 +8,12 @@ name: runc bats compatibility
 on:
   workflow_call:
 
+env:
+  # runc commit whose tests scripts/runc_test_pattern lists. Keep it in sync
+  # with the default in scripts/runc-compat-test.sh and with takoyaki's
+  # tests/runc submodule, which share the same pattern file.
+  RUNC_COMMIT: c010af1dea38659a145ce4362972df21544269d7
+
 jobs:
   runc-bats:
     name: runc bats integration
@@ -42,16 +48,14 @@ jobs:
           sudo apt-get install -y libseccomp-dev jq sshfs
 
       # ── clone runc & install bats ─────────────────────────────────
-      - name: Clone runc (latest stable)
+      - name: Clone runc (pinned commit)
         run: |
-          RUNC_TAG="v$(git ls-remote --tags --sort=-v:refname \
-            https://github.com/opencontainers/runc.git 'v[0-9]*' \
-            | grep -oP 'refs/tags/v\K[0-9]+\.[0-9]+\.[0-9]+$' | head -1)"
-          echo ">>> Using runc $RUNC_TAG"
-          git clone --depth 1 --branch "$RUNC_TAG" \
-            https://github.com/opencontainers/runc "$HOME/runc"
+          echo ">>> Using runc $RUNC_COMMIT"
+          git init -q "$HOME/runc"
+          git -C "$HOME/runc" fetch -q --depth 1 \
+            https://github.com/opencontainers/runc "$RUNC_COMMIT"
+          git -C "$HOME/runc" checkout -q FETCH_HEAD
           echo "RUNC_REPO_DIR=$HOME/runc" >> "$GITHUB_ENV"
-          echo "RUNC_TAG=$RUNC_TAG" >> "$GITHUB_ENV"
 
       - name: Install bats-core
         run: |
@@ -80,7 +84,7 @@ jobs:
           chmod +x scripts/runc-compat-test.sh
           sudo env \
             KONTAINER_BIN="$KONTAINER_BIN" \
-            RUNC_TAG="$RUNC_TAG" \
+            RUNC_COMMIT="$RUNC_COMMIT" \
             SUMMARY_FILE="$GITHUB_STEP_SUMMARY" \
             TAP_OUTPUT="$PWD/tap-output.log" \
             scripts/runc-compat-test.sh \
@@ -179,13 +183,12 @@ jobs:
         run: |
           set -eux -o pipefail
 
-          # Clone runc (latest stable) inside the VM.
-          RUNC_TAG="v$(git ls-remote --tags --sort=-v:refname \
-            https://github.com/opencontainers/runc.git 'v[0-9]*' \
-            | grep -oP 'refs/tags/v\K[0-9]+\.[0-9]+\.[0-9]+$' | head -1)"
-          echo ">>> Using runc $RUNC_TAG"
-          lima git clone --depth 1 --branch "$RUNC_TAG" \
-            https://github.com/opencontainers/runc /tmp/runc
+          # Clone runc (pinned commit) inside the VM.
+          echo ">>> Using runc $RUNC_COMMIT"
+          lima git init -q /tmp/runc
+          lima git -C /tmp/runc fetch -q --depth 1 \
+            https://github.com/opencontainers/runc "$RUNC_COMMIT"
+          lima git -C /tmp/runc checkout -q FETCH_HEAD
 
           # Build test helpers using runc's Makefile.
           lima bash -c 'cd /tmp/runc && make test-binaries'

@@ -63,6 +63,7 @@ private fun runMainProcessInternal(
     initSender: InitSender,
     initReceiver: InitReceiver,
     stage1InCgroup: Boolean,
+    onStage2Pid: (Int) -> Unit,
 ): Unit =
     memScoped {
         Logger.setContext("main")
@@ -178,6 +179,7 @@ private fun runMainProcessInternal(
         // Wait for Stage-2 PID from bootstrap
         val stage2Pid = readInt32(syncFd, "Failed to read Stage-2 PID from sync pipe")
         Logger.debug("received Stage-2 PID from bootstrap: $stage2Pid")
+        onStage2Pid(stage2Pid)
 
         // Place Stage-2 (the long-lived init process) into the container cgroup.
         // Fast path: Stage-1 was created inside the cgroup with
@@ -267,7 +269,9 @@ private fun runMainProcessInternal(
                     if (msg.isRbind) {
                         openTreeFlags = openTreeFlags or platform.linux._AT_RECURSIVE()
                     }
-                    val treeFd = platform.linux._open_tree(-1, msg.source, openTreeFlags)
+                    // AT_FDCWD: a relative source resolves against our cwd,
+                    // which init inherited too, so both sides agree on it.
+                    val treeFd = platform.linux._open_tree(-100, msg.source, openTreeFlags)
                     if (treeFd < 0) {
                         val errNum = errno
                         Logger.error("open_tree(${msg.source}) failed (errno=$errNum)")
@@ -466,6 +470,7 @@ fun runMainProcess(
     initReceiver: InitReceiver,
     stage1InCgroup: Boolean = false,
 ) {
+    var stage2Pid = -1
     try {
         runMainProcessInternal(
             syscall,
@@ -484,6 +489,7 @@ fun runMainProcess(
             initSender,
             initReceiver,
             stage1InCgroup,
+            onStage2Pid = { stage2Pid = it },
         )
     } catch (e: Exception) {
         val errMsg = e.message ?: "unknown"
@@ -504,6 +510,21 @@ fun runMainProcess(
 
         close(syncFd)
         notifyListener.close()
+        if (stage2Pid > 0) {
+            // Stage-2 is already running and may be blocked waiting for a
+            // reply from us; it would outlive us and keep the caller's
+            // stdio open. Kill it and remove its cgroup as well.
+            cleanupContainer(
+                syscall,
+                fs,
+                cgroup,
+                rootPath,
+                containerId,
+                stage2Pid,
+                CgroupV2.resolveCgroupPath(spec.linux?.cgroupsPath, containerId),
+            )
+            _exit(1)
+        }
         // Best-effort cleanup of container state directory so a retry
         // with the same container ID does not get "already exists".
         try {

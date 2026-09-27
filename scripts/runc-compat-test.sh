@@ -16,7 +16,8 @@
 # Environment variables (all optional):
 #   RUNC_REPO_DIR  — path to an existing runc checkout (same as --runc-dir)
 #   KONTAINER_BIN  — path to the kontainer-runtime binary (same as --binary)
-#   RUNC_TAG       — runc tag to clone (default: v1.5.1)
+#   RUNC_COMMIT    — runc commit to clone (default: the commit the pattern
+#                    file is written against)
 #   SUMMARY_FILE   — file to append a Markdown summary to
 #   TAP_OUTPUT     — file to write raw TAP output to
 
@@ -28,7 +29,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-RUNC_TAG="${RUNC_TAG:-v1.5.1}"
+# The pattern file lists every test of this runc commit. Keep it in sync with
+# RUNC_COMMIT in .github/workflows/runc-compat.yml and with takoyaki's
+# tests/runc submodule, which share the same pattern file.
+RUNC_COMMIT="${RUNC_COMMIT:-c010af1dea38659a145ce4362972df21544269d7}"
 RUNC_REPO_DIR="${RUNC_REPO_DIR:-}"
 KONTAINER_BIN="${KONTAINER_BIN:-${PROJECT_ROOT}/build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe}"
 SUMMARY_FILE="${SUMMARY_FILE:-}"
@@ -78,9 +82,11 @@ fi
 # ---------------------------------------------------------------------------
 if [[ -z "$RUNC_REPO_DIR" ]]; then
   RUNC_REPO_DIR="$(mktemp -d)"
-  echo ">>> Cloning runc ${RUNC_TAG} into ${RUNC_REPO_DIR} ..."
-  git clone --depth 1 --branch "$RUNC_TAG" \
-    https://github.com/opencontainers/runc "$RUNC_REPO_DIR"
+  echo ">>> Cloning runc ${RUNC_COMMIT} into ${RUNC_REPO_DIR} ..."
+  git -C "$RUNC_REPO_DIR" init -q
+  git -C "$RUNC_REPO_DIR" fetch -q --depth 1 \
+    https://github.com/opencontainers/runc "$RUNC_COMMIT"
+  git -C "$RUNC_REPO_DIR" checkout -q FETCH_HEAD
 fi
 
 INTEGRATION_DIR="${RUNC_REPO_DIR}/tests/integration"
@@ -258,7 +264,7 @@ if [[ "$SELINUX_MODE" == "true" ]]; then
       echo "## runc bats compatibility — SELinux results"
       echo ""
       echo "Runtime: \`$(basename "$KONTAINER_BIN")\`"
-      echo "runc ref: \`${RUNC_TAG}\`"
+      echo "runc ref: \`${RUNC_COMMIT}\`"
       echo ""
       echo "| Metric | Count |"
       echo "|--------|------:|"
@@ -291,23 +297,27 @@ fi
 # Build per-file filter regexes from the pattern file
 # ---------------------------------------------------------------------------
 #
-# 1. Map every @test declaration to its .bats file.
-# 2. Read the pattern file; skip [skip] lines; look up each enabled
-#    test name in the map and group it under its file.
-# 3. Result: FILE_FILTER[file] = "^test1$|^test2$|..."
+# 1. Map every @test declaration to its .bats file(s). A few names exist
+#    in more than one file (e.g. "runc run"); such a name runs in each.
+# 2. Read the pattern file; skip [skip] lines and repeated names; look up
+#    each enabled test name in the map and group it under its file(s).
+# 3. Result: FILE_FILTER[file] = "^test1$|^test2$|..." and
+#    FILE_NAMES[file] = the names, one per line.
 
-declare -A NAME_TO_FILE
+declare -A NAME_TO_FILES
 while IFS= read -r mapping; do
   file="${mapping%%	*}"
   tname="${mapping#*	}"
   # Trim trailing whitespace (some bats tests have names like 'name " {').
   tname="${tname%"${tname##*[! ]}"}"
-  NAME_TO_FILE["$tname"]="$file"
+  NAME_TO_FILES["$tname"]+="$file"$'\n'
 done < <(grep -rH '@test "' tests/integration/*.bats \
     | sed -n 's/^\(.*\.bats\):.*@test "\(.*\)" {.*$/\1\t\2/p')
 
 declare -A FILE_FILTER
 declare -A FILE_TEST_COUNT
+declare -A FILE_NAMES
+declare -A SEEN_NAMES
 PATTERN_SKIP=0
 
 while IFS= read -r name; do
@@ -318,22 +328,32 @@ while IFS= read -r name; do
     continue
   fi
 
-  file="${NAME_TO_FILE[$name]:-}"
-  if [[ -z "$file" ]]; then
+  if [[ -n "${SEEN_NAMES[$name]:-}" ]]; then
+    echo "WARN: test listed twice in the pattern file: $name" >&2
+    continue
+  fi
+  SEEN_NAMES[$name]=1
+
+  files="${NAME_TO_FILES[$name]:-}"
+  if [[ -z "$files" ]]; then
     echo "WARN: test not found in any .bats file: $name" >&2
     continue
   fi
 
   escaped=$(escape_ere "$name")
-  # Use " *$" instead of "$" to tolerate trailing spaces in bats
-  # test names (some runc tests have trailing whitespace).
-  if [[ -z "${FILE_FILTER[$file]:-}" ]]; then
-    FILE_FILTER[$file]="^${escaped} *$"
-    FILE_TEST_COUNT[$file]=1
-  else
-    FILE_FILTER[$file]="${FILE_FILTER[$file]}|^${escaped} *$"
-    FILE_TEST_COUNT[$file]=$(( ${FILE_TEST_COUNT[$file]} + 1 ))
-  fi
+  while IFS= read -r file; do
+    [[ -z "$file" ]] && continue
+    # Use " *$" instead of "$" to tolerate trailing spaces in bats
+    # test names (some runc tests have trailing whitespace).
+    if [[ -z "${FILE_FILTER[$file]:-}" ]]; then
+      FILE_FILTER[$file]="^${escaped} *$"
+      FILE_TEST_COUNT[$file]=1
+    else
+      FILE_FILTER[$file]="${FILE_FILTER[$file]}|^${escaped} *$"
+      FILE_TEST_COUNT[$file]=$(( ${FILE_TEST_COUNT[$file]} + 1 ))
+    fi
+    FILE_NAMES[$file]+="$name"$'\n'
+  done <<< "$files"
 done < "$PATTERN_FILE"
 
 TOTAL_ENABLED=0
@@ -405,20 +425,26 @@ for file in $(printf '%s\n' "${!FILE_FILTER[@]}" | sort); do
   file_pass=0
   file_fail=0
   in_fail=0
+  declare -A reported=()
   while IFS= read -r line; do
+    # script(1) runs bats on a PTY, so lines end in CR LF.
+    line="${line%$'\r'}"
     if [[ "$line" =~ ^ok\ [0-9]+\ (.+) ]]; then
       tname="${BASH_REMATCH[1]}"
       if [[ "$tname" =~ \#\ skip ]]; then
         # bats-internal skip (e.g. "requires root")
-        echo "  SKIP  ${tname%% \# skip*}"
+        tname="${tname%% \# skip*}"
+        echo "  SKIP  $tname"
         BATS_SKIP=$((BATS_SKIP + 1))
       else
         file_pass=$((file_pass + 1))
         echo "  PASS  $tname"
       fi
+      reported["${tname%"${tname##*[! ]}"}"]=1
       in_fail=0
     elif [[ "$line" =~ ^not\ ok\ [0-9]+\ (.+) ]]; then
       tname="${BASH_REMATCH[1]}"
+      reported["${tname%"${tname##*[! ]}"}"]=1
       file_fail=$((file_fail + 1))
       echo "  FAIL  $tname"
       ERRORS="${ERRORS}\n  - $tname"
@@ -432,19 +458,22 @@ for file in $(printf '%s\n' "${!FILE_FILTER[@]}" | sort); do
     fi
   done < "$TMPOUT"
 
+  # A test with no result at all (bats crashed, or the run hung and was
+  # killed by timeout even after the retry) is a failure too.
+  while IFS= read -r tname; do
+    [[ -z "$tname" || -n "${reported[$tname]:-}" ]] && continue
+    file_fail=$((file_fail + 1))
+    echo "  FAIL  $tname (no result, bats rc=$rc)"
+    ERRORS="${ERRORS}\n  - $tname (no result, $fname rc=$rc)"
+    FAIL_NAMES+=("$tname (no result, $fname rc=$rc)")
+  done <<< "${FILE_NAMES[$file]}"
+  unset reported
+
   # Dump full bats output for failing test files to aid CI debugging.
   if [[ $file_fail -gt 0 ]]; then
     echo "  --- full bats output ($fname) ---"
     cat "$TMPOUT"
     echo "  --- end ---"
-  fi
-
-  # If bats itself crashed (no TAP output at all), count as file-level failure.
-  if [[ $rc -ne 0 && $file_pass -eq 0 && $file_fail -eq 0 ]]; then
-    file_fail=$expected
-    echo "  FAIL  $fname (bats exited with rc=$rc, no TAP output)"
-    ERRORS="${ERRORS}\n  - $fname (rc=$rc)"
-    FAIL_NAMES+=("$fname (rc=$rc)")
   fi
 
   PASS=$((PASS + file_pass))
@@ -487,7 +516,7 @@ write_summary() {
     echo "## runc bats compatibility test results"
     echo ""
     echo "Runtime: \`$(basename "$KONTAINER_BIN")\`"
-    echo "runc ref: \`${RUNC_TAG}\`"
+    echo "runc ref: \`${RUNC_COMMIT}\`"
     echo "Pattern: \`$(basename "$PATTERN_FILE")\`"
     echo ""
     echo "| Metric | Count |"
