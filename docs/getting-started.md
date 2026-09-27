@@ -57,6 +57,22 @@ Edit [`test-bundle/config.json`](https://github.com/ternbusty/kontainer-runtime/
 
 For a more realistic setup, use `containerd` to drive the runtime against a real OCI image. See [containerd integration](containerd.md).
 
+## Running without root (rootless)
+
+The runtime can also run containers as a regular user. Generate a rootless config in a bundle whose `rootfs/` you extracted yourself, then run it without `sudo`.
+
+```bash
+kontainer-runtime spec --rootless
+kontainer-runtime run demo
+```
+
+`spec --rootless` does the same as `runc spec --rootless`. It adds a user namespace that maps your own uid and gid to root in the container, drops the network namespace, bind-mounts the host's `/sys` instead of mounting sysfs, and removes cgroup resources.
+
+- Container state lives under `$XDG_RUNTIME_DIR/kontainer/<id>` instead of `/run/kontainer/<id>`
+- When you may not create its cgroup and the spec sets neither `cgroupsPath` nor resource limits, the container runs without a cgroup. Resource limits need a cgroup delegated to you, given as an absolute `cgroupsPath`
+- Mapping more ids than your own needs `newuidmap` and `newgidmap` (the `uidmap` package) and matching entries in `/etc/subuid` and `/etc/subgid`
+- Ubuntu 23.10 and later restrict unprivileged user namespaces with AppArmor (`kernel.apparmor_restrict_unprivileged_userns=1`). The binary then needs an AppArmor profile that allows `userns`, like the one Ubuntu ships for runc in `/etc/apparmor.d/runc`
+
 ## Where things live
 
 Paths that the runtime creates or reads at runtime.
