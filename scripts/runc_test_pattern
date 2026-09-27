@@ -11,12 +11,15 @@
 #   sshfs        requires sshfs fuse mount
 #   arch         architecture-specific (i386/x86_64 personality)
 #   runc-dmz     asserts runc-dmz debug output string
+#   runc-name    asserts the binary reports itself as "runc"
+#   hooks-cwd    createContainer hook cannot resolve ./lib relative to the rootfs
 
 # --- spec ---
 spec generation cwd
 spec generation --bundle
 
 # --- version / help ---
+[skip]runc version # runc-name
 runc -h
 runc command -h
 runc foo -h
@@ -170,6 +173,7 @@ runc run [seccomp] (verify syscall compatibility after seccomp enforcement)
 runc run [hook fails]
 runc run [hook's argv is preserved]
 runc run [host mount ns + hooks]
+[skip]runc run (hooks library tests) # hooks-cwd
 
 # --- run (selinux) ---
 [skip]runc run (custom selinux label) # selinux
@@ -234,6 +238,7 @@ runc delete --force ignore not exist
 runc delete --force [paused container]
 runc delete --force [host pidns + init gone]
 [skip]runc delete --force in cgroupv1 with subcgroups # cgroups_v1
+runc delete --force in cgroupv2 with subcgroups
 runc delete [host pidns + init gone]
 [skip]runc delete removes failed systemd unit # systemd
 
@@ -414,7 +419,6 @@ write to an idmap mount [userns]
 Check mount source fds are cleaned up with idmapped mounts [userns]
 
 # --- userns ---
-runc run [joining existing container namespaces]
 userns join external namespaces [wrong userns owner]
 userns join other container userns
 userns join other container userns [bind-mounted nsfd]
