@@ -342,6 +342,9 @@ fun create(
         childEnv += "_KONTAINER_SPEC_FD=${specPipeFds[0]}"
         childEnv += "_KONTAINER_NOTIFY_SOCKET=$notifySocketPath"
         childEnv += "_KONTAINER_CONTAINER_ID=$containerId"
+        // Host path of the container cgroup ("" when it has none), for the
+        // init's /sys/fs/cgroup fallback bind mount (see Rootfs.kt).
+        childEnv += "_KONTAINER_CGROUP_PATH=${resolvedCgroupPath ?: ""}"
         // Log env vars (_KONTAINER_LOG_FILE, _KONTAINER_LOG_FORMAT) are already
         // in our environment (set by KontainerRuntime.run()) and are inherited
         // through envp below.

@@ -256,9 +256,34 @@ private fun mountCgroupFs(
             val directErrno = errno
             Logger.debug("direct cgroup2 mount failed (errno=$directErrno), falling back to bind mount")
 
-            // Fall back to bind mount of the container's cgroup path.
-            val containerCgroupPath = getContainerCgroupPath()
-            if (containerCgroupPath != null) {
+            // Fall back to a bind mount of the container's own cgroup. Its host
+            // path comes from the main process in _KONTAINER_CGROUP_PATH: inside
+            // a cgroup namespace /proc/self/cgroup only says "/", which would
+            // bind the whole host hierarchy. An empty value means the container
+            // has no cgroup (rootless); like runc, mask /sys/fs/cgroup with an
+            // empty read-only tmpfs then, so the host hierarchy stays hidden.
+            val envCgroupPath = getenv("_KONTAINER_CGROUP_PATH")?.toKString()
+            val containerCgroupPath =
+                when {
+                    envCgroupPath == null -> getContainerCgroupPath()
+                    envCgroupPath.isEmpty() -> null
+                    else -> "/" + envCgroupPath.removePrefix("/")
+                }
+            if (envCgroupPath != null && envCgroupPath.isEmpty()) {
+                if (syscall.mount(
+                        source = "tmpfs",
+                        target = cgroupMountPath,
+                        fstype = "tmpfs",
+                        flags = (MS_NOSUID or MS_NODEV or MS_NOEXEC or MS_RDONLY).toULong(),
+                        data = "size=4k,nr_inodes=1",
+                    ) != 0
+                ) {
+                    val errNum = errno
+                    Logger.warn("failed to mask /sys/fs/cgroup with tmpfs (errno=$errNum)")
+                } else {
+                    Logger.debug("container has no cgroup; masked /sys/fs/cgroup with an empty tmpfs")
+                }
+            } else if (containerCgroupPath != null) {
                 val cgroupSourcePath = "/sys/fs/cgroup$containerCgroupPath"
                 Logger.debug("container cgroup source path: $cgroupSourcePath")
 
