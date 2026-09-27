@@ -54,6 +54,7 @@ private fun runMainProcessInternal(
     syncFd: Int,
     spec: Spec,
     containerId: String,
+    resolvedCgroupPath: String?,
     bundlePath: String,
     rootPath: String,
     pidFile: String?,
@@ -69,11 +70,10 @@ private fun runMainProcessInternal(
         Logger.setContext("main")
         Logger.debug("started, stage-1 pid=$stage1Pid")
 
-        // Resolve the OCI spec cgroupsPath (absolute → literal; relative or
-        // unspecified → nested under our runtime's subtree) and stash the
-        // resolved path so Delete can use it later. See
-        // CgroupV2.resolveCgroupPath() for the rules.
-        val resolvedCgroupPath = CgroupV2.resolveCgroupPath(spec.linux?.cgroupsPath, containerId)
+        // resolvedCgroupPath is spec.linux.cgroupsPath as resolved by Create.kt
+        // (see CgroupV2.resolveCgroupPath() for the rules), or null when a
+        // rootless container runs without a cgroup. It is stashed below so
+        // Delete can use it later.
 
         // The cgroup itself (directory, controllers, resource limits, device
         // eBPF program) was prepared by Create.kt BEFORE Stage-1 was spawned, so
@@ -190,7 +190,7 @@ private fun runMainProcessInternal(
         // SYNC_GRANDCHILD from Stage-1.
         if (stage1InCgroup) {
             Logger.debug("Stage-2 inherited cgroup $resolvedCgroupPath from Stage-1 (CLONE_INTO_CGROUP)")
-        } else if (resolvedCgroupPath.isNotEmpty()) {
+        } else if (!resolvedCgroupPath.isNullOrEmpty()) {
             cgroup.addProcess(stage2Pid, resolvedCgroupPath)
         }
 
@@ -331,7 +331,7 @@ private fun runMainProcessInternal(
                     // waiting for the start signal.  This avoids hitting
                     // pids.max=1 (from pids.limit=0) during init setup where
                     // Kotlin/Native runtime threads are still being created.
-                    (cgroup as? CgroupV2)?.applyDeferredPids(resolvedCgroupPath, spec.linux?.resources)
+                    resolvedCgroupPath?.let { (cgroup as? CgroupV2)?.applyDeferredPids(it, spec.linux?.resources) }
                     initDone = true
                 }
                 else -> {
@@ -421,7 +421,7 @@ private fun cleanupContainer(
     rootPath: String,
     containerId: String,
     initPid: Int,
-    cgroupPath: String,
+    cgroupPath: String?,
 ) {
     // Kill init process
     try {
@@ -460,6 +460,7 @@ fun runMainProcess(
     syncFd: Int,
     spec: Spec,
     containerId: String,
+    cgroupPath: String?,
     bundlePath: String,
     rootPath: String,
     pidFile: String?,
@@ -480,6 +481,7 @@ fun runMainProcess(
             syncFd,
             spec,
             containerId,
+            cgroupPath,
             bundlePath,
             rootPath,
             pidFile,
@@ -521,7 +523,7 @@ fun runMainProcess(
                 rootPath,
                 containerId,
                 stage2Pid,
-                CgroupV2.resolveCgroupPath(spec.linux?.cgroupsPath, containerId),
+                cgroupPath,
             )
             _exit(1)
         }
