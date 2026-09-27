@@ -24,7 +24,14 @@ All releases with their assets live at [https://github.com/ternbusty/kontainer-r
 
 ## Run a container from the sample bundle
 
-The repository ships a minimal OCI bundle at [`test-bundle/`](https://github.com/ternbusty/kontainer-runtime/tree/main/test-bundle). It runs `echo` and exits.
+The repository ships a minimal OCI bundle at [`test-bundle/`](https://github.com/ternbusty/kontainer-runtime/tree/main/test-bundle). The rootfs is not checked in, so set it up first.
+
+```bash
+mkdir -p test-bundle/rootfs/{proc,dev,sys,tmp}
+cp /usr/bin/busybox test-bundle/rootfs/bin/busybox
+```
+
+Then run the container.
 
 ```bash
 # 1. Create the container. State lives under /run/kontainer/<id>.
@@ -33,13 +40,14 @@ sudo kontainer-runtime create --bundle test-bundle demo
 # 2. Inspect it. Should be in "created" state.
 sudo kontainer-runtime state demo
 
-# 3. Start it. The container's argv runs and exits, then state becomes "stopped".
+# 3. Start it. The default config runs sleep 30.
 sudo kontainer-runtime start demo
 
-# 4. Read state again to confirm it stopped.
+# 4. Check that it is running.
 sudo kontainer-runtime state demo
 
 # 5. Clean up.
+sudo kontainer-runtime kill demo SIGKILL
 sudo kontainer-runtime delete demo
 ```
 
