@@ -139,10 +139,10 @@ private fun runMainProcessInternal(
             }
 
             Logger.debug("writing uid_map for pid $bootstrapPid")
-            writeIdMap(fs, bootstrapPid, "uid", uidMap, isPrivileged)
+            writeIdMap(bootstrapPid, "uid", uidMap, isPrivileged)
 
             Logger.debug("writing gid_map for pid $bootstrapPid")
-            writeIdMap(fs, bootstrapPid, "gid", gidMap, isPrivileged)
+            writeIdMap(bootstrapPid, "gid", gidMap, isPrivileged)
 
             Logger.debug("successfully wrote UID/GID mappings")
 
@@ -629,24 +629,23 @@ fun writeInt32(
  */
 @OptIn(ExperimentalForeignApi::class)
 private fun writeIdMap(
-    fs: FileSystem,
     pid: Int,
     kind: String,
     map: String,
     privileged: Boolean,
 ) {
-    val writeError =
-        try {
-            fs.writeTextFile("/proc/$pid/${kind}_map", map)
-            return
-        } catch (e: Exception) {
-            e
-        }
-    if (privileged) throw writeError
+    val path = "/proc/$pid/${kind}_map"
+    // Write directly rather than through FileSystem, which logs failures as
+    // errors: EPERM here is the expected, silent trigger for the helper below.
+    val err = writeFileOnce(path, map)
+    if (err == 0) return
+    if (privileged || err != EPERM) {
+        throw Exception("failed to update $path: ${strerror(err)?.toKString() ?: "errno $err"}")
+    }
     val tool =
         lookPath("new${kind}map")
-            ?: throw Exception("failed to update /proc/$pid/${kind}_map (${writeError.message}) and new${kind}map was not found")
-    Logger.debug("writing /proc/$pid/${kind}_map failed; trying $tool")
+            ?: throw Exception("failed to update $path (operation not permitted) and new${kind}map was not found")
+    Logger.debug("writing $path failed with EPERM; trying $tool")
     // Build argv before fork(): this process is multi-threaded.
     val args = listOf(tool, pid.toString()) + map.split(Regex("\\s+")).filter { it.isNotEmpty() }
     memScoped {
@@ -669,6 +668,28 @@ private fun writeIdMap(
             throw Exception("failed to use new${kind}map on $pid (status ${status.value})")
         }
     }
+}
+
+/** Write [content] to [path] with a single write(2); returns 0 or the errno. */
+@OptIn(ExperimentalForeignApi::class)
+private fun writeFileOnce(
+    path: String,
+    content: String,
+): Int {
+    val fd = open(path, O_WRONLY or O_CLOEXEC)
+    if (fd < 0) return errno
+    val bytes = content.encodeToByteArray()
+    val n = bytes.usePinned { write(fd, it.addressOf(0), bytes.size.toULong()) }
+    val err =
+        if (n == bytes.size.toLong()) {
+            0
+        } else if (n < 0) {
+            errno
+        } else {
+            EIO
+        }
+    close(fd)
+    return err
 }
 
 /** Find [name] in \$PATH like Go's exec.LookPath, or null. */
