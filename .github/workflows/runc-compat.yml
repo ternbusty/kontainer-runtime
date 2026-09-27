@@ -16,8 +16,18 @@ env:
 
 jobs:
   runc-bats:
-    name: runc bats integration
-    runs-on: ubuntu-24.04
+    name: runc bats integration (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: linuxX64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            target: linuxArm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
 
     steps:
@@ -28,13 +38,13 @@ jobs:
       - name: Download kontainer-runtime binary
         uses: actions/download-artifact@v8
         with:
-          name: kontainer-runtime-x86_64
-          path: build/bin/linuxX64/releaseExecutable
+          name: kontainer-runtime-${{ matrix.arch }}
+          path: build/bin/${{ matrix.target }}/releaseExecutable
 
       - name: Make binary executable
         run: |
-          chmod +x build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe
-          BIN="$(pwd)/build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe"
+          BIN="$(pwd)/build/bin/${{ matrix.target }}/releaseExecutable/kontainer-runtime.kexe"
+          chmod +x "$BIN"
           echo "KONTAINER_BIN=$BIN" >> "$GITHUB_ENV"
 
       - name: Set up Go (for runc test helpers)
@@ -96,7 +106,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: runc-bats-tap-output
+          name: runc-bats-tap-output-${{ matrix.arch }}
           path: tap-output.log
 
       # ── report outcome in annotations ────────────────────────────

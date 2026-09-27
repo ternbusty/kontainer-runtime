@@ -99,12 +99,12 @@ jobs:
           if nm "$bin" | awk '$1=="w"{print $2}' | grep -E '^(_*pthread_|__call_tls)'; then echo "unresolved weak pthread symbols"; exit 1; fi
           if [ "${{ matrix.targetArch }}" = x86_64 ]; then "$bin" --version; fi
 
-      - name: Upload x86_64 binary
-        if: matrix.targetArch == 'x86_64' && !matrix.static
+      - name: Upload binary
+        if: '!matrix.static'
         uses: actions/upload-artifact@v7
         with:
-          name: kontainer-runtime-x86_64
-          path: build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe
+          name: kontainer-runtime-${{ matrix.targetArch }}
+          path: build/bin/${{ matrix.target }}/releaseExecutable/kontainer-runtime.kexe
           retention-days: 1
 
       - name: Upload static binary
@@ -115,7 +115,8 @@ jobs:
           path: build/bin/${{ matrix.target }}/releaseExecutable/kontainer-runtime.kexe
           retention-days: 1
 
-  # ── Downstream test suites (reuse the x86_64 binary built above) ──
+  # ── Downstream test suites (reuse the binaries built above; runc-bats
+  #    runs on both x86_64 and aarch64, the others on x86_64 only) ──
 
   integration:
     needs: build
