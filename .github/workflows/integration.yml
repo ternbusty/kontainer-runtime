@@ -41,9 +41,41 @@ jobs:
       - name: Run container, host-side and exec verification
         run: |
           BIN="$(pwd)/build/bin/linuxX64/releaseExecutable/kontainer-runtime.kexe"
+          START="$(date '+%Y-%m-%d %H:%M:%S')"
+
+          # On any failure below, record what the container, containerd and the
+          # runtime were doing, so a hang or a slow start can be told apart.
+          dump_diagnostics() {
+            echo "::group::Diagnostics ($(date -u +%T))"
+            echo "--- ctr tasks / containers ---"
+            sudo ctr tasks ls || true
+            sudo ctr containers ls || true
+            echo "--- processes ---"
+            ps -eo pid,ppid,stat,etimes,wchan:32,args --forest || true
+            # Kernel stacks of the runtime's processes: those executing the
+            # binary itself or its sealed memfd copy (the container init).
+            for d in /proc/[0-9]*; do
+              exe=$(sudo readlink "$d/exe" 2>/dev/null) || continue
+              case "$exe" in
+                *kontainer-runtime.kexe*|/memfd:*) ;;
+                *) continue ;;
+              esac
+              echo "--- pid ${d#/proc/} ($exe): $(tr '\0' ' ' < "$d/cmdline" 2>/dev/null | cut -c1-200)"
+              sudo cat "$d/stack" 2>/dev/null | head -12 || true
+            done
+            echo "--- runtime log.json ---"
+            sudo cat /run/containerd/io.containerd.runtime.v2.task/default/test-verify/log.json 2>/dev/null || true
+            echo "--- containerd journal ---"
+            sudo journalctl -u containerd --since "$START" --no-pager | tail -100 || true
+            echo "--- container.log so far ---"
+            cat container.log || true
+            echo "::endgroup::"
+          }
+          trap dump_diagnostics ERR
 
           # Start the container in the background. verify-from-container.sh ends
           # with `sleep 30`, giving the host and exec scripts a window to run.
+          : > container.log
           sudo ctr run --rm \
               --runc-binary="$BIN" \
               --seccomp --read-only \
@@ -57,8 +89,26 @@ jobs:
           CTR_PID=$!
           echo "ctr PID: $CTR_PID"
 
-          # Give the container time to start so its /proc/<pid>/ entries are populated.
-          sleep 5
+          # Wait until the container has run its checks and entered its trailing
+          # sleep, instead of a fixed delay. Startup normally takes well under a
+          # second; 30 s is only a ceiling that turns a hang into a clear error.
+          ready=""
+          for _ in $(seq 1 60); do
+            if grep -q '^Sleeping for 30 seconds' container.log 2>/dev/null; then
+              ready=1
+              break
+            fi
+            if ! kill -0 "$CTR_PID" 2>/dev/null; then
+              echo "::error::ctr exited before the container was ready"
+              false
+            fi
+            sleep 0.5
+          done
+          if [ -z "$ready" ]; then
+            echo "::error::container not ready after 30 s"
+            false
+          fi
+          echo "container ready after $(( $(date +%s) - $(date -d "$START" +%s) )) s"
 
           sudo ./test-scripts/verify-from-host.sh test-verify > host.log 2>&1
           sudo ./test-scripts/verify-exec.sh test-verify "$BIN" > exec.log 2>&1
