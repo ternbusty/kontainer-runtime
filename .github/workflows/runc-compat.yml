@@ -16,10 +16,14 @@ env:
 
 jobs:
   runc-bats:
-    name: runc bats integration (${{ matrix.arch }})
+    name: runc bats integration (${{ matrix.arch }}, ${{ matrix.mode }})
     strategy:
       fail-fast: false
       matrix:
+        arch: [x86_64, aarch64]
+        # "root", or "rootless" plus runc's optional rootless features
+        # (tests/rootless.sh runs the same four combinations).
+        mode: [root, rootless, rootless+idmap, rootless+cgroup, rootless+idmap+cgroup]
         include:
           - arch: x86_64
             target: linuxX64
@@ -55,7 +59,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update || true
-          sudo apt-get install -y libseccomp-dev jq sshfs
+          sudo apt-get install -y libseccomp-dev jq sshfs uidmap
 
       # ── clone runc & install bats ─────────────────────────────────
       - name: Clone runc (pinned commit)
@@ -87,26 +91,43 @@ jobs:
           chmod +x "$HOME/runc/tests/integration/get-images.sh"
           "$HOME/runc/tests/integration/get-images.sh" > /dev/null
 
+      # ── rootless: user, subordinate ids, delegated cgroup ─────────
+      - name: Set up rootless user and features
+        if: matrix.mode != 'root'
+        run: |
+          # The rootless user runs bats from the runc tree under $HOME.
+          sudo chmod a+X "$HOME"
+          features="${MODE#rootless}"
+          sudo scripts/rootless-setup.sh --features "${features#+}" | tee -a "$GITHUB_ENV"
+        env:
+          MODE: ${{ matrix.mode }}
+
       # ── run bats tests ───────────────────────────────────────────
       - name: Run runc bats integration tests
         id: bats
         run: |
           chmod +x scripts/runc-compat-test.sh
-          sudo env \
+          rootless=()
+          [ "$MODE" != root ] && rootless=(--rootless)
+          # -E passes the ROOTLESS_* variables from rootless-setup.sh through.
+          sudo -E env \
             KONTAINER_BIN="$KONTAINER_BIN" \
             RUNC_COMMIT="$RUNC_COMMIT" \
             SUMMARY_FILE="$GITHUB_STEP_SUMMARY" \
             TAP_OUTPUT="$PWD/tap-output.log" \
             scripts/runc-compat-test.sh \
               --runc-dir "$RUNC_REPO_DIR" \
-              --binary "$KONTAINER_BIN"
+              --binary "$KONTAINER_BIN" \
+              "${rootless[@]}"
+        env:
+          MODE: ${{ matrix.mode }}
 
       # ── upload raw output ────────────────────────────────────────
       - name: Upload bats TAP output
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: runc-bats-tap-output-${{ matrix.arch }}
+          name: runc-bats-tap-output-${{ matrix.arch }}-${{ matrix.mode }}
           path: tap-output.log
 
       # ── report outcome in annotations ────────────────────────────

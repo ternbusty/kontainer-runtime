@@ -3,6 +3,7 @@ package exeseal
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import peekRootPath
+import utils.defaultRootPath
 
 /**
  * Tests for [peekRootPath] — extracts the `--root` flag from raw CLI args
@@ -13,11 +14,11 @@ class PeekRootPathTest :
     FunSpec({
 
         test("returns default when no --root is present") {
-            peekRootPath(arrayOf("create", "--bundle", "/b", "mycontainer")) shouldBe "/run/kontainer"
+            peekRootPath(arrayOf("create", "--bundle", "/b", "mycontainer")) shouldBe defaultRootPath()
         }
 
         test("returns default for empty args") {
-            peekRootPath(emptyArray()) shouldBe "/run/kontainer"
+            peekRootPath(emptyArray()) shouldBe defaultRootPath()
         }
 
         test("extracts --root with separate value") {
@@ -35,7 +36,7 @@ class PeekRootPathTest :
 
         test("returns default when --root has no following value") {
             // --root at end with no value — falls through without returning
-            peekRootPath(arrayOf("create", "--root")) shouldBe "/run/kontainer"
+            peekRootPath(arrayOf("create", "--root")) shouldBe defaultRootPath()
         }
 
         test("--root=value with colons in path") {

@@ -1,8 +1,11 @@
 package command
 
 import config.BuildConfig
+import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
+import platform.posix.getegid
+import platform.posix.geteuid
 import utils.RealFileSystem
 
 /**
@@ -12,7 +15,10 @@ import utils.RealFileSystem
  * This is the minimum viable spec that runc's integration test
  * harness (setup_busybox / runc_spec) expects to be able to produce.
  */
-fun spec(bundlePath: String) {
+fun spec(
+    bundlePath: String,
+    rootless: Boolean = false,
+) {
     val configPath = "$bundlePath/config.json"
     val fs = RealFileSystem()
 
@@ -152,7 +158,48 @@ fun spec(bundlePath: String) {
             encodeDefaults = true
             explicitNulls = false
         }
-    fs.writeTextFile(configPath, specJson.encodeToString(serializer(), defaultSpec))
+    val outputSpec = if (rootless) toRootless(defaultSpec) else defaultSpec
+    fs.writeTextFile(configPath, specJson.encodeToString(serializer(), outputSpec))
+}
+
+/**
+ * Turn [s] into a spec an unprivileged user can run, like runc's
+ * `runc spec --rootless` (libcontainer/specconv ToRootless): add a user
+ * namespace that maps only the caller's uid/gid to root, drop the network
+ * namespace (it needs a network setup the user cannot do), bind-mount /sys
+ * instead of mounting sysfs, drop uid=/gid= mount options that would refer to
+ * unmapped ids, and remove cgroup resources.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun toRootless(s: spec.Spec): spec.Spec {
+    val linux = s.linux ?: spec.Linux()
+    val namespaces =
+        linux.namespaces.orEmpty().filter {
+            it.type != spec.NamespaceType.NETWORK && it.type != spec.NamespaceType.USER
+        } + spec.Namespace(type = spec.NamespaceType.USER)
+    val mounts =
+        s.mounts?.map { m ->
+            if (m.destination.trimEnd('/') == "/sys") {
+                spec.Mount(
+                    destination = "/sys",
+                    type = "none",
+                    source = "/sys",
+                    options = listOf("rbind", "nosuid", "noexec", "nodev", "ro"),
+                )
+            } else {
+                m.copy(options = m.options?.filterNot { it.startsWith("uid=") || it.startsWith("gid=") })
+            }
+        }
+    return s.copy(
+        mounts = mounts,
+        linux =
+            linux.copy(
+                namespaces = namespaces,
+                uidMappings = listOf(spec.LinuxIdMapping(containerID = 0u, hostID = geteuid(), size = 1u)),
+                gidMappings = listOf(spec.LinuxIdMapping(containerID = 0u, hostID = getegid(), size = 1u)),
+                resources = null,
+            ),
+    )
 }
 
 private val DEFAULT_CAPS =

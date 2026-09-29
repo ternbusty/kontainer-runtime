@@ -34,6 +34,7 @@ import spec.readSpecFromFd
 import state.isValidContainerId
 import syscall.LinuxSyscall
 import utils.RealFileSystem
+import utils.defaultRootPath
 
 /** Exec-option flags that consume the next argument as a value. */
 private val EXEC_VALUE_FLAGS =
@@ -247,7 +248,7 @@ class KontainerRuntime(
     private val psArgs: List<String> = emptyList(),
 ) : CoreCliktCommand(name = "kontainer-runtime") {
     private val rootPathOpt by option("--root", help = "Root directory for container state")
-    val rootPath get() = rootPathOpt ?: "/run/kontainer"
+    val rootPath get() = rootPathOpt ?: defaultRootPath()
     val rootExplicit get() = rootPathOpt != null
     val logFile by option("--log", "-l", help = "Log file path")
     val logFormat by option("--log-format", help = "Log format (text or json)")
@@ -680,9 +681,10 @@ class SpecCommand : CoreCliktCommand(name = "spec") {
     override fun help(context: Context) = "Create a new specification file"
 
     val bundle by option("--bundle", "-b", help = "Bundle path").default(".")
+    val rootless by option("--rootless", help = "Generate a configuration for a rootless container").flag()
 
     override fun run() {
-        spec(bundle)
+        spec(bundle, rootless)
     }
 }
 
@@ -815,7 +817,7 @@ private fun printUsage() {
     println(
         "                                                                         Run a process in a running container",
     )
-    println("  spec [--bundle|-b <path>]                                          Generate a default OCI config.json")
+    println("  spec [--bundle|-b <path>] [--rootless]                             Generate a default OCI config.json")
 }
 
 // ---------------------------------------------------------------------------
@@ -869,7 +871,7 @@ internal fun peekRootPath(args: Array<String>): String {
         }
         i++
     }
-    return "/run/kontainer"
+    return defaultRootPath()
 }
 
 /**

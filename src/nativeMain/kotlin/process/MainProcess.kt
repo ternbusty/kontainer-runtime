@@ -8,10 +8,20 @@ import channel.Message
 import config.KontainerConfig
 import config.saveKontainerConfig
 import hook.runHooks
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.cstr
 import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.set
+import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
+import kotlinx.cinterop.value
 import logger.Logger
 import platform.posix.*
 import rootfs.handleMountFdRequest
@@ -54,6 +64,7 @@ private fun runMainProcessInternal(
     syncFd: Int,
     spec: Spec,
     containerId: String,
+    resolvedCgroupPath: String?,
     bundlePath: String,
     rootPath: String,
     pidFile: String?,
@@ -69,11 +80,10 @@ private fun runMainProcessInternal(
         Logger.setContext("main")
         Logger.debug("started, stage-1 pid=$stage1Pid")
 
-        // Resolve the OCI spec cgroupsPath (absolute → literal; relative or
-        // unspecified → nested under our runtime's subtree) and stash the
-        // resolved path so Delete can use it later. See
-        // CgroupV2.resolveCgroupPath() for the rules.
-        val resolvedCgroupPath = CgroupV2.resolveCgroupPath(spec.linux?.cgroupsPath, containerId)
+        // resolvedCgroupPath is spec.linux.cgroupsPath as resolved by Create.kt
+        // (see CgroupV2.resolveCgroupPath() for the rules), or null when a
+        // rootless container runs without a cgroup. It is stashed below so
+        // Delete can use it later.
 
         // The cgroup itself (directory, controllers, resource limits, device
         // eBPF program) was prepared by Create.kt BEFORE Stage-1 was spawned, so
@@ -117,19 +127,22 @@ private fun runMainProcessInternal(
             val isPrivileged = syscall.geteuid() == 0u
             Logger.debug("privileged mode: $isPrivileged (euid=${syscall.geteuid()})")
 
-            if (!isPrivileged) {
-                // Disable setgroups for unprivileged user namespaces (CVE-2014-8989)
+            // An unprivileged process may only map its own gid, and only after
+            // denying setgroups(2) (CVE-2014-8989). Any other gid mapping goes
+            // through newgidmap, which must not find setgroups denied. Same
+            // rule as runc (requiresRootOrMappingTool).
+            if (!isPrivileged && gidMap == "0 ${syscall.getegid()} 1\n") {
                 Logger.debug("disabling setgroups for pid $bootstrapPid")
                 fs.writeTextFile("/proc/$bootstrapPid/setgroups", "deny\n")
             } else {
-                Logger.debug("skipping setgroups write (running as root)")
+                Logger.debug("skipping setgroups write")
             }
 
             Logger.debug("writing uid_map for pid $bootstrapPid")
-            fs.writeTextFile("/proc/$bootstrapPid/uid_map", uidMap)
+            writeIdMap(bootstrapPid, "uid", uidMap, isPrivileged)
 
             Logger.debug("writing gid_map for pid $bootstrapPid")
-            fs.writeTextFile("/proc/$bootstrapPid/gid_map", gidMap)
+            writeIdMap(bootstrapPid, "gid", gidMap, isPrivileged)
 
             Logger.debug("successfully wrote UID/GID mappings")
 
@@ -190,7 +203,7 @@ private fun runMainProcessInternal(
         // SYNC_GRANDCHILD from Stage-1.
         if (stage1InCgroup) {
             Logger.debug("Stage-2 inherited cgroup $resolvedCgroupPath from Stage-1 (CLONE_INTO_CGROUP)")
-        } else if (resolvedCgroupPath.isNotEmpty()) {
+        } else if (!resolvedCgroupPath.isNullOrEmpty()) {
             cgroup.addProcess(stage2Pid, resolvedCgroupPath)
         }
 
@@ -331,7 +344,7 @@ private fun runMainProcessInternal(
                     // waiting for the start signal.  This avoids hitting
                     // pids.max=1 (from pids.limit=0) during init setup where
                     // Kotlin/Native runtime threads are still being created.
-                    (cgroup as? CgroupV2)?.applyDeferredPids(resolvedCgroupPath, spec.linux?.resources)
+                    resolvedCgroupPath?.let { (cgroup as? CgroupV2)?.applyDeferredPids(it, spec.linux?.resources) }
                     initDone = true
                 }
                 else -> {
@@ -421,7 +434,7 @@ private fun cleanupContainer(
     rootPath: String,
     containerId: String,
     initPid: Int,
-    cgroupPath: String,
+    cgroupPath: String?,
 ) {
     // Kill init process
     try {
@@ -460,6 +473,7 @@ fun runMainProcess(
     syncFd: Int,
     spec: Spec,
     containerId: String,
+    cgroupPath: String?,
     bundlePath: String,
     rootPath: String,
     pidFile: String?,
@@ -480,6 +494,7 @@ fun runMainProcess(
             syncFd,
             spec,
             containerId,
+            cgroupPath,
             bundlePath,
             rootPath,
             pidFile,
@@ -521,7 +536,7 @@ fun runMainProcess(
                 rootPath,
                 containerId,
                 stage2Pid,
-                CgroupV2.resolveCgroupPath(spec.linux?.cgroupsPath, containerId),
+                cgroupPath,
             )
             _exit(1)
         }
@@ -603,6 +618,91 @@ fun writeInt32(
  * @param fallbackId Fallback ID to use if mappings is null/empty
  * @return Formatted mapping string for uid_map/gid_map
  */
+
+/**
+ * Write [map] to /proc/[pid]/<[kind]>_map, where [kind] is "uid" or "gid".
+ *
+ * An unprivileged runtime may only map its own id this way. For any other
+ * mapping the kernel refuses the write and, like runc (nsexec.c
+ * try_mapping_tool), we fall back to the setuid newuidmap/newgidmap helper,
+ * which checks the mapping against /etc/subuid and /etc/subgid.
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun writeIdMap(
+    pid: Int,
+    kind: String,
+    map: String,
+    privileged: Boolean,
+) {
+    val path = "/proc/$pid/${kind}_map"
+    // Write directly rather than through FileSystem, which logs failures as
+    // errors: EPERM here is the expected, silent trigger for the helper below.
+    val err = writeFileOnce(path, map)
+    if (err == 0) return
+    if (privileged || err != EPERM) {
+        throw Exception("failed to update $path: ${strerror(err)?.toKString() ?: "errno $err"}")
+    }
+    val tool =
+        lookPath("new${kind}map")
+            ?: throw Exception("failed to update $path (operation not permitted) and new${kind}map was not found")
+    Logger.debug("writing $path failed with EPERM; trying $tool")
+    // Build argv before fork(): this process is multi-threaded.
+    val args = listOf(tool, pid.toString()) + map.split(Regex("\\s+")).filter { it.isNotEmpty() }
+    memScoped {
+        val argv = allocArray<CPointerVar<ByteVar>>(args.size + 1)
+        args.forEachIndexed { i, a -> argv[i] = a.cstr.ptr }
+        argv[args.size] = null
+        val child = fork()
+        if (child == 0) {
+            execv(tool, argv)
+            _exit(127)
+        }
+        if (child < 0) throw Exception("failed to fork for $tool (errno=$errno)")
+        val status = alloc<IntVar>()
+        while (waitpid(child, status.ptr, 0) < 0 && errno == EINTR) {
+            // retry
+        }
+        val exited = (status.value and 0x7f) == 0
+        val code = (status.value shr 8) and 0xff
+        if (!exited || code != 0) {
+            throw Exception("failed to use new${kind}map on $pid (status ${status.value})")
+        }
+    }
+}
+
+/** Write [content] to [path] with a single write(2); returns 0 or the errno. */
+@OptIn(ExperimentalForeignApi::class)
+private fun writeFileOnce(
+    path: String,
+    content: String,
+): Int {
+    val fd = open(path, O_WRONLY or O_CLOEXEC)
+    if (fd < 0) return errno
+    val bytes = content.encodeToByteArray()
+    val n = bytes.usePinned { write(fd, it.addressOf(0), bytes.size.toULong()) }
+    val err =
+        if (n == bytes.size.toLong()) {
+            0
+        } else if (n < 0) {
+            errno
+        } else {
+            EIO
+        }
+    close(fd)
+    return err
+}
+
+/** Find [name] in \$PATH like Go's exec.LookPath, or null. */
+@OptIn(ExperimentalForeignApi::class)
+private fun lookPath(name: String): String? {
+    val path = getenv("PATH")?.toKString() ?: return null
+    return path
+        .split(':')
+        .filter { it.isNotEmpty() }
+        .map { "$it/$name" }
+        .firstOrNull { access(it, X_OK) == 0 }
+}
+
 fun buildIdMapping(
     mappings: List<LinuxIdMapping>?,
     fallbackId: UInt,

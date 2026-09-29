@@ -18,6 +18,7 @@ import platform.posix.*
 import process.runMainProcess
 import rootfs.validateSysctls
 import seccomp.validateSeccompFlags
+import spec.LinuxResources
 import spec.NamespaceType
 import spec.loadSpec
 import spec.writeSpecToPipe
@@ -28,6 +29,7 @@ import state.getContainerDir
 import state.getNotifySocketPath
 import syscall.Syscall
 import utils.FileSystem
+import utils.isRootless
 
 /**
  * Create command - Creates a new container
@@ -126,7 +128,13 @@ fun create(
 
         // The notify socket lives inside the root-owned container state
         // directory (not /tmp), so create that directory before binding.
-        fs.createDirectories(getContainerDir(rootPath, containerId))
+        try {
+            fs.createDirectories(getContainerDir(rootPath, containerId))
+        } catch (e: Exception) {
+            Logger.error("failed to create container state directory: ${e.message ?: "unknown"}")
+            exit(1)
+            return
+        }
         val notifySocketPath = getNotifySocketPath(rootPath, containerId)
 
         // Create NotifyListener before forking (will be inherited by child processes)
@@ -198,30 +206,77 @@ fun create(
         // (setnsProcess via Go's SysProcAttr.UseCgroupFD) and still migrates
         // `runc init` with a cgroup.procs write (2.5 ms in our traces).
         // ------------------------------------------------------------------
-        val resolvedCgroupPath = CgroupV2.resolveCgroupPath(spec.linux?.cgroupsPath, containerId)
-        try {
-            cgroup.setup(pid = null, cgroupPath = resolvedCgroupPath, resources = spec.linux?.resources, deferPids = true)
-            // Attach the eBPF device-cgroup program ONCE, right after the cgroup
-            // directory exists. It applies to every process that is (or will be) in
-            // the cgroup, so it must not be attached again later — a second
-            // BPF_PROG_ATTACH would stack a duplicate filter.
-            //
-            // DeviceCgroup.apply() appends DEFAULT_ALLOWED_DEVICES which include
-            // wildcard mknod-allow rules for all char/block devices (matching
-            // runc's AllowedDevices), so the init process can mknod
-            // spec.linux.devices[] entries even under a deny-all rule. Read/write
-            // access is NOT auto-allowed — only mknod.
-            val deviceRules = spec.linux?.resources?.devices
-            if (!deviceRules.isNullOrEmpty()) {
-                DeviceCgroup.apply("/sys/fs/cgroup/${resolvedCgroupPath.removePrefix("/")}", deviceRules)
+        val specCgroupsPath = spec.linux?.cgroupsPath
+        // null: the container runs without a cgroup (rootless only, see below).
+        var resolvedCgroupPath: String? = CgroupV2.resolveCgroupPath(specCgroupsPath, containerId)
+        var cgroupError: String? = null
+        val rootless = isRootless()
+        // A rootless runtime may lack permission to create the cgroup. Like
+        // runc (opencontainers/cgroups fs2.Manager.Apply), that is only
+        // tolerated when the spec asks for no cgroup path and no limits; the
+        // container then runs without a cgroup of its own.
+        if (rootless) {
+            val denied = cgroupPermissionDenied(resolvedCgroupPath!!)
+            if (denied != null) {
+                when {
+                    !specCgroupsPath.isNullOrEmpty() ->
+                        cgroupError = "unable to apply cgroup configuration: $denied"
+                    needsCgroupControllers(spec.linux?.resources) ->
+                        cgroupError = "rootless needs no limits + no cgrouppath when no permission is granted for cgroups: $denied"
+                    else -> {
+                        Logger.debug("rootless: no permission for a cgroup ($denied); running without one")
+                        resolvedCgroupPath = null
+                        if (spec.linux
+                                ?.namespaces
+                                .orEmpty()
+                                .none { it.type == NamespaceType.PID }
+                        ) {
+                            // Same wording as runc, which tests check for.
+                            Logger.warn(
+                                "Creating a rootless container with no cgroup and no private pid namespace. " +
+                                    "Such configuration is strongly discouraged (as it is impossible to properly " +
+                                    "kill all container's processes) and will result in an error in a future runc version.",
+                            )
+                        }
+                    }
+                }
             }
-        } catch (e: Exception) {
+        }
+        if (cgroupError == null && resolvedCgroupPath != null) {
+            try {
+                cgroup.setup(pid = null, cgroupPath = resolvedCgroupPath, resources = spec.linux?.resources, deferPids = true)
+                // Attach the eBPF device-cgroup program ONCE, right after the cgroup
+                // directory exists. It applies to every process that is (or will be) in
+                // the cgroup, so it must not be attached again later — a second
+                // BPF_PROG_ATTACH would stack a duplicate filter.
+                //
+                // DeviceCgroup.apply() appends DEFAULT_ALLOWED_DEVICES which include
+                // wildcard mknod-allow rules for all char/block devices (matching
+                // runc's AllowedDevices), so the init process can mknod
+                // spec.linux.devices[] entries even under a deny-all rule. Read/write
+                // access is NOT auto-allowed — only mknod.
+                val deviceRules = spec.linux?.resources?.devices
+                if (!deviceRules.isNullOrEmpty()) {
+                    try {
+                        DeviceCgroup.apply("/sys/fs/cgroup/${resolvedCgroupPath.removePrefix("/")}", deviceRules)
+                    } catch (e: Exception) {
+                        // Attaching a BPF program needs CAP_SYS_ADMIN; runc ignores
+                        // device cgroup errors for rootless containers too.
+                        if (!rootless) throw e
+                        Logger.debug("rootless: ignoring device cgroup error: ${e.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                cgroupError = e.message ?: "unknown"
+            }
+        }
+        if (cgroupError != null) {
             // Same failure handling as runMainProcess() used to apply when this
             // ran after the fork: invalid resources (e.g. cpu period out of
             // range) or a pre-existing frozen cgroup must make create/run exit 1
             // with the state directory removed, not abort with an uncaught
             // exception.
-            Logger.error("main process failed: ${e.message ?: "unknown"}")
+            Logger.error("main process failed: $cgroupError")
             close(syncFds[0])
             close(syncFds[1])
             notifyListener.close()
@@ -236,7 +291,7 @@ fun create(
             _exit(1)
         }
         val cgroupDirFd =
-            if (resolvedCgroupPath.isNotEmpty()) {
+            if (!resolvedCgroupPath.isNullOrEmpty()) {
                 open("/sys/fs/cgroup/${resolvedCgroupPath.removePrefix("/")}", O_RDONLY or O_DIRECTORY or O_CLOEXEC)
             } else {
                 -1
@@ -287,6 +342,9 @@ fun create(
         childEnv += "_KONTAINER_SPEC_FD=${specPipeFds[0]}"
         childEnv += "_KONTAINER_NOTIFY_SOCKET=$notifySocketPath"
         childEnv += "_KONTAINER_CONTAINER_ID=$containerId"
+        // Host path of the container cgroup ("" when it has none), for the
+        // init's /sys/fs/cgroup fallback bind mount (see Rootfs.kt).
+        childEnv += "_KONTAINER_CGROUP_PATH=${resolvedCgroupPath ?: ""}"
         // Log env vars (_KONTAINER_LOG_FILE, _KONTAINER_LOG_FORMAT) are already
         // in our environment (set by KontainerRuntime.run()) and are inherited
         // through envp below.
@@ -437,6 +495,7 @@ fun create(
                     syncFd = syncFds[0],
                     spec = spec,
                     containerId = containerId,
+                    cgroupPath = resolvedCgroupPath,
                     bundlePath = absBundle,
                     rootPath = rootPath,
                     pidFile = pidFile,
@@ -461,3 +520,45 @@ fun create(
             }
         }
     }
+
+/**
+ * Check whether this (rootless) process may create the cgroup at
+ * [cgroupPath] and put processes into it, by creating its directory like
+ * `mkdir -p` would. Returns a runc-style reason such as
+ * "mkdir /sys/fs/cgroup/x: permission denied" when it may not, or null.
+ * Errors other than a permission problem are left to [Cgroup.setup].
+ */
+@OptIn(ExperimentalForeignApi::class)
+private fun cgroupPermissionDenied(cgroupPath: String): String? {
+    var dir = "/sys/fs/cgroup"
+    for (segment in cgroupPath.split("/").filter { it.isNotEmpty() }) {
+        dir = "$dir/$segment"
+        if (mkdir(dir, 0x1EDu) == 0 || errno == EEXIST) continue // 0o755
+        val err = errno
+        if (err == EACCES || err == EPERM || err == EROFS) {
+            return "mkdir $dir: ${strerror(err)?.toKString()?.lowercase() ?: "errno $err"}"
+        }
+        return null
+    }
+    // The directory exists, but joining it needs write access to cgroup.procs.
+    if (access("$dir/cgroup.procs", W_OK) != 0) {
+        val err = errno
+        return "open $dir/cgroup.procs: ${strerror(err)?.toKString()?.lowercase() ?: "errno $err"}"
+    }
+    return null
+}
+
+/**
+ * Whether [resources] set any limit that needs a cgroup controller. Device
+ * rules do not count: they are enforced by an eBPF program, which runc does
+ * not require for rootless containers either.
+ */
+private fun needsCgroupControllers(resources: LinuxResources?): Boolean {
+    resources ?: return false
+    return resources.pids != null ||
+        resources.memory != null ||
+        resources.cpu != null ||
+        resources.blockIO != null ||
+        !resources.hugepageLimits.isNullOrEmpty() ||
+        !resources.unified.isNullOrEmpty()
+}

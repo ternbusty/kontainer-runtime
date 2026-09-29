@@ -264,6 +264,23 @@ void kontainer_bootstrap(void) {
     }
     debug_log("[stage-1] Using sync FD from Main Process: %d\n", sync_fd);
 
+    // Like runc (nsexec.c, config.namespaces), only become non-dumpable when
+    // joining existing namespaces by path: that is what protects against
+    // processes in those namespaces reaching into ours. Otherwise we switch to
+    // no other security context, and being non-dumpable only breaks things,
+    // e.g. a rootless runtime could no longer open our /proc/<pid> files
+    // (timens_offsets, or ns/* for `exec` into a created container).
+    int joining_ns = 0;
+    for (char **e = environ; *e; e++) {
+        if (strncmp(*e, ENV_NS_PATH_PREFIX, strlen(ENV_NS_PATH_PREFIX)) == 0) {
+            const char *val = strchr(*e, '=');
+            if (val && val[1]) {
+                joining_ns = 1;
+                break;
+            }
+        }
+    }
+
     // Create socketpair for Stage-1 <-> Stage-2 communication
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sync_pipe) < 0) {
         fprintf(stderr, "[stage-1] Failed to create sync socketpair: %s\n", strerror(errno));
@@ -316,11 +333,13 @@ void kontainer_bootstrap(void) {
         }
         debug_log("[stage-1] Received mapping ack from Main Process\n");
 
-        // Step 5: Restore non-dumpable state
-        debug_log("[stage-1] Restoring non-dumpable state\n");
-        if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) < 0) {
-            fprintf(stderr, "[stage-1] Failed to restore dumpable: %s\n", strerror(errno));
-            exit(1);
+        // Step 5: Become non-dumpable if we are about to join namespaces
+        if (joining_ns) {
+            debug_log("[stage-1] Setting non-dumpable (joining namespaces)\n");
+            if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) < 0) {
+                fprintf(stderr, "[stage-1] Failed to restore dumpable: %s\n", strerror(errno));
+                exit(1);
+            }
         }
 
         // Step 6: Become root in the user namespace
@@ -474,6 +493,13 @@ void kontainer_bootstrap(void) {
     // timens_offsets BEFORE we fork Stage-2 (which will enter the new
     // time namespace). After clone_parent(), it's too late.
     if (clone_flags & CLONE_NEWTIME) {
+        // As for the uid/gid maps above: while we are non-dumpable our
+        // /proc/<pid> files belong to the global root, so a rootless Main
+        // Process could not open timens_offsets. Be dumpable meanwhile.
+        if (joining_ns && prctl(PR_SET_DUMPABLE, 1, 0, 0, 0) < 0) {
+            fprintf(stderr, "[stage-1] Failed to set dumpable for timens: %s\n", strerror(errno));
+            exit(1);
+        }
         debug_log("[stage-1] Requesting timens_offsets write from Main Process\n");
         s = SYNC_TIMEOFFSETS_PLS;
         if (write(sync_fd, &s, sizeof(s)) != sizeof(s)) {
@@ -498,6 +524,10 @@ void kontainer_bootstrap(void) {
             exit(1);
         }
         debug_log("[stage-1] Received timens_offsets ack from Main Process\n");
+        if (joining_ns && prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) < 0) {
+            fprintf(stderr, "[stage-1] Failed to restore non-dumpable after timens: %s\n", strerror(errno));
+            exit(1);
+        }
     }
 
     // Clone Stage-2 (init process) with CLONE_PARENT
