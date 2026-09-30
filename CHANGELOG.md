@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/ternbusty/kontainer-runtime/compare/v0.6.1...v0.7.0) (2026-09-30)
+
+
+### Features
+
+* support rootless containers and test them with runc bats ([#133](https://github.com/ternbusty/kontainer-runtime/issues/133)) ([a03f6c5](https://github.com/ternbusty/kontainer-runtime/commit/a03f6c5a92872a2b58672f42ec36627ee35c3533))
+
+
+### Bug Fixes
+
+* remove user namespace from test-bundle and add rootfs setup instructions ([#129](https://github.com/ternbusty/kontainer-runtime/issues/129)) ([3658292](https://github.com/ternbusty/kontainer-runtime/commit/3658292a839369fce335ac6feb5bed08ff61e067))
+
 ## [0.6.1](https://github.com/ternbusty/kontainer-runtime/compare/v0.6.0...v0.6.1) (2026-09-20)
 
 
