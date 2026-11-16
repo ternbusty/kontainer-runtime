@@ -72,7 +72,10 @@ jobs:
         if: matrix.pkgs != ''
         run: |
           sudo apt-get update
-          sudo apt-get install -y ${{ matrix.pkgs }}
+          # On aarch64, apt swaps the image's preinstalled toolchain for the
+          # archive builds of the same versions (Multi-Arch: same needs both
+          # arches to match) and reports that as a downgrade.
+          sudo apt-get install -y ${{ matrix.targetArch == 'aarch64' && '--allow-downgrades' || '' }} ${{ matrix.pkgs }}
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew

@@ -89,7 +89,10 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gperf ${{ matrix.crossPkgs }}
+          # On aarch64, apt swaps the image's preinstalled toolchain for the
+          # archive builds of the same versions (Multi-Arch: same needs both
+          # arches to match) and reports that as a downgrade.
+          sudo apt-get install -y ${{ matrix.targetArch == 'aarch64' && '--allow-downgrades' || '' }} gperf ${{ matrix.crossPkgs }}
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
