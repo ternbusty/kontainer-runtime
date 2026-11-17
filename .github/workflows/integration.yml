@@ -98,7 +98,10 @@ jobs:
               ready=1
               break
             fi
-            if ! kill -0 "$CTR_PID" 2>/dev/null; then
+            # CTR_PID is sudo, which briefly sets its real UID to root while
+            # starting up; kill -0 from the runner user gets EPERM in that
+            # window even though sudo is alive, so look in /proc instead.
+            if [ ! -d "/proc/$CTR_PID" ]; then
               echo "::error::ctr exited before the container was ready"
               false
             fi
